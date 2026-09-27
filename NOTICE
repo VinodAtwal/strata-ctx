@@ -1,0 +1,34 @@
+strata-ctx
+Copyright 2026 The strata-ctx Authors
+
+This product includes software developed at strata-ctx
+(https://github.com/VinodAtwal/strata-ctx).
+
+Licensed under the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+Attribution
+
+The design in this repository is informed by published research, and those
+papers are cited by identifier in the documentation. They are not vendored code
+and no endorsement is claimed or implied; the attribution here is to record
+where the design came from, which is the practice the license asks for and
+which the authors consider the honest thing to do.
+
+  - "Governance Decay" (arXiv:2606.22528) -- compaction-induced policy violation
+    as a function of constraint survival. Supplies the pinned-buffer design
+    (docs/architecture.md section 7) and the stratification of constraint kinds.
+
+  - "Compaction Cliff" (arXiv:2608.22752, CIKM 2026) -- safety-rule survival
+    across repeated production /compact operations, and Knowledge Triage as a
+    mitigation. Supplies the triage-before-compaction pipeline order
+    (docs/architecture.md section 4).
+
+  - "Context Rot" (Chroma research, research.trychroma.com/context-rot) --
+    continuous degradation of long-context use, invisible to NIAH. Supplies the
+    argument for treating the compaction trigger as a quality decision rather
+    than a capacity one.
+
+If any of the constants quoted in the documentation are wrong, the citation is
+the fastest way to find the error, and the documentation is expected to be
+corrected rather than the claim quietly adjusted.

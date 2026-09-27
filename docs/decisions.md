@@ -10,6 +10,7 @@
 |---|---|---|---|
 | Q1 | Which model(s) for the primary A/B claim? | One pinned frontier model; a second is a *secondary* claim only | Eng 2 |
 | Q2 | License for the 3 eval repos? | Public-permissive only; no copyleft tasks | Swarm + legal-ish review |
+| Q6 | Project license? | **Apache-2.0** | Resolved. Permissive, explicit patent grant, and the least friction for embedding in someone else's agent stack. |
 | Q3 | Do we ship the artifact store encrypted at rest? | **Yes** — it holds raw transcripts, which is the most sensitive thing we touch | Eng 1 |
 | Q4 | Retention default for the artifact store? | 14 days, GC'd, purge log retained (see R9) | Eng 2 |
 | Q5 | Multi-user / shared machine story? | Single-user, `127.0.0.1`-bound, refuse non-loopback binds unless `--i-understand` | Eng 1 |

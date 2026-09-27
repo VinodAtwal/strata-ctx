@@ -139,6 +139,10 @@ strata eval --tasks ./my-tasks.yaml   # not built yet
 
 ## License
 
-**Not yet chosen — see [`docs/decisions.md`](docs/decisions.md) Q2.** This is a legal decision, not
-a technical one, and it gates external contributions. Everything is currently
-`UNLICENSED — all rights reserved`.
+[Apache-2.0](LICENSE). Permissive, patent-granting, and the default for a tool that expects to be
+embedded in other people's agent stacks.
+
+`[NOTICE](NOTICE)` records the research the design is informed by. The papers are cited by
+identifier in the docs; no code is vendored and no endorsement is claimed. If a constant in the docs
+is wrong, the citation is the fastest route to finding that out — corrections are welcome and
+preferred over quietly adjusting a number.

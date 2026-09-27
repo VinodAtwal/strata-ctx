@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "The canonical, provider-neutral model every other package compiles against. Frozen at A-5.",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -13,8 +13,11 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "zod": "^3.24.0"
-  }
+  },
+  "author": "The strata-ctx Authors"
 }
