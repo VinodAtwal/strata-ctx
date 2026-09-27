@@ -254,7 +254,7 @@ F2                                             ██████████
 
 ## M4 — Hardening · end of W8
 
-Surface-check CI green · property-based suite in CI · `ctx eval` shipped as a user-facing command · docs (including the Copilot no-governance caveat) · release pipeline.
+Surface-check CI green · property-based suite in CI · `strata eval` shipped as a user-facing command · docs (including the Copilot no-governance caveat) · release pipeline.
 
 **Gate:** zero open P0 violations in a 7-day soak on a real repository; no secret in any sink across the soak.
 
@@ -293,7 +293,7 @@ through measurement.** Three consequences:
 | W0–W1 | A contract | F1 skeleton + fixtures | J, corpus curation |
 | W2–W3 | B | D (+ I) | H, G, remaining F1 suites |
 | W4–W5 | C, then E (Claude Code) | C (schema) + governance checkpoint | E (Gemini/Aider/MCP), H-7/H-8 |
-| W6–W8 | Integration + perf | F2 runner + campaign | Docs, release, `ctx eval` UX |
+| W6–W8 | Integration + perf | F2 runner + campaign | Docs, release, `strata eval` UX |
 
 **Two staffing notes that aren't negotiable:**
 
@@ -315,7 +315,7 @@ Cut from the bottom, in this order, if the schedule slips. **Decide now, while n
 | TRON (H-2) | 1.5 ed | TOON only | ✅ yes |
 | Gemini (E-5) | 2 ed | Claude Code only | ✅ yes |
 | Memory tiers (C-4, C-6) | 3.5 ed | Single-session memory only | ✅ yes |
-| **Automatic compaction (C-3)** | 3 ed | **Nothing.** Ship Tier 0 + pinning + telemetry + `ctx eval` | ✅ **yes — and safest** |
+| **Automatic compaction (C-3)** | 3 ed | **Nothing.** Ship Tier 0 + pinning + telemetry + `strata eval` | ✅ **yes — and safest** |
 | **Aider/Cline profiles (E-6)** | 1.5 ed | Loses the preferred A/B subject — cut **last** among the above | ⚠ painful |
 
 **Never cut:** WS-D (pinning), the E1/E5 gates, D-8/D-9 (unrepresentability + property test), the

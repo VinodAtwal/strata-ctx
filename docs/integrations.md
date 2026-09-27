@@ -167,7 +167,7 @@ recorded fixtures, so the harness itself costs nothing and is perfectly reproduc
 ## 8. Configuration
 
 ```yaml
-# context-gateway.yaml
+# strata-ctx.yaml
 gateway:
   listen: 127.0.0.1:8787
   upstream: anthropic            # or gemini | openai-compat

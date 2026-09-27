@@ -64,7 +64,7 @@
 **Package layout**
 
 ```
-context-gateway/
+strata-ctx/
 ├─ packages/
 │  ├─ core-types/      # WS-A. Canonical model, policy, pipeline interfaces. ZERO deps.
 │  ├─ gateway/         # WS-A. HTTP server, ingress/egress adapters, SSE passthrough

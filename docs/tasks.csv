@@ -67,7 +67,7 @@ G-1,G,Telemetry,Event schema + JSONL sink local-only,seq,1.5,A-5,1,-,todo
 G-2,G,Telemetry,Token/cost engine: pricing table + r + eps + rho + k,seq,2,A-6,1,-,todo
 G-3,G,Telemetry,Compaction + gist event emission,par,1,C-3,2,-,todo
 G-4,G,Telemetry,Savings accounting: gross vs NET after gist+probe cost,par,1.5,G-2,1,G7,todo
-G-5,G,Telemetry,ctx status CLI: budget + compactions + pins + savings + violations,par,1.5,G-3,2,-,todo
+G-5,G,Telemetry,strata status CLI: budget + compactions + pins + savings + violations,par,1.5,G-3,2,-,todo
 G-6,G,Telemetry,Pricing-table staleness warning (verifiedOn > 90d),par,1,G-2,1,-,todo
 G-7,G,Telemetry,Redaction of sensitive fields in all sinks,seq,1,I-1,1,G9,todo
 H-1,H,Output compress,TOON serializer + strict parser for arrays of objects,seq,2.5,A-5,1,G10,todo
@@ -82,7 +82,7 @@ I-1,I,Security,Secret redaction engine: patterns + entropy; block/placeholder,se
 I-2,I,Security,Artifact store ACL + path traversal defense,seq,1.5,-,1,-,todo
 I-3,I,Security,Redaction applied before gist + store writes,seq,1.5,"I-1,C-2",2,G9,todo
 I-4,I,Security,Locality guarantee: no network egress; documented + tested,par,1,G-1,1,-,todo
-I-5,I,Security,Data retention + GC policy + /ctx purge,par,1,C-2,2,-,todo
+I-5,I,Security,Data retention + GC policy + /strata purge,par,1,C-2,2,-,todo
 I-6,I,Security,Gist fields treated as untrusted input (no policy/permission escalation),par,1,C-1,2,-,todo
 I-7,I,Security,Meta-purge: purge the purge log (explicit; see R9),par,1,I-5,2,-,todo
 I-8,I,Security,Advisory: retain-worthy classes never silently deleted,seq,0.5,I-5,2,-,todo

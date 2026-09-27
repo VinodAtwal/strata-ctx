@@ -1,0 +1,8 @@
+#!/bin/sh
+# Repo pre-commit guard: never allow committing provider payloads or local state.
+set -e
+if git diff --cached --name-only | grep -qE "^(artifacts|secrets\.yaml|\.env)"; then
+  echo "BLOCKED: refusing to commit local state / secrets (see .gitignore)" >&2
+  exit 1
+fi
+exit 0

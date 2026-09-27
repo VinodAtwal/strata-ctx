@@ -1,4 +1,4 @@
-# context-gateway
+# strata-ctx
 
 > **A context firewall for coding agents.** Local proxy + SDK + MCP server that sits between a
 > coding agent and the model provider. It compresses context deterministically, replaces
@@ -13,7 +13,7 @@ Claude Code / Gemini CLI / Aider
         │  messages + stream
         ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  context-gateway  (local, 127.0.0.1)                        │
+│  strata-ctx  (local, 127.0.0.1)                        │
 │                                                             │
 │   Dedupe ──▶ Truncate ──▶ Triage ──▶ Pin ──▶ Compact ──▶    │
 │                                       Compress(opt) ──▶     │
@@ -100,8 +100,18 @@ npm run dev          # gateway on 127.0.0.1:8787 with mock upstream
 export ANTHROPIC_BASE_URL="http://127.0.0.1:8787"
 
 # measure it (the harness ships — run it on YOUR tasks)
-npm run eval -- --tasks ./my-tasks.yaml
+strata eval --tasks ./my-tasks.yaml
 ```
+
+## Naming
+
+| Thing | Name |
+|---|---|
+| Repo | `strata-ctx` |
+| npm scope | `@strata-ctx/*` |
+| CLI | `strata` |
+| Config file | `strata-ctx.yaml` |
+| Data dir | `~/.strata/` |
 
 ## License
 

@@ -80,7 +80,7 @@ purge-log behaviour meet your obligation? This needs an answer before v1, not af
 | ADR-10 | Non-inferiority margin pre-registered at −2pp | Accepted | Prevents post-hoc margin shopping | — |
 | ADR-11 | Compaction **off by default**, enabled per-project | **Proposed** | Fresh installs rot before they overflow; a first-run surprise is a bad first run. Propose: telemetry + Tier 0 + pinning on by default; auto-compaction requires explicit opt-in. | Usability testing |
 | ADR-12 | Copilot: MCP-only, no TLS interception in v1 | Accepted | Cannot meet the security claim there; don't imply otherwise | A legitimate, documented need appears |
-| ADR-13 | Ship the eval harness to users (`ctx eval`) | Accepted | Answers "how does it perform for *me*"; strongest defense against eval-transferability criticism | — |
+| ADR-13 | Ship the eval harness to users (`strata eval`) | Accepted | Answers "how does it perform for *me*"; strongest defense against eval-transferability criticism | — |
 | ADR-14 | Negative control as a release blocker | Accepted | A suite that passes in both arms proves nothing | Never |
 | ADR-15 | Three arms, not two (Control, Control+, Treatment) | Accepted | Proves the hazard is real *in our harness* and that our intervention removes it | — |
 | ADR-16 | Output transform at the tool/MCP boundary, not the response stream | Accepted | Streaming makes post-hoc response rewriting impossible | A non-streaming-only mode is acceptable to all target agents |
