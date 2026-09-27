@@ -1,0 +1,566 @@
+{
+  "package": "@strata-ctx/core-types",
+  "digest": "7d887c02d00ae02e7200e7c970e113ba80379820a7c2034177d396b0dac965b9",
+  "exports": [
+    {
+      "name": "ArtifactId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type ArtifactId = Brand<string, 'ArtifactId'>;"
+    },
+    {
+      "name": "ArtifactRef",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface ArtifactRef { readonly uri: string; readonly sha256: string; readonly bytes: number; readonly kind: 'raw_transcript' | 'tool_log' | 'file_snapshot' | 'patch' | 'other'; }"
+    },
+    {
+      "name": "BlockId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type BlockId = Brand<string, 'BlockId'>;"
+    },
+    {
+      "name": "BlockMeta",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface BlockMeta { readonly origin: Origin; readonly sha256: string; readonly subject?: BlockSubject; readonly tier: Tier; readonly bytes: number; readonly severity?: Severity; readonly cacheable: boolean; readonly supersededBy?: string; }"
+    },
+    {
+      "name": "BlockSubject",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface BlockSubject { readonly kind: SubjectKind; readonly ref: string; readonly version?: string; }"
+    },
+    {
+      "name": "BlockType",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type BlockType = | 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'image' | 'cache_control';"
+    },
+    {
+      "name": "BudgetPolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type BudgetPolicy = z.infer<typeof BudgetPolicySchema>;"
+    },
+    {
+      "name": "BudgetPolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "BudgetPolicySchema = z.object({ contextLimit: z.number().int().positive().default(200_000), maxOutputTokens: z.number().int().positive().default(8192), targetUtilization: z.number().gt(0).lt(1).default(0.7), })"
+    },
+    {
+      "name": "BudgetView",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface BudgetView { readonly contextLimit: number; readonly reserveOutput: number; readonly targetUtilization: number; readonly softLimit: number; readonly hardLimit: number; readonly triggerAt: number; }"
+    },
+    {
+      "name": "CacheTelemetry",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface CacheTelemetry { readonly prefixHit: boolean; readonly prefixInvalidated: boolean; }"
+    },
+    {
+      "name": "ConstraintId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type ConstraintId = Brand<string, 'ConstraintId'>;"
+    },
+    {
+      "name": "ConstraintKind",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type ConstraintKind = z.infer<typeof ConstraintKindSchema>;"
+    },
+    {
+      "name": "ConstraintKindSchema",
+      "kind": "VariableDeclaration",
+      "signature": "ConstraintKindSchema = z.enum([ 'hard_safety', 'soft_policy', 'user_preference', 'project_rule', ])"
+    },
+    {
+      "name": "ContentBlock",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface ContentBlock { readonly type: BlockType; readonly text?: string; readonly id?: string; readonly toolName?: string; readonly meta: BlockMeta; readonly cacheControl?: { readonly type: 'ephemeral' } | null; }"
+    },
+    {
+      "name": "ContextState",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface ContextState { readonly messages: readonly Message[]; readonly pinned: readonly string[]; readonly tokenEstimate: number; readonly policyHash: string; readonly runId: RunId; readonly turn: number; readonly taskId?: TaskId; readonly gists: readonly Gist[]; readonly artifacts: readonly ArtifactRef[]; }"
+    },
+    {
+      "name": "CostTelemetry",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface CostTelemetry { readonly r: number; readonly eps: number; readonly rho: number; readonly k: number; readonly breakevenOk: boolean; }"
+    },
+    {
+      "name": "DEFAULT_POLICY",
+      "kind": "VariableDeclaration",
+      "signature": "DEFAULT_POLICY: StrataPolicy = StrataPolicySchema.parse({ version: 1 })"
+    },
+    {
+      "name": "Enforcement",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type Enforcement = z.infer<typeof EnforcementSchema>;"
+    },
+    {
+      "name": "EnforcementSchema",
+      "kind": "VariableDeclaration",
+      "signature": "EnforcementSchema = z.enum(['block', 'rewrite', 'log'])"
+    },
+    {
+      "name": "Gist",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type Gist = z.infer<typeof GistSchema>;"
+    },
+    {
+      "name": "GistArtifact",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistArtifact = z.infer<typeof GistArtifactSchema>;"
+    },
+    {
+      "name": "GistArtifactSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistArtifactSchema = z.object({ uri: z.string().min(1), sha256: Sha256, bytes: z.number().int().nonnegative(), })"
+    },
+    {
+      "name": "GistChanged",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistChanged = z.infer<typeof GistChangedSchema>;"
+    },
+    {
+      "name": "GistChangedSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistChangedSchema = z.object({ path: z.string().min(1), what: z.string(), why: z.string(), sha: Sha256, })"
+    },
+    {
+      "name": "GistDecision",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistDecision = z.infer<typeof GistDecisionSchema>;"
+    },
+    {
+      "name": "GistDecisionSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistDecisionSchema = z.object({ id: z.string().min(1), choice: z.string().min(1), why: z.string(), alternatives_rejected: z.array(Line).default([]), })"
+    },
+    {
+      "name": "GistDefect",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistDefect = | { readonly kind: 'turn_range_inverted'; readonly range: [number, number] } | { readonly kind: 'errors_not_retained'; readonly missing: number } | { readonly kind: 'unresolved_dropped' } | { readonly kind: 'raw_not_recoverable' };"
+    },
+    {
+      "name": "GistId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistId = Brand<string, 'GistId'>;"
+    },
+    {
+      "name": "GistLog",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistLog = z.infer<typeof GistLogSchema>;"
+    },
+    {
+      "name": "GistLogSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistLogSchema = z.object({ ran: z.array(Line).default([]), failed: z.array(Line).default([]), salient_errors: z.array(Line).default([]), salient_warnings: z.array(Line).default([]), dropped_count: z.number().int().nonnegative().default(0), raw_uri: z.string().min(1), })"
+    },
+    {
+      "name": "GistNext",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistNext = z.infer<typeof GistNextSchema>;"
+    },
+    {
+      "name": "GistNextSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistNextSchema = z.object({ question: z.string(), next_command: z.string(), blockers: z.array(Line).default([]), })"
+    },
+    {
+      "name": "GistSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistSchema = z.object({ v: z.literal(1), task_id: z.string().min(1), status: GistStatusSchema, goal: z.string().min(1), changed: z.array(GistChangedSchema).default([]), current_values: z.record(z.string(), z.string()).default({}), decided: z.array(GistDecisionSchema).default([]), unresolved: z.array(Line).default([]), artifacts: z.array(GistArtifactSchema).default([]), next: GistNextSchema, log_gist: GistLogSchema, verification: GistVerificationSchema.default({ status: 'untested' }), constraints: z.array(Line), source_turn_range: z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]), raw_recoverable: z.literal(true), compressed_by: z.enum(['self-gist', 'local-model', 'none']), })"
+    },
+    {
+      "name": "GistStatus",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistStatus = z.infer<typeof GistStatusSchema>;"
+    },
+    {
+      "name": "GistStatusSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistStatusSchema = z.enum(['complete', 'partial', 'blocked', 'abandoned'])"
+    },
+    {
+      "name": "GistValidation",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface GistValidation { readonly ok: boolean; readonly gist?: Gist; readonly defects: readonly GistDefect[]; }"
+    },
+    {
+      "name": "GistVerification",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistVerification = z.infer<typeof GistVerificationSchema>;"
+    },
+    {
+      "name": "GistVerificationSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistVerificationSchema = z.object({ tests_run: z.array(Line).default([]), status: z.enum(['untested', 'passing', 'failing', 'inconclusive']), })"
+    },
+    {
+      "name": "GovernancePolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GovernancePolicy = z.infer<typeof GovernancePolicySchema>;"
+    },
+    {
+      "name": "GovernancePolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "GovernancePolicySchema = z.object({ pinning: z.enum(['required', 'off']).default('required'), autoPin: z.enum(['on', 'off']).default('on'), canaryIntervalTurns: z.number().int().positive().default(20), })"
+    },
+    {
+      "name": "HeldBlock",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface HeldBlock { readonly block: ContentBlock; readonly reason: HeldReason; }"
+    },
+    {
+      "name": "HeldReason",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type HeldReason = 'governance';"
+    },
+    {
+      "name": "LOSSY_CONTEXT",
+      "kind": "VariableDeclaration",
+      "signature": "LOSSY_CONTEXT: unique symbol = Symbol('strata.LossyContext')"
+    },
+    {
+      "name": "LossyContext",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface LossyContext { readonly [LOSSY_CONTEXT]: true; readonly runId: RunId; readonly turn: number; readonly taskId: TaskId | undefined; readonly messages: readonly NonGovernanceMessage[]; readonly gists: readonly Gist[]; readonly artifacts: readonly ArtifactRef[]; readonly policy: StrataPolicy; readonly held: readonly HeldBlock[]; readonly tokenEstimate: number; }"
+    },
+    {
+      "name": "LossyStage",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface LossyStage { readonly name: LossyStageName; run(ctx: LossyContext): LossyContext; }"
+    },
+    {
+      "name": "LossyStageName",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type LossyStageName = 'dedupe' | 'truncate' | 'triage' | 'compact' | 'compress';"
+    },
+    {
+      "name": "Message",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface Message { readonly role: Role; readonly content: readonly ContentBlock[]; readonly ts: number; }"
+    },
+    {
+      "name": "NonGovernanceBlock",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type NonGovernanceBlock = Omit<ContentBlock, 'meta'> & { readonly meta: Omit<BlockMeta, 'tier'> & { readonly tier: NonGovernanceTier }; };"
+    },
+    {
+      "name": "NonGovernanceMessage",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type NonGovernanceMessage = Omit<Message, 'content'> & { readonly content: readonly NonGovernanceBlock[]; };"
+    },
+    {
+      "name": "NonGovernanceTier",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type NonGovernanceTier = Exclude<Tier, 'governance'>;"
+    },
+    {
+      "name": "Origin",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type Origin = 'system' | 'user' | 'assistant' | 'tool' | 'synthetic';"
+    },
+    {
+      "name": "PinApplication",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface PinApplication { readonly state: ContextState; readonly expected: readonly string[]; readonly missingBefore: readonly string[]; }"
+    },
+    {
+      "name": "PinDefect",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type PinDefect = 'missing' | 'extra' | 'reordered';"
+    },
+    {
+      "name": "PinIntegrity",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface PinIntegrity { readonly ok: boolean; readonly defects: readonly { readonly kind: PinDefect; readonly text: string }[]; readonly policyHash: string; }"
+    },
+    {
+      "name": "PinnedConstraint",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type PinnedConstraint = z.infer<typeof PinnedConstraintSchema>;"
+    },
+    {
+      "name": "PinnedConstraintSchema",
+      "kind": "VariableDeclaration",
+      "signature": "PinnedConstraintSchema = z .object({ id: z.string().min(1), text: z.string().trim().min(1, 'an empty constraint can never be enforced or detected as missing'), sha256: z.string().regex(/^[0-9a-f]{64}$/, 'expected a 64-char lowercase hex digest'), source: z.enum(['org_policy', 'project', 'user', 'detected']), kind: ConstraintKindSchema, enforcement: EnforcementSchema, }) .strict()"
+    },
+    {
+      "name": "PipelinePolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type PipelinePolicy = z.infer<typeof PipelinePolicySchema>;"
+    },
+    {
+      "name": "PipelinePolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "PipelinePolicySchema = z.object({ stages: z .array(StageNameSchema) .default(['dedupe', 'truncate', 'triage', 'pin', 'compact', 'compress', 'serialize']), compaction: z.enum(['off', 'manual', 'auto']).default('off'), trigger: TriggerPolicySchema.default({}), tokenCompression: z.enum(['off', 'local']).default('off'), tierByteCaps: z .record(z.string(), z.number().int().positive()) .default({ tool_state: 20_000, episodic: 40_000, artifact_ref: 8_000, user_intent: 60_000 }), })"
+    },
+    {
+      "name": "ProbeId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type ProbeId = Brand<string, 'ProbeId'>;"
+    },
+    {
+      "name": "RedactionPolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type RedactionPolicy = z.infer<typeof RedactionPolicySchema>;"
+    },
+    {
+      "name": "RedactionPolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "RedactionPolicySchema = z.object({ mode: z.enum(['off', 'log', 'block']).default('log'), onFail: z.enum(['forward', 'block']).default('forward'), })"
+    },
+    {
+      "name": "RetentionPolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type RetentionPolicy = z.infer<typeof RetentionPolicySchema>;"
+    },
+    {
+      "name": "RetentionPolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "RetentionPolicySchema = z.object({ rawTranscriptDays: z.number().int().positive().default(7), artifactDays: z.number().int().positive().default(30), keepPurgeLog: z.literal(true).default(true), })"
+    },
+    {
+      "name": "Role",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type Role = 'system' | 'user' | 'assistant' | 'tool';"
+    },
+    {
+      "name": "RunId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type RunId = Brand<string, 'RunId'>;"
+    },
+    {
+      "name": "SerializationPolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type SerializationPolicy = z.infer<typeof SerializationPolicySchema>;"
+    },
+    {
+      "name": "SerializationPolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "SerializationPolicySchema = z.object({ machineFormat: z.enum(['passthrough', 'toon', 'csv']).default('passthrough'), verbosity: z.enum(['off', 'directive']).default('off'), })"
+    },
+    {
+      "name": "Severity",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type Severity = 'debug' | 'info' | 'warn' | 'error' | 'fatal';"
+    },
+    {
+      "name": "StageName",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type StageName = z.infer<typeof StageNameSchema>;"
+    },
+    {
+      "name": "StageNameSchema",
+      "kind": "VariableDeclaration",
+      "signature": "StageNameSchema = z.enum([ 'dedupe', 'truncate', 'triage', 'pin', 'compact', 'compress', 'serialize', ])"
+    },
+    {
+      "name": "StageTelemetry",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface StageTelemetry { readonly stage: StageName; readonly bytesIn: number; readonly bytesOut: number; readonly blocksIn: number; readonly blocksOut: number; readonly durationMs: number; readonly changed: boolean; }"
+    },
+    {
+      "name": "StrataPolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type StrataPolicy = z.infer<typeof StrataPolicySchema>;"
+    },
+    {
+      "name": "StrataPolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "StrataPolicySchema = z .object({ version: z.literal(1), redaction: RedactionPolicySchema.default({}), retention: RetentionPolicySchema.default({}), governance: GovernancePolicySchema.default({}), pipeline: PipelinePolicySchema.default({}), serialization: SerializationPolicySchema.default({}), budgets: BudgetPolicySchema.default({}), constraints: z.array(PinnedConstraintSchema).default([]), }) .strict()"
+    },
+    {
+      "name": "SubjectKind",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type SubjectKind = 'file' | 'command' | 'search' | 'web' | 'other';"
+    },
+    {
+      "name": "TaskId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type TaskId = Brand<string, 'TaskId'>;"
+    },
+    {
+      "name": "TelemetryEvent",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type TelemetryEvent = | { readonly type: 'request_in'; readonly runId: string; readonly turn: number; readonly inputTokens: number; readonly messages: number; } | { readonly type: 'stage'; readonly runId: string } & StageTelemetry | { readonly type: 'pin'; readonly runId: string; readonly missingBefore: number; readonly constraints: number; } | { readonly type: 'compaction'; readonly runId: string; readonly trigger: string; readonly beforeTokens: number; readonly afterTokens: number; readonly droppedCount: number; readonly compressionBy: 'self-gist' | 'local-model' | 'none'; readonly validationPassed: boolean; } | { readonly type: 'canary'; readonly probeId: string; readonly kind: 'rot' | 'constraint'; readonly arm: 'control' | 'control+' | 'treatment'; readonly score: number; readonly passed: boolean; } | { readonly type: 'violation'; readonly runId: string; readonly kind: 'pin_missing_pre_apply' | 'pin_post_compact_missing' | 'canary_fail'; readonly constraintIds: readonly string[]; readonly blocked: boolean; } | { readonly type: 'cache'; readonly runId: string } & CacheTelemetry | { readonly type: 'cost'; readonly runId: string } & CostTelemetry | { readonly type: 'error'; readonly runId: string; readonly stage: StageName; readonly code: string; readonly message: string; readonly failedOpen: boolean; };"
+    },
+    {
+      "name": "Tier",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type Tier = 'governance' | 'episodic' | 'tool_state' | 'artifact_ref' | 'user_intent';"
+    },
+    {
+      "name": "TotalStage",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface TotalStage { readonly name: TotalStageName; run(state: ContextState): ContextState; }"
+    },
+    {
+      "name": "TotalStageName",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type TotalStageName = 'pin' | 'serialize';"
+    },
+    {
+      "name": "TriggerPolicy",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type TriggerPolicy = z.infer<typeof TriggerPolicySchema>;"
+    },
+    {
+      "name": "TriggerPolicySchema",
+      "kind": "VariableDeclaration",
+      "signature": "TriggerPolicySchema = z.object({ strategy: z.enum(['sawtooth', 'monotonic']).default('sawtooth'), softTriggerFrac: z.number().gt(0).lt(1).default(0.85), hardTriggerFrac: z.number().gt(0).lt(1).default(0.95), keepRecentTokens: z.number().int().positive().default(8192), reserveTokens: z.number().int().positive().default(8192), userMessageTailTokens: z.number().int().positive().default(20_000), taskBoundarySignals: z .array(z.string().min(1)) .default(['result_extracted', 'decision_superseded', 'before_large_read']), })"
+    },
+    {
+      "name": "TurnId",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type TurnId = Brand<string, 'TurnId'>;"
+    },
+    {
+      "name": "applyPins",
+      "kind": "FunctionDeclaration",
+      "signature": "export function applyPins(state: ContextState, policy: StrataPolicy): PinApplication { const expected = Object.freeze(pinSetText(policy)); const present = new Set(state.pinned); const missingBefore = Object.freeze(expected.filter((c) => !present.has(c))); return { state: { ...state, pinned: expected }, expected, missingBefore }; }"
+    },
+    {
+      "name": "artifactId",
+      "kind": "VariableDeclaration",
+      "signature": "artifactId = (v: string): ArtifactId => v as ArtifactId"
+    },
+    {
+      "name": "assertNoGovernance",
+      "kind": "FunctionDeclaration",
+      "signature": "export function assertNoGovernance(messages: readonly Message[]): void { for (const msg of messages) { for (const block of msg.content) { if (isGovernance(block)) { throw new Error( `governance block reached a lossy stage (sha256=${block.meta.sha256.slice(0, 12)})`, ); } } } }"
+    },
+    {
+      "name": "assertPrefixPreserved",
+      "kind": "FunctionDeclaration",
+      "signature": "export function assertPrefixPreserved( before: readonly Message[], after: readonly Message[], ): void { const cacheableOrder = (ms: readonly Message[]): string[] => ms .flatMap((m) => m.content) .filter((b) => b.meta.cacheable) .map((b) => b.meta.sha256); const was = cacheableOrder(before); const now = cacheableOrder(after); const stillPresent = was.filter((h) => now.includes(h)); const iWas = stillPresent.map((h) => was.indexOf(h)); const iNow = stillPresent.map((h) => now.indexOf(h)); const ordered = iWas.every((v, i) => v === iNow[i]); if (!ordered) { throw new Error('stage reordered blocks inside the cached prefix'); } }"
+    },
+    {
+      "name": "blockBytes",
+      "kind": "FunctionDeclaration",
+      "signature": "export function blockBytes(b: ContentBlock): number { return b.meta.bytes; }"
+    },
+    {
+      "name": "blockId",
+      "kind": "VariableDeclaration",
+      "signature": "blockId = (v: string): BlockId => v as BlockId"
+    },
+    {
+      "name": "breakevenOk",
+      "kind": "FunctionDeclaration",
+      "signature": "export function breakevenOk(r: number, eps: number, rho: number, k: number): boolean { if (k <= 0) return true; return eps < 1 + (1 - r) / (rho * k); }"
+    },
+    {
+      "name": "budgetView",
+      "kind": "FunctionDeclaration",
+      "signature": "export function budgetView( contextLimit: number, reserveOutput: number, targetUtilization: number, softTriggerFrac: number, hardTriggerFrac: number, ): BudgetView { const usable = Math.max(1, contextLimit - reserveOutput); return { contextLimit, reserveOutput, targetUtilization, softLimit: Math.floor(usable * targetUtilization), hardLimit: Math.floor(usable * hardTriggerFrac), triggerAt: Math.floor(usable * softTriggerFrac), }; }"
+    },
+    {
+      "name": "canonicalJson",
+      "kind": "FunctionDeclaration",
+      "signature": "export function canonicalJson(value: unknown): string { if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'; if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`; const entries = Object.entries(value as Record<string, unknown>) .filter(([, v]) => v !== undefined) .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)); return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`; }"
+    },
+    {
+      "name": "constraintId",
+      "kind": "VariableDeclaration",
+      "signature": "constraintId = (v: string): ConstraintId => v as ConstraintId"
+    },
+    {
+      "name": "costTelemetry",
+      "kind": "FunctionDeclaration",
+      "signature": "export function costTelemetry(r: number, eps: number, rho: number, k: number): CostTelemetry { return { r, eps, rho, k, breakevenOk: breakevenOk(r, eps, rho, k) }; }"
+    },
+    {
+      "name": "estimateBlockTokens",
+      "kind": "FunctionDeclaration",
+      "signature": "export function estimateBlockTokens(b: ContentBlock): number { const text = b.text ?? ''; return Math.ceil(text.length / BYTES_PER_TOKEN) + PER_BLOCK_OVERHEAD_TOKENS; }"
+    },
+    {
+      "name": "estimateMessageTokens",
+      "kind": "FunctionDeclaration",
+      "signature": "export function estimateMessageTokens(m: Message): number { const blocks = m.content.reduce((n, b) => n + estimateBlockTokens(b), 0); return blocks + PER_BLOCK_OVERHEAD_TOKENS; }"
+    },
+    {
+      "name": "estimateTokens",
+      "kind": "FunctionDeclaration",
+      "signature": "export function estimateTokens(state: ContextState): number { return state.messages.reduce((n, m) => n + estimateMessageTokens(m), 0); }"
+    },
+    {
+      "name": "gistId",
+      "kind": "VariableDeclaration",
+      "signature": "gistId = (v: string): GistId => v as GistId"
+    },
+    {
+      "name": "hashCanonical",
+      "kind": "VariableDeclaration",
+      "signature": "hashCanonical = (value: unknown): string => sha256(canonicalJson(value))"
+    },
+    {
+      "name": "isCacheable",
+      "kind": "VariableDeclaration",
+      "signature": "isCacheable = (b: ContentBlock): boolean => b.meta.cacheable"
+    },
+    {
+      "name": "isHighSeverity",
+      "kind": "VariableDeclaration",
+      "signature": "isHighSeverity = (b: ContentBlock): boolean => b.meta.severity === 'error' || b.meta.severity === 'fatal'"
+    },
+    {
+      "name": "isLossyContext",
+      "kind": "FunctionDeclaration",
+      "signature": "export function isLossyContext(v: unknown): v is LossyContext { return typeof v === 'object' && v !== null && LOSSY_CONTEXT in v; }"
+    },
+    {
+      "name": "nonEmpty",
+      "kind": "VariableDeclaration",
+      "signature": "nonEmpty = <T>(make: (v: string) => T) => (v: string): T => { if (v.trim() === '') throw new Error('identifier must not be empty'); return make(v); }"
+    },
+    {
+      "name": "partitionForLossy",
+      "kind": "FunctionDeclaration",
+      "signature": "export function partitionForLossy(state: ContextState, policy: StrataPolicy): LossyContext { const held: HeldBlock[] = []; const messages: NonGovernanceMessage[] = []; for (const msg of state.messages) { const blocks: NonGovernanceBlock[] = []; let sawGovernance = false; for (const block of msg.content) { if (isGovernance(block)) { held.push({ block, reason: 'governance' }); sawGovernance = true; continue; } blocks.push(block as NonGovernanceBlock); } if (sawGovernance && blocks.length === 0) continue; messages.push({ ...msg, content: blocks }); } return { [LOSSY_CONTEXT]: true, runId: state.runId, turn: state.turn, taskId: state.taskId, messages, gists: state.gists, artifacts: state.artifacts, policy, held, tokenEstimate: state.tokenEstimate, }; }"
+    },
+    {
+      "name": "pinSetText",
+      "kind": "FunctionDeclaration",
+      "signature": "export function pinSetText(policy: StrataPolicy): string[] { return [...policy.constraints] .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) .map((c) => c.text); }"
+    },
+    {
+      "name": "probeId",
+      "kind": "VariableDeclaration",
+      "signature": "probeId = (v: string): ProbeId => v as ProbeId"
+    },
+    {
+      "name": "restoreHeld",
+      "kind": "FunctionDeclaration",
+      "signature": "export function restoreHeld(ctx: LossyContext, state: ContextState): ContextState { const prefix = ctx.held.filter((h) => h.reason === 'governance').map((h) => h.block); if (prefix.length === 0) return state; const [first, ...rest] = state.messages; if (first === undefined) { return { ...state, messages: [{ role: 'system', content: prefix, ts: 0 }], }; } return { ...state, messages: [{ ...first, content: [...prefix, ...first.content] }, ...rest], }; }"
+    },
+    {
+      "name": "runId",
+      "kind": "VariableDeclaration",
+      "signature": "runId = (v: string): RunId => v as RunId"
+    },
+    {
+      "name": "sha256",
+      "kind": "VariableDeclaration",
+      "signature": "sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex')"
+    },
+    {
+      "name": "taskId",
+      "kind": "VariableDeclaration",
+      "signature": "taskId = (v: string): TaskId => v as TaskId"
+    },
+    {
+      "name": "turnId",
+      "kind": "VariableDeclaration",
+      "signature": "turnId = (v: string): TurnId => v as TurnId"
+    },
+    {
+      "name": "validateGist",
+      "kind": "FunctionDeclaration",
+      "signature": "export function validateGist(input: unknown, expectedErrorCount?: number): GistValidation { const parsed = GistSchema.safeParse(input); if (!parsed.success) return { ok: false, defects: [] }; const g = parsed.data; const defects: GistDefect[] = []; const [from, to] = g.source_turn_range; if (to < from) defects.push({ kind: 'turn_range_inverted', range: g.source_turn_range }); if ( expectedErrorCount !== undefined && g.log_gist.salient_errors.length < expectedErrorCount ) { defects.push({ kind: 'errors_not_retained', missing: expectedErrorCount - g.log_gist.salient_errors.length, }); } if (g.raw_recoverable !== true) defects.push({ kind: 'raw_not_recoverable' }); return defects.length === 0 ? { ok: true, gist: g, defects: [] } : { ok: false, defects }; }"
+    },
+    {
+      "name": "verifyPinIntegrity",
+      "kind": "FunctionDeclaration",
+      "signature": "export function verifyPinIntegrity(expected: readonly string[], actual: readonly string[]): PinIntegrity { const defects: { kind: PinDefect; text: string }[] = []; const exp = [...expected]; const act = [...actual]; for (const text of exp) if (!act.includes(text)) defects.push({ kind: 'missing', text }); for (const text of act) if (!exp.includes(text)) defects.push({ kind: 'extra', text }); const sameMembers = defects.length === 0 && exp.length === act.length && exp.every((t, i) => act[i] === t); if (!sameMembers && defects.length === 0) { for (let i = 0; i < Math.max(exp.length, act.length); i += 1) { if (exp[i] !== act[i]) defects.push({ kind: 'reordered', text: act[i] ?? exp[i] ?? '' }); } } return { ok: defects.length === 0, defects, policyHash: sha256(expected.join('\\n')), }; }"
+    }
+  ]
+}

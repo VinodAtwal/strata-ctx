@@ -1,37 +1,35 @@
-# deps
-node_modules/
-.pnpm-store/
 
-# build
-dist/
-*.tsbuildinfo
-.tsbuild/
-
-# test / eval output
-coverage/
-.ctx/
-.eval/
-*.eval.jsonl
-fixtures/recorded/*.body          # large provider payloads, see J-4
-!fixtures/recorded/.gitkeep
-
-# local state — NEVER commit: raw transcripts, artifacts, gists, telemetry
-artifacts/
-gists/
-telemetry/
-*.jsonl
-
-# secrets
-.env
-.env.*
 !.env.example
-*.pem
-*.key
-secrets.yaml
-
-# editor / os
-.DS_Store
-.idea/
-.vscode/*
 !.vscode/extensions.json
 !.vscode/settings.example.json
+!fixtures/recorded/.gitkeep
+.ctx/
+.DS_Store
+.env
+.env.*
+.eval/
+.idea/
+.pnpm-store/
+.tsbuild/
+.vscode/*
+*.eval.jsonl
+*.jsonl
+*.key
+*.pem
+*.tsbuildinfo
+# build
+# build metadata
+# deps
+# editor / os
+# local state — NEVER commit: raw transcripts, artifacts, gists, telemetry
+# secrets
+# test / eval output
+artifacts/
+coverage/
+dist/
+fixtures/recorded/*.body          # large provider payloads, see J-4
+gists/
+node_modules/
+packages/*/.eslintcache
+secrets.yaml
+telemetry/

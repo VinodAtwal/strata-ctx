@@ -1,0 +1,19 @@
+{
+  "//": "Typechecks everything tsc --build does not: tests, tools, scripts. No emit.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "incremental": false,
+    "declaration": false,
+    "declarationMap": false,
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": [
+    "packages/**/*.ts",
+    "tools/**/*.ts",
+    "scripts/**/*.mjs",
+    "eslint.config.mjs"
+  ]
+}

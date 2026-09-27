@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.19'
+
+jobs:
+  # Lane 1. Fastest possible signal. If this is red nothing else matters, so it
+  # runs first and never depends on anything else.
+  typecheck:
+    name: typecheck + lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - run: npm run test
+
+  # Lane 3. The M0 gate. Every stream compiles against core-types, so an
+  # unreviewed signature change here invalidates work in flight across the repo.
+  contract:
+    name: contract freeze
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Check @strata-ctx/core-types surface
+        run: npm run contract:check
+      - name: Surface diff (attached on failure)
+        if: failure()
+        run: node -e "const d=require('./packages/core-types/contract.lock.json');console.log('locked digest',d.digest)"
+
+  # Proof the suite fails when it should. A gate that cannot fail is not a gate.
+  selfcheck:
+    name: contract check detects drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Mutate the surface, expect a non-zero exit
+        run: |
+          set -euo pipefail
+          cp packages/core-types/src/tokens.ts /tmp/tokens.bak
+          printf '\nexport const driftedOnPurpose = 1;\n' >> packages/core-types/src/tokens.ts
+          if npm run contract:check; then
+            echo "::error::contract check passed despite a surface change"
+            exit 1
+          fi
+          cp /tmp/tokens.bak packages/core-types/src/tokens.ts
+      - name: Surface is clean again after revert
+        run: npm run contract:check

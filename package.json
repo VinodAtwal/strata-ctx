@@ -1,0 +1,34 @@
+{
+  "name": "strata-ctx",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A local context firewall for coding agents: deterministic context compression, gist-based compaction, and governance pinning so compaction can never erase safety constraints.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build && tsc -p tsconfig.check.json",
+    "clean": "tsc --build --clean",
+    "lint": "eslint .",
+    "test": "node --import tsx --test packages/*/test/*.test.ts",
+    "check": "npm run typecheck && npm run lint && npm run test && npm run contract:check",
+    "contract:check": "node scripts/check-contract.mjs",
+    "dev": "node --import tsx tools/dev.ts",
+    "contract:update": "node scripts/check-contract.mjs --update"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.17.0",
+    "@types/node": "^20.14.0",
+    "eslint": "9.17.0",
+    "globals": "^15.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "8.19.0"
+  }
+}
