@@ -1,0 +1,95 @@
+id,stream,stream_name,title,exec,est_ed,deps,wave,gate,status
+A-1,A,Core gateway,Monorepo scaffold + strict tsconfig + build/test/lint,seq,1,-,0,-,todo
+A-2,A,Core gateway,core-types: canonical message model (Message/ContentBlock/BlockMeta/ContextState),seq,2,A-1,0,-,todo
+A-3,A,Core gateway,core-types: policy + telemetry + pipeline interfaces,seq,2,A-2,0,-,todo
+A-4,A,Core gateway,core-types: gist schema types + Zod validators,par,2,A-2,0,-,todo
+A-5,A,Core gateway,CONTRACT FREEZE - publish and semver-lock core-types@1.0.0,seq,0.5,"A-3,A-4",0,M0,todo
+A-6,A,Core gateway,Provider-aware token estimator + mock,par,1.5,A-5,1,-,todo
+A-7,A,Core gateway,HTTP reverse proxy server + routing + graceful shutdown + health,seq,2,A-5,1,-,todo
+A-8,A,Core gateway,Ingress+egress adapter: anthropic,seq,2,A-7,1,-,todo
+A-9,A,Core gateway,Ingress+egress adapter: openai-compat,par,1.5,A-7,1,-,todo
+A-10,A,Core gateway,Ingress+egress adapter: gemini,par,1.5,A-7,1,-,todo
+A-11,A,Core gateway,Adapter: mock (deterministic fixture replay),par,1,A-7,0,-,todo
+A-12,A,Core gateway,SSE passthrough + self-gist ring-buffer tail,seq,2,A-8,2,-,todo
+A-13,A,Core gateway,Cache-prefix awareness for all transforms,par,1.5,A-8,1,G12,todo
+A-14,A,Core gateway,Pipeline runner: ordered + per-stage error isolation (fail-open),seq,1,"A-3,A-12",2,-,todo
+A-15,A,Core gateway,Credential handling passthrough/env/keyring; never log auth headers,par,1,A-7,1,-,todo
+A-16,A,Core gateway,Config loader + validation + hot reload,par,1,A-5,1,-,todo
+B-1,B,Context pipeline,Dedupe by (subject.ref version); drop superseded,par,2,A-5,1,-,todo
+B-2,B,Context pipeline,Truncate tool results: cap + head/tail + all severity>=error,par,2,A-5,1,-,todo
+B-3,B,Context pipeline,Pointer-ize oversized file reads to artifact:// + sha256,par,2,"A-5,I-2",2,-,todo
+B-4,B,Context pipeline,Severity classification of command output,par,1.5,B-2,1,-,todo
+B-5,B,Context pipeline,Triage router by meta.tier,seq,1.5,A-5,1,-,todo
+B-6,B,Context pipeline,User-intent tagging + recency tail windowing,par,1,A-5,1,-,todo
+B-7,B,Context pipeline,Trigger policy: sawtooth signals + size backstop,seq,2,B-6,2,-,todo
+B-8,B,Context pipeline,Self-gist plumbing: directive + stream sentinel parse + GistDraft,par,2.5,A-12,2,-,todo
+B-9,B,Context pipeline,Local-model narration adapter (Ollama) - Tier 3 opt-in,ext,1.5,B-8,2,-,todo
+C-1,C,Gist engine,Gist assembly: deterministic fields + narrative fields,seq,2,"A-4,B-8",2,-,todo
+C-2,C,Gist engine,Artifact store: content-addressed + fsync-before-evict + GC,seq,2.5,A-7,2,-,todo
+C-3,C,Gist engine,THE TRANSACTION flush>write>gist>validate>commit>repin>evict>log,seq,3,"C-1,C-2,D-4",2,-,todo
+C-4,C,Gist engine,Memory tiers + promotion/demotion,par,2,C-2,2,-,todo
+C-5,C,Gist engine,Reversibility: ctx_get_task re-injection by source_turn_range,par,1.5,C-2,2,G4,todo
+C-6,C,Gist engine,Offline consolidation (dreaming) job,par,1.5,C-4,2,-,todo
+C-7,C,Gist engine,ctx_status / GistSchemaViewer human output,par,1,C-1,2,-,todo
+D-1,D,Governance,PinnedBuffer: immutable + apply() replace-dont-merge,seq,1.5,A-5,1,G2,todo
+D-2,D,Governance,recordViolation(pin_missing_pre_apply) -> P0 event,par,0.5,D-1,1,-,todo
+D-3,D,Governance,Policy store: YAML + versioning + per-project overrides + hash,seq,1.5,A-16,1,-,todo
+D-4,D,Governance,Byte-equality validator: gist constraints vs pinned set,par,1,"D-1,A-4",2,G2,todo
+D-5,D,Governance,Post-compaction re-assertion,par,0.5,D-1,2,-,todo
+D-6,D,Governance,Constraint-retention canary probe (soft policies mandatory),seq,2.5,"D-1,F1-2",1,G2,todo
+D-7,D,Governance,Volume-Attack alert: anomalous compaction frequency,par,1,A-6,1,-,todo
+D-8,D,Governance,Type guard: governance unrepresentable on lossy stages,seq,1,"A-5,B-5",2,-,todo
+D-9,D,Governance,Governance property-based test suite (cross-stream),par,2,"B-5,C-3",2,-,todo
+D-10,D,Governance,Threat model doc: eviction/volume/summarizer-injection/gist-injection,par,1,-,1,-,todo
+E-1,E,Integrations,MCP server: ctx_search/get_task/get_artifact/note/status/remember,seq,3,A-7,2,-,todo
+E-2,E,Integrations,Claude Code hooks: settings scaffold + PostToolUse result rewriting,seq,3,"B-2,B-3",2,-,todo
+E-3,E,Integrations,Claude Code: PreCompact observer + UserPromptSubmit + Session hooks,par,1.5,E-2,2,G2,todo
+E-4,E,Integrations,CLAUDE.md / output-protocol template incl self-gist block,par,1,B-8,2,-,todo
+E-5,E,Integrations,Gemini adapter via shared parameterized hook builder,par,2,E-2,2,-,todo
+E-6,E,Integrations,Aider / Cline / Roo profiles + launch recipes,par,1.5,A-9,2,-,todo
+E-7,E,Integrations,Copilot MCP-only path + no-governance-guarantee labelling,ext,1.5,E-1,2,-,todo
+E-8,E,Integrations,surface-check CI job: detect hook-schema drift,par,1.5,E-2,2,-,todo
+F1-1,F,Evals,Harness skeleton: fixture format + runner + reporter + mock only,seq,2,A-11,0,M0,todo
+F1-2,F,Evals,Grading primitives: deterministic tool-call grading + rubric judge,seq,2,F1-1,1,-,todo
+F1-3,F,Evals,Statistics: McNemar exact + paired bootstrap + non-inferiority + BH,seq,2.5,F1-2,1,-,todo
+F1-4,F,Evals,Corpus curation: 3 repos + real issue tasks + licensing check,par,3,F1-1,1,-,todo
+F1-5,F,Evals,Suite E1 constraint retention (ConstraintRot port) + NEGATIVE CONTROL,par,2.5,"F1-2,D-6",1,"G1,G2",todo
+F1-6,F,Evals,Suite E2 context rot probe (slope-based + NIAH control),par,1.5,F1-2,1,G5,todo
+F1-7,F,Evals,Suite E3 output format: accuracy + diversity + lossless round-trip,par,1.5,"F1-2,H-1",1,G10,todo
+F1-8,F,Evals,Suite E4 coding tasks A/B (incl refinement category + self-gist arm),par,2,F1-4,1,"G3,G4",todo
+F1-9,F,Evals,Suite E5 cost/latency/breakeven (gross + NET),par,1.5,"A-6,H-5",1,"G7,G8",todo
+F1-10,F,Evals,Suite E6 secret redaction (recall + false-positive rate),par,1,"F1-2,I-1",1,G9,todo
+F1-11,F,Evals,Canary probes: rot + constraint + scheduler,par,1.5,"D-6,F1-6",1,-,todo
+F2-1,F,Evals,Live A/B runner: two instances matched interleaved temp=0,seq,2,"A-7,E-6",3,-,todo
+F2-2,F,Evals,Report generator + auto claims-audit with per-claim confidence,seq,1.5,"F2-1,F1-3",3,-,todo
+F2-3,F,Evals,Full campaign on 3 agents + gate evaluation,par,2,F2-1,3,M3,todo
+G-1,G,Telemetry,Event schema + JSONL sink local-only,seq,1.5,A-5,1,-,todo
+G-2,G,Telemetry,Token/cost engine: pricing table + r + eps + rho + k,seq,2,A-6,1,-,todo
+G-3,G,Telemetry,Compaction + gist event emission,par,1,C-3,2,-,todo
+G-4,G,Telemetry,Savings accounting: gross vs NET after gist+probe cost,par,1.5,G-2,1,G7,todo
+G-5,G,Telemetry,ctx status CLI: budget + compactions + pins + savings + violations,par,1.5,G-3,2,-,todo
+G-6,G,Telemetry,Pricing-table staleness warning (verifiedOn > 90d),par,1,G-2,1,-,todo
+G-7,G,Telemetry,Redaction of sensitive fields in all sinks,seq,1,I-1,1,G9,todo
+H-1,H,Output compress,TOON serializer + strict parser for arrays of objects,seq,2.5,A-5,1,G10,todo
+H-2,H,Output compress,TRON variant + selector,par,1.5,H-1,1,-,todo
+H-3,H,Output compress,Machine-block classifier (never TOON reasoning prose),seq,1,H-1,1,-,todo
+H-4,H,Output compress,Output directives: no-preamble + terse + file-not-paste,par,1,A-5,1,-,todo
+H-5,H,Output compress,eps measurement + breakeven verdict,par,1,"A-6,H-4",1,G7,todo
+H-6,H,Output compress,Reference-instead-of-inline policy for oversized responses,par,1,B-3,1,-,todo
+H-7,H,Output compress,Bounded repair path for first-rollout format errors,par,1,H-1,1,-,todo
+H-8,H,Output compress,Per-model support registry; unknown model => JSON,par,1,H-1,1,-,todo
+I-1,I,Security,Secret redaction engine: patterns + entropy; block/placeholder,seq,2.5,-,1,G9,todo
+I-2,I,Security,Artifact store ACL + path traversal defense,seq,1.5,-,1,-,todo
+I-3,I,Security,Redaction applied before gist + store writes,seq,1.5,"I-1,C-2",2,G9,todo
+I-4,I,Security,Locality guarantee: no network egress; documented + tested,par,1,G-1,1,-,todo
+I-5,I,Security,Data retention + GC policy + /ctx purge,par,1,C-2,2,-,todo
+I-6,I,Security,Gist fields treated as untrusted input (no policy/permission escalation),par,1,C-1,2,-,todo
+I-7,I,Security,Meta-purge: purge the purge log (explicit; see R9),par,1,I-5,2,-,todo
+I-8,I,Security,Advisory: retain-worthy classes never silently deleted,seq,0.5,I-5,2,-,todo
+J-1,J,Dev infra,Monorepo + strict tsconfig + workspace scripts,seq,1.5,-,0,-,todo
+J-2,J,Dev infra,CI lanes: unit/contract/integration/e2e + concurrency,seq,1.5,J-1,0,M0,todo
+J-3,J,Dev infra,core-types contract-diff check fails CI on post-freeze change,seq,1,A-5,0,M0,todo
+J-4,J,Dev infra,Fixtures + snapshot tooling; provider record/replay,par,1.5,J-1,0,-,todo
+J-5,J,Dev infra,Release pipeline: versioned packages + changelog + migration notes,par,1,J-1,1,-,todo
+J-6,J,Dev infra,surface-check weekly scheduler,par,0.5,E-8,2,-,todo
+J-7,J,Dev infra,Local dev loop: compose for gateway + ollama; fixture-seeded,par,1,J-1,0,-,todo
