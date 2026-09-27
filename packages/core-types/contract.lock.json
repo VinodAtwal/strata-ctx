@@ -1,6 +1,6 @@
 {
   "package": "@strata-ctx/core-types",
-  "digest": "7d887c02d00ae02e7200e7c970e113ba80379820a7c2034177d396b0dac965b9",
+  "digest": "0a3c0fea6360e6d968bdf662626d791d299bb7e2dc5bc3cb29acd11b9997c591",
   "exports": [
     {
       "name": "ArtifactId",
@@ -260,7 +260,7 @@
     {
       "name": "PinApplication",
       "kind": "InterfaceDeclaration",
-      "signature": "export interface PinApplication { readonly state: ContextState; readonly expected: readonly string[]; readonly missingBefore: readonly string[]; }"
+      "signature": "export interface PinApplication { readonly state: ContextState; readonly expected: readonly string[]; readonly inboundGovernance: readonly string[]; }"
     },
     {
       "name": "PinDefect",
@@ -413,11 +413,6 @@
       "signature": "export type TurnId = Brand<string, 'TurnId'>;"
     },
     {
-      "name": "applyPins",
-      "kind": "FunctionDeclaration",
-      "signature": "export function applyPins(state: ContextState, policy: StrataPolicy): PinApplication { const expected = Object.freeze(pinSetText(policy)); const present = new Set(state.pinned); const missingBefore = Object.freeze(expected.filter((c) => !present.has(c))); return { state: { ...state, pinned: expected }, expected, missingBefore }; }"
-    },
-    {
       "name": "artifactId",
       "kind": "VariableDeclaration",
       "signature": "artifactId = (v: string): ArtifactId => v as ArtifactId"
@@ -458,6 +453,11 @@
       "signature": "export function canonicalJson(value: unknown): string { if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'; if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`; const entries = Object.entries(value as Record<string, unknown>) .filter(([, v]) => v !== undefined) .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)); return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`; }"
     },
     {
+      "name": "collectGovernanceText",
+      "kind": "FunctionDeclaration",
+      "signature": "export function collectGovernanceText(state: ContextState): string[] { return state.messages.flatMap((m) => m.content.filter(isGovernance).map((b) => b.text ?? ''), ); }"
+    },
+    {
       "name": "constraintId",
       "kind": "VariableDeclaration",
       "signature": "constraintId = (v: string): ConstraintId => v as ConstraintId"
@@ -466,6 +466,11 @@
       "name": "costTelemetry",
       "kind": "FunctionDeclaration",
       "signature": "export function costTelemetry(r: number, eps: number, rho: number, k: number): CostTelemetry { return { r, eps, rho, k, breakevenOk: breakevenOk(r, eps, rho, k) }; }"
+    },
+    {
+      "name": "enforcePins",
+      "kind": "FunctionDeclaration",
+      "signature": "export function enforcePins(state: ContextState, policy: StrataPolicy): PinApplication { const expected = Object.freeze(pinSetText(policy)); const inboundGovernance = Object.freeze(collectGovernanceText(state)); const messages = state.messages.filter((m) => !m.content.some(isGovernance)); const blocks: ContentBlock[] = expected.map((text) => ({ type: 'text', text, meta: { origin: 'system', sha256: sha256(text), tier: 'governance', bytes: text.length, cacheable: true, }, })); return { state: { ...state, messages: [{ role: 'system', content: blocks, ts: state.messages[0]?.ts ?? 0 }, ...messages], pinned: expected, }, expected, inboundGovernance, }; }"
     },
     {
       "name": "estimateBlockTokens",
@@ -516,6 +521,11 @@
       "name": "partitionForLossy",
       "kind": "FunctionDeclaration",
       "signature": "export function partitionForLossy(state: ContextState, policy: StrataPolicy): LossyContext { const held: HeldBlock[] = []; const messages: NonGovernanceMessage[] = []; for (const msg of state.messages) { const blocks: NonGovernanceBlock[] = []; let sawGovernance = false; for (const block of msg.content) { if (isGovernance(block)) { held.push({ block, reason: 'governance' }); sawGovernance = true; continue; } blocks.push(block as NonGovernanceBlock); } if (sawGovernance && blocks.length === 0) continue; messages.push({ ...msg, content: blocks }); } return { [LOSSY_CONTEXT]: true, runId: state.runId, turn: state.turn, taskId: state.taskId, messages, gists: state.gists, artifacts: state.artifacts, policy, held, tokenEstimate: state.tokenEstimate, }; }"
+    },
+    {
+      "name": "pinDrift",
+      "kind": "FunctionDeclaration",
+      "signature": "export function pinDrift( lastSent: readonly string[], inboundGovernance: readonly string[], ): PinIntegrity { return verifyPinIntegrity(lastSent, inboundGovernance); }"
     },
     {
       "name": "pinSetText",

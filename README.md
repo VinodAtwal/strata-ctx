@@ -65,14 +65,20 @@ negative control is a release blocker.
 
 ## Status
 
-**Planning complete. Wave 0 (contract freeze) in progress.**
+Wave 0 in progress. Contract frozen, gateway runnable, no lossy stages yet.
 
 | | |
 |---|---|
-| Tasks | 94 across 10 workstreams — see [`docs/tasks.csv`](docs/tasks.csv) |
-| Size | ~144.5 engineer-days · ~7–9 weeks at 2 engineers + agent swarm |
-| Wave 0 | `core-types` contract, CI, eval harness skeleton |
-| Gates | 12 pre-registered (G1–G12) in [`docs/evaluation.md`](docs/evaluation.md) |
+| ✅ | `core-types` contract frozen (114 exports, drift-checked) |
+| ✅ | Anthropic ingress/egress adapter + SSE passthrough |
+| ✅ | Pin buffer materialised into the outbound request |
+| ✅ | 51 tests, CI with a self-check that the contract gate can fail |
+| ⬜ | Tier 0 operators (dedupe, truncate, triage) |
+| ⬜ | Gist engine + the compaction transaction |
+| ⬜ | Canary probes, eval harness, other agent integrations |
+
+Tasks: 94 across 10 workstreams — [`docs/tasks.csv`](docs/tasks.csv) · 144.5 engineer-days ·
+7–9 weeks at 2 engineers + agent swarm. Gates G1–G12: [`docs/evaluation.md`](docs/evaluation.md).
 
 ## Documentation
 
@@ -93,14 +99,32 @@ the code links to a source or carries a `TODO(owner)`.
 
 ```bash
 npm install
-npm run check        # typecheck + lint + test
-npm run dev          # gateway on 127.0.0.1:8787 with mock upstream
+npm run check        # typecheck + lint + test + contract drift
+npm run dev          # gateway :8787 + mock provider :8799, no API key needed
+```
 
-# point an agent at it
+`npm run dev` pins two demo constraints, sends a real request through the proxy, and asserts they
+arrive intact at the provider:
+
+```
+  [telemetry] request_in
+  [telemetry] pin constraints=2 missingBefore=0
+  [telemetry] stage
+  smoke: pinned constraints intact at the provider = true
+```
+
+Point a real agent at it by changing one environment variable:
+
+```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:8787"
+```
 
-# measure it (the harness ships — run it on YOUR tasks)
-strata eval --tasks ./my-tasks.yaml
+That works today for pinning, telemetry and passthrough. It does **not** yet compress anything —
+the lossy stages land next, and until they do, the honest claim is "context is preserved and
+measured", not "context is reduced".
+
+```bash
+strata eval --tasks ./my-tasks.yaml   # not built yet
 ```
 
 ## Naming

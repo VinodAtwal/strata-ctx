@@ -144,23 +144,74 @@ export function assertNoGovernance(messages: readonly Message[]): void {
 export interface PinApplication {
   readonly state: ContextState;
   readonly expected: readonly string[];
-  /** Constraints already absent on arrival. Non-empty means a P0 upstream bug. */
-  readonly missingBefore: readonly string[];
+  /** Any governance blocks already in the inbound context, verbatim. */
+  readonly inboundGovernance: readonly string[];
 }
 
 /**
- * Final_Context = Compact(H) ∪ P, applied on every outbound request, not only at
- * compaction time.
+ * Stage 4: the pin buffer becomes actual context.
  *
- * Replace, never merge: a gist that *appends* to `pinned` could inject text that
- * reads like policy. Overwriting from the immutable buffer makes that
+ * Note the two halves. `applyPins` sets the buffer field; this materialises it as
+ * real governance-tier blocks, because a buffer nothing reads is a comment. They
+ * are one function so that "the buffer says the constraint is pinned" and "the
+ * constraint is in the request" cannot drift apart -- which they did, once, and
+ * the dev smoke test caught it.
+ *
+ * Replace, never merge: any governance block already in the context is stripped
+ * and the policy buffer is prepended fresh. A gist or summary that *appends* to
+ * the pin set could inject text that reads like policy; overwriting makes that
  * structurally impossible.
  */
-export function applyPins(state: ContextState, policy: StrataPolicy): PinApplication {
+export function enforcePins(state: ContextState, policy: StrataPolicy): PinApplication {
   const expected = Object.freeze(pinSetText(policy));
-  const present = new Set(state.pinned);
-  const missingBefore = Object.freeze(expected.filter((c) => !present.has(c)));
-  return { state: { ...state, pinned: expected }, expected, missingBefore };
+  const inboundGovernance = Object.freeze(collectGovernanceText(state));
+
+  const messages = state.messages.filter((m) => !m.content.some(isGovernance));
+  const blocks: ContentBlock[] = expected.map((text) => ({
+    type: 'text',
+    text,
+    meta: {
+      origin: 'system',
+      sha256: sha256(text),
+      tier: 'governance',
+      bytes: text.length,
+      // Cacheable: a constraint that re-invalidates the prefix every turn is a
+      // tax paid on every request, and the whole point of pinning is stability.
+      cacheable: true,
+    },
+  }));
+
+  return {
+    state: {
+      ...state,
+      messages: [{ role: 'system', content: blocks, ts: state.messages[0]?.ts ?? 0 }, ...messages],
+      pinned: expected,
+    },
+    expected,
+    inboundGovernance,
+  };
+}
+
+/** Verbatim text of every governance block currently in the context. */
+export function collectGovernanceText(state: ContextState): string[] {
+  return state.messages.flatMap((m) =>
+    m.content.filter(isGovernance).map((b) => b.text ?? ''),
+  );
+}
+
+/**
+ * Checks the pin set we sent last turn against what arrived this turn.
+ *
+ * Scoped deliberately: it is meaningless on turn 1 (nothing was sent yet) and
+ * it is the only version of the check that is not trivially satisfiable. A
+ * client that does not carry our buffer cannot be asked to return it, so the
+ * comparison has to be against our own record.
+ */
+export function pinDrift(
+  lastSent: readonly string[],
+  inboundGovernance: readonly string[],
+): PinIntegrity {
+  return verifyPinIntegrity(lastSent, inboundGovernance);
 }
 
 export type PinDefect = 'missing' | 'extra' | 'reordered';
