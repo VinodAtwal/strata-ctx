@@ -340,7 +340,6 @@ export class DreamingJob {
       constraintsPreserved,
       durationMs: finishedAt - startedAt,
     };
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
     const typedEvent = consolidationEvent as StrataTelemetryEvent & { type: 'consolidation' };
     this.#deps.emitTelemetry(typedEvent);
 

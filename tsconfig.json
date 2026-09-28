@@ -27,6 +27,12 @@
     },
     {
       "path": "packages/gist"
+    },
+    {
+      "path": "packages/integrations"
+    },
+    {
+      "path": "packages/eval"
     }
   ]
 }

@@ -1,0 +1,28 @@
+{
+  "name": "@strata-ctx/integrations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Integration adapters for coding agents (Claude Code, Aider, Gemini CLI, etc.)",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@strata-ctx/core-types": "1.0.0",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.7.0"
+  },
+  "author": "The strata-ctx Authors"
+}

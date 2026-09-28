@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "composite": true,
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["test/**/*", "dist/**/*"],
+  "references": [
+    { "path": "../core-types" },
+    { "path": "../security" },
+    { "path": "../telemetry" }
+  ]
+}
