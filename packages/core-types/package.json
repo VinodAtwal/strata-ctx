@@ -1,9 +1,9 @@
 {
   "name": "@strata-ctx/core-types",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "private": false,
   "type": "module",
-  "description": "The canonical, provider-neutral model every other package compiles against. Frozen at A-5.",
+  "description": "The canonical, provider-neutral model every strata-ctx package compiles against. Frozen: the public surface is hash-locked in contract.lock.json and CI fails on drift.",
   "license": "Apache-2.0",
   "exports": {
     ".": {
@@ -19,5 +19,26 @@
   "dependencies": {
     "zod": "^3.24.0"
   },
-  "author": "The strata-ctx Authors"
+  "author": "The strata-ctx Authors",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "context",
+    "compaction",
+    "llm",
+    "agents",
+    "governance",
+    "prompt-cache"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VinodAtwal/strata-ctx.git",
+    "directory": "packages/core-types"
+  },
+  "homepage": "https://github.com/VinodAtwal/strata-ctx#readme",
+  "bugs": {
+    "url": "https://github.com/VinodAtwal/strata-ctx/issues"
+  }
 }

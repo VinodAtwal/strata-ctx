@@ -6,6 +6,27 @@
     },
     {
       "path": "packages/gateway"
+    },
+    {
+      "path": "packages/testing"
+    },
+    {
+      "path": "packages/pipeline"
+    },
+    {
+      "path": "packages/governance"
+    },
+    {
+      "path": "packages/output-compress"
+    },
+    {
+      "path": "packages/security"
+    },
+    {
+      "path": "packages/telemetry"
+    },
+    {
+      "path": "packages/gist"
     }
   ]
 }

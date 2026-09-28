@@ -1,0 +1,16 @@
+{
+  "name": "@strata-ctx/gist",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gist engine: deterministic compaction via structured summaries",
+  "license": "Apache-2.0",
+  "author": "The strata-ctx Authors",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "dependencies": {
+    "@strata-ctx/core-types": "1.0.0",
+    "@strata-ctx/security": "file:../security"
+  }
+}

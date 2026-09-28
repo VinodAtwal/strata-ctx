@@ -1,6 +1,6 @@
 {
   "name": "@strata-ctx/gateway",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Local HTTP/SSE proxy between a coding agent and a model provider.",
@@ -14,7 +14,7 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@strata-ctx/core-types": "0.1.0"
+    "@strata-ctx/core-types": "1.0.0"
   },
   "author": "The strata-ctx Authors"
 }

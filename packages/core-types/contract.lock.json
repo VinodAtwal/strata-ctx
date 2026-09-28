@@ -1,5 +1,6 @@
 {
   "package": "@strata-ctx/core-types",
+  "frozenVersion": "1.0.0",
   "digest": "0a3c0fea6360e6d968bdf662626d791d299bb7e2dc5bc3cb29acd11b9997c591",
   "exports": [
     {

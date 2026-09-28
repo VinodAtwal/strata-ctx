@@ -72,22 +72,46 @@ const surface = () => {
 const main = () => {
   const entries = surface();
   const digest = createHash('sha256').update(JSON.stringify(entries, null, 2)).digest('hex');
-  const doc = { package: '@strata-ctx/core-types', digest, exports: entries };
+  const pkg = JSON.parse(readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8'));
+  const doc = {
+    package: pkg.name,
+    frozenVersion: pkg.version,
+    digest,
+    exports: entries,
+  };
 
   if (update) {
     writeFileSync(LOCK, `${JSON.stringify(doc, null, 2)}\n`);
-    console.log(`contract updated: ${entries.length} exports, digest ${digest.slice(0, 16)}`);
+    console.log(
+      `contract updated: ${entries.length} exports, digest ${digest.slice(0, 16)}, frozen at ${pkg.version}`,
+    );
     return;
   }
 
   if (!existsSync(LOCK)) {
-    console.error('contract.lock.json is missing. Run: npm run contract:check -- --update');
+    console.error('contract.lock.json is missing. Run: npm run contract:update');
     process.exit(1);
   }
 
   const locked = JSON.parse(readFileSync(LOCK, 'utf8'));
+
+  // The freeze is two things, not one. The digest pins the shape of the API;
+  // the version pins the promise. Bumping core-types to 2.0.0 without
+  // re-freezing would tell every downstream stream that a breaking change was
+  // considered, which is exactly the conversation A-5 exists to force.
+  if (locked.frozenVersion !== pkg.version) {
+    console.error(
+      `\nCONTRACT VERSION DRIFT.\n\n  frozen at ${locked.frozenVersion}, package.json says ${pkg.version}.\n` +
+        `\n  A version bump on the frozen contract is a deliberate act, not a side effect.\n` +
+        `  Re-freeze with: npm run contract:update\n`,
+    );
+    process.exit(1);
+  }
+
   if (locked.digest === digest) {
-    console.log(`contract unchanged: ${entries.length} exports, digest ${digest.slice(0, 16)}`);
+    console.log(
+      `contract unchanged: ${entries.length} exports, digest ${digest.slice(0, 16)}, frozen at ${pkg.version}`,
+    );
     return;
   }
 
@@ -105,7 +129,7 @@ const main = () => {
   if (removed.length) console.error(`  removed: ${removed.join(', ')}`);
   if (changed.length) console.error(`  changed: ${changed.join(', ')}`);
   console.error(`\n  expected ${locked.digest?.slice(0, 16)}  got ${digest.slice(0, 16)}`);
-  console.error('\nIf this change is intended, re-run: npm run contract:check -- --update');
+  console.error('\nIf this change is intended, re-run: npm run contract:update');
   console.error('and land it in its own commit so reviewers see it as a contract move.\n');
   process.exit(1);
 };
