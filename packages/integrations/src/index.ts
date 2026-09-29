@@ -22,6 +22,7 @@ export * from './mcp-server.js';
 export * from './profiles.js';
 export * from './templates.js';
 export * from './claude-code-hooks.js';
+export * from './surface-check.js';
 
 // OpenCode — everything except the `missingEnvVars` the profile registry owns.
 // Classes (value+type) go in the value export; pure types go in export type.

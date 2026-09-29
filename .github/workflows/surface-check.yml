@@ -1,0 +1,89 @@
+name: surface-check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: surface-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '20.19'
+
+jobs:
+  # Lane 1. The gate itself. Runs the checker against the committed snapshot, then
+  # proves the snapshot is still what the adapters derive, then runs the tests that
+  # cover the comparison and the update path.
+  surface:
+    name: agent surface drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Every agent surface matches the snapshot
+        run: node --import tsx packages/integrations/src/surface-check.ts
+      - name: The snapshot is current, not merely passing
+        run: |
+          set -euo pipefail
+          node --import tsx packages/integrations/src/surface-check.ts --update
+          if ! git diff --quiet -- packages/integrations/surface-check.snapshot.json; then
+            echo "::error file=packages/integrations/surface-check.snapshot.json::an adapter moved and the snapshot was not refreshed. Confirm the change was intended, then commit the refreshed snapshot."
+            git --no-pager diff -- packages/integrations/surface-check.snapshot.json
+            exit 1
+          fi
+      - name: Surface check tests
+        run: node --import tsx --test packages/integrations/test/surface-check.test.ts
+
+  # Lane 2. Proof the gate fails when it should. A gate that cannot fail is not a
+  # gate, and the two ways it could quietly stop failing are both checked here:
+  # a renamed event it must catch, and a pinned judgement it must refuse to
+  # rewrite.
+  selfcheck:
+    name: surface check detects drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Rename a pinned hook event, expect a non-zero exit naming the agent
+        run: |
+          set -euo pipefail
+          cp packages/integrations/surface-check.snapshot.json /tmp/surface-check.snapshot.json
+          node -e "const fs=require('fs');const p='packages/integrations/surface-check.snapshot.json';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.agents['claude-code'].hookEvents=s.agents['claude-code'].hookEvents.map(function(event){return event==='PostToolUse'?'PostToolUseRenamed':event;});fs.writeFileSync(p,JSON.stringify(s,null,2)+'\n');"
+          if node --import tsx packages/integrations/src/surface-check.ts 2>/tmp/surface-drift.err; then
+            echo "::error::surface check passed despite a renamed hook event"
+            exit 1
+          fi
+          if ! grep -q 'claude-code' /tmp/surface-drift.err; then
+            echo "::error::the finding did not name the agent it found"
+            cat /tmp/surface-drift.err
+            exit 1
+          fi
+          cat /tmp/surface-drift.err
+          cp /tmp/surface-check.snapshot.json packages/integrations/surface-check.snapshot.json
+      - name: A pinned judgement it cannot check, expect --update to refuse
+        run: |
+          set -euo pipefail
+          node -e "const fs=require('fs');const p='packages/integrations/surface-check.snapshot.json';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.agents['claude-code'].declaredPayloadKeys=s.agents['claude-code'].declaredPayloadKeys.concat(['a_key_nobody_declared']).sort();fs.writeFileSync(p,JSON.stringify(s,null,2)+'\n');"
+          if node --import tsx packages/integrations/src/surface-check.ts --update; then
+            echo "::error::--update laundered a pinned assumption into a green build"
+            exit 1
+          fi
+          cp /tmp/surface-check.snapshot.json packages/integrations/surface-check.snapshot.json
+      - name: Surface is clean again after the revert
+        run: |
+          set -euo pipefail
+          node --import tsx packages/integrations/src/surface-check.ts
+          git diff --quiet

@@ -1,0 +1,342 @@
+{
+  "version": 1,
+  "package": "@strata-ctx/integrations",
+  "note": "E-8 surface expectations. The `agents`, `mcp` and `selfGist` blocks are derived from packages/integrations/src and refreshed with: node --import tsx packages/integrations/src/surface-check.ts --update. That command refuses while an assumption or a recorded observation disagrees with the code, so it cannot launder a judgement into a green build. `note` and `observations` are hand-maintained: record a capture of a real agent (agentVersion, recordedAt, source) before changing an adapter, and write the decision down in docs/decisions.md afterwards.",
+  "agents": {
+    "aider": {
+      "mechanism": "proxy-only",
+      "confidence": "high",
+      "declaredPayloadKeys": [],
+      "hookEventsSource": "derived",
+      "modules": [
+        "src/profiles.ts"
+      ],
+      "guaranteeTier": "transport_enforced",
+      "hooks": false,
+      "hookEvents": [],
+      "requestKeysInUse": [],
+      "resultKeysInUse": [],
+      "tools": [],
+      "resultRewrite": null,
+      "settings": null,
+      "profiles": [
+        ".aider.conf.yml"
+      ],
+      "launchFlags": [
+        "--config",
+        "--model",
+        "--no-check-update",
+        "--openai-api-base",
+        "--yes"
+      ]
+    },
+    "claude-code": {
+      "mechanism": "settings-json",
+      "confidence": "verify",
+      "declaredPayloadKeys": [
+        "cwd",
+        "hook_event_name",
+        "result",
+        "session_id",
+        "tool_input",
+        "tool_name",
+        "tool_response"
+      ],
+      "hookEventsSource": "derived",
+      "modules": [
+        "src/claude-code-hooks.ts",
+        "src/claude-code-observers.ts"
+      ],
+      "guaranteeTier": "hook_enforced",
+      "hooks": true,
+      "hookEvents": [
+        "PostToolUse",
+        "PreCompact",
+        "SessionEnd",
+        "SessionStart",
+        "UserPromptSubmit"
+      ],
+      "requestKeysInUse": [],
+      "resultKeysInUse": [
+        "result",
+        "tool_response"
+      ],
+      "tools": [
+        "Bash",
+        "Edit",
+        "Read",
+        "Write"
+      ],
+      "resultRewrite": null,
+      "settings": {
+        "file": "",
+        "listKey": "hooks",
+        "eventKey": "",
+        "commandKey": "command",
+        "entryKeys": [
+          "command",
+          "hooks",
+          "matcher",
+          "timeout",
+          "type"
+        ],
+        "instructionFile": ""
+      },
+      "profiles": [],
+      "launchFlags": []
+    },
+    "cline": {
+      "mechanism": "proxy-only",
+      "confidence": "high",
+      "declaredPayloadKeys": [],
+      "hookEventsSource": "derived",
+      "modules": [
+        "src/profiles.ts"
+      ],
+      "guaranteeTier": "transport_enforced",
+      "hooks": false,
+      "hookEvents": [],
+      "requestKeysInUse": [],
+      "resultKeysInUse": [],
+      "tools": [],
+      "resultRewrite": null,
+      "settings": null,
+      "profiles": [
+        ".cline/cline_mcp_settings.json"
+      ],
+      "launchFlags": [
+        "--config",
+        "--host",
+        "--port"
+      ]
+    },
+    "gemini-cli": {
+      "mechanism": "settings-json",
+      "confidence": "verify",
+      "declaredPayloadKeys": [
+        "parameters",
+        "result",
+        "runId",
+        "sessionId",
+        "state",
+        "tool",
+        "turn"
+      ],
+      "hookEventsSource": "derived",
+      "modules": [
+        "src/gemini.ts"
+      ],
+      "guaranteeTier": "hook_enforced",
+      "hooks": true,
+      "hookEvents": [
+        "post_tool_use",
+        "pre_tool_use"
+      ],
+      "requestKeysInUse": [
+        "sessionId",
+        "tool"
+      ],
+      "resultKeysInUse": [
+        "output",
+        "stderr",
+        "stdout"
+      ],
+      "tools": [
+        "glob",
+        "google_web_search",
+        "read_file",
+        "replace",
+        "run_shell_command",
+        "search_file_content",
+        "web_fetch",
+        "write_file"
+      ],
+      "resultRewrite": {
+        "wholeResult": true,
+        "stringPaths": [
+          "output",
+          "stderr",
+          "stdout"
+        ]
+      },
+      "settings": {
+        "file": "settings.json",
+        "listKey": "hooks",
+        "eventKey": "type",
+        "commandKey": "command",
+        "entryKeys": [
+          "command",
+          "timeout",
+          "type"
+        ],
+        "instructionFile": "GEMINI.md"
+      },
+      "profiles": [
+        "GEMINI.md",
+        "settings.json"
+      ],
+      "launchFlags": []
+    },
+    "github-copilot": {
+      "mechanism": "mcp-only",
+      "confidence": "high",
+      "declaredPayloadKeys": [],
+      "hookEventsSource": "derived",
+      "modules": [
+        "src/copilot.ts"
+      ],
+      "guaranteeTier": "advisory_only",
+      "hooks": false,
+      "hookEvents": [],
+      "requestKeysInUse": [],
+      "resultKeysInUse": [],
+      "tools": [],
+      "resultRewrite": null,
+      "settings": {
+        "file": ".mcp.json",
+        "listKey": "mcpServers",
+        "eventKey": "",
+        "commandKey": "command",
+        "entryKeys": [
+          "args",
+          "command",
+          "env",
+          "type"
+        ],
+        "instructionFile": ""
+      },
+      "profiles": [
+        ".mcp.json",
+        "settings.json"
+      ],
+      "launchFlags": []
+    },
+    "opencode": {
+      "mechanism": "plugin-module",
+      "confidence": "verify",
+      "declaredPayloadKeys": [
+        "args",
+        "callID",
+        "output",
+        "sessionID",
+        "tool"
+      ],
+      "hookEventsSource": "assumed",
+      "modules": [
+        "src/opencode.ts"
+      ],
+      "guaranteeTier": "hook_enforced",
+      "hooks": true,
+      "hookEvents": [
+        "experimental.session.compacting",
+        "tool.execute.after",
+        "tool.execute.before"
+      ],
+      "requestKeysInUse": [],
+      "resultKeysInUse": [
+        "output"
+      ],
+      "tools": [
+        "apply_patch",
+        "bash",
+        "edit",
+        "glob",
+        "grep",
+        "lsp",
+        "question",
+        "read",
+        "skill",
+        "todowrite",
+        "webfetch",
+        "websearch",
+        "write"
+      ],
+      "resultRewrite": {
+        "wholeResult": true,
+        "stringPaths": [
+          "output"
+        ]
+      },
+      "settings": {
+        "file": "opencode.json",
+        "listKey": "strataHooks",
+        "eventKey": "event",
+        "commandKey": "command",
+        "entryKeys": [
+          "command",
+          "event",
+          "timeout"
+        ],
+        "instructionFile": "AGENTS.md"
+      },
+      "profiles": [
+        ".opencode/plugins/strata-governed.js",
+        "AGENTS.md",
+        "opencode.json"
+      ],
+      "launchFlags": []
+    },
+    "roo": {
+      "mechanism": "proxy-only",
+      "confidence": "high",
+      "declaredPayloadKeys": [],
+      "hookEventsSource": "derived",
+      "modules": [
+        "src/profiles.ts"
+      ],
+      "guaranteeTier": "transport_enforced",
+      "hooks": false,
+      "hookEvents": [],
+      "requestKeysInUse": [],
+      "resultKeysInUse": [],
+      "tools": [],
+      "resultRewrite": null,
+      "settings": null,
+      "profiles": [
+        ".roo/strata.json"
+      ],
+      "launchFlags": [
+        "--config",
+        "--host",
+        "--port"
+      ]
+    }
+  },
+  "mcp": {
+    "advertised": [
+      "ctx_get_artifact",
+      "ctx_get_task",
+      "ctx_note",
+      "ctx_remember",
+      "ctx_search",
+      "ctx_status"
+    ],
+    "advisoryAdvertised": [
+      "ctx_get_artifact",
+      "ctx_get_task",
+      "ctx_note",
+      "ctx_remember",
+      "ctx_search",
+      "ctx_status"
+    ],
+    "served": [
+      "ctx_search",
+      "get_artifact",
+      "get_task",
+      "note",
+      "remember",
+      "status"
+    ],
+    "unresolved": []
+  },
+  "selfGist": {
+    "fence": "```",
+    "language": "ctx-gist",
+    "sentinel": "<<<STRATA-SELF-GIST>>>",
+    "parserLanguage": "ctx-gist",
+    "directiveCarriesFence": true,
+    "directiveCarriesSentinel": true,
+    "agrees": true
+  },
+  "observations": []
+}
