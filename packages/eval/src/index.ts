@@ -33,3 +33,5 @@ export * from './fixture.js';
 export * from './mock-arm.js';
 export * from './runner.js';
 export * from './reporter.js';
+export * from './grading.js';
+export * from './statistics.js';
