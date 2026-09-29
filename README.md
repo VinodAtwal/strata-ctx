@@ -91,6 +91,7 @@ Tasks: 94 across 10 workstreams — [`docs/tasks.csv`](docs/tasks.csv) · 144.5 
 | [`docs/evaluation.md`](docs/evaluation.md) | 3-arm A/B methodology, statistics, 12 gates, 6 eval suites |
 | [`docs/decisions.md`](docs/decisions.md) | 16 ADRs, open questions, risk register, the "delete all logs" position |
 | [`docs/tasks.csv`](docs/tasks.csv) | Machine-readable board — import into Linear/Jira/Tracker |
+| [`AGENTS.md`](AGENTS.md) | **Working rules for contributors and coding agents** — TypeScript/lint rules, file-ownership boundaries, the package dependency map, the request path, Definition of Done, and the improvement loop |
 
 Research basis: [`../context-compression`](../context-compression). Every non-obvious constant in
 the code links to a source or carries a `TODO(owner)`.
