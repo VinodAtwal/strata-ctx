@@ -5,7 +5,17 @@
  * SDK can only help users of agents we ship code into, whereas a proxy works
  * for every agent that can be pointed at a different base URL.
  */
+// Each provider adapter exports its own `toCanonical`/`fromCanonical`, so
+// star-exporting all three would leave three ambiguous names that resolve to
+// nothing at runtime. The Anthropic pair stays top-level because it was the
+// original default and `server.ts` and downstream callers read it unqualified;
+// the other two are namespaced. Callers that need a specific provider go
+// through `resolveAdapter()` (A-7's seam) rather than importing a converter
+// directly, because that is the only place the `unknown` narrowing is allowed.
 export * from './anthropic-adapter.js';
+export * as openaiCompatAdapter from './openai-compat-adapter.js';
+export * as geminiAdapter from './gemini-adapter.js';
+export * from './routing.js';
 export * from './server.js';
 export * from './sse.js';
 export * from './token-estimator.js';
