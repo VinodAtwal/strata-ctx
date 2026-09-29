@@ -5,10 +5,10 @@ A-3,A,Core gateway,core-types: policy + telemetry + pipeline interfaces,seq,2,A-
 A-4,A,Core gateway,core-types: gist schema types + Zod validators,par,2,A-2,0,-,done
 A-5,A,Core gateway,CONTRACT FREEZE - publish and semver-lock core-types@1.0.0,seq,0.5,"A-3,A-4",0,M0,done
 A-6,A,Core gateway,Provider-aware token estimator + mock,par,1.5,A-5,1,-,done
-A-7,A,Core gateway,HTTP reverse proxy server + routing + graceful shutdown + health,seq,2,A-5,1,-,todo
-A-8,A,Core gateway,Ingress+egress adapter: anthropic,seq,2,A-7,1,-,todo
-A-9,A,Core gateway,Ingress+egress adapter: openai-compat,par,1.5,A-7,1,-,todo
-A-10,A,Core gateway,Ingress+egress adapter: gemini,par,1.5,A-7,1,-,todo
+A-7,A,Core gateway,HTTP reverse proxy server + routing + graceful shutdown + health,seq,2,A-5,1,-,done
+A-8,A,Core gateway,Ingress+egress adapter: anthropic,seq,2,A-7,1,-,done
+A-9,A,Core gateway,Ingress+egress adapter: openai-compat,par,1.5,A-7,1,-,done
+A-10,A,Core gateway,Ingress+egress adapter: gemini,par,1.5,A-7,1,-,done
 A-11,A,Core gateway,Adapter: mock (deterministic fixture replay),par,1,A-7,0,-,done
 A-12,A,Core gateway,SSE passthrough + self-gist ring-buffer tail,seq,2,A-8,2,-,done
 A-13,A,Core gateway,Cache-prefix awareness for all transforms,par,1.5,A-8,1,G12,todo
@@ -48,10 +48,10 @@ E-4,E,Integrations,CLAUDE.md / output-protocol template incl self-gist block,par
 E-5,E,Integrations,Gemini adapter via shared parameterized hook builder,par,2,E-2,2,-,done
 E-6,E,Integrations,Aider / Cline / Roo profiles + launch recipes,par,1.5,A-9,2,-,done
 E-7,E,Integrations,Copilot MCP-only path + no-governance-guarantee labelling,ext,1.5,E-1,2,-,done
-E-8,E,Integrations,surface-check CI job: detect hook-schema drift,par,1.5,E-2,2,-,todo
+E-8,E,Integrations,surface-check CI job: detect hook-schema drift,par,1.5,E-2,2,-,done
 F1-1,F,Evals,Harness skeleton: fixture format + runner + reporter + mock only,seq,2,A-11,0,M0,done
-F1-2,F,Evals,Grading primitives: deterministic tool-call grading + rubric judge,seq,2,F1-1,1,-,todo
-F1-3,F,Evals,Statistics: McNemar exact + paired bootstrap + non-inferiority + BH,seq,2.5,F1-2,1,-,todo
+F1-2,F,Evals,Grading primitives: deterministic tool-call grading + rubric judge,seq,2,F1-1,1,-,done
+F1-3,F,Evals,Statistics: McNemar exact + paired bootstrap + non-inferiority + BH,seq,2.5,F1-2,1,-,done
 F1-4,F,Evals,Corpus curation: 3 repos + real issue tasks + licensing check,par,3,F1-1,1,-,todo
 F1-5,F,Evals,Suite E1 constraint retention (ConstraintRot port) + NEGATIVE CONTROL,par,2.5,"F1-2,D-6",1,"G1,G2",todo
 F1-6,F,Evals,Suite E2 context rot probe (slope-based + NIAH control),par,1.5,F1-2,1,G5,todo
