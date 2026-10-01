@@ -28,12 +28,13 @@ strata-ctx/
 │  ├─ gateway/          # WS-A. HTTP server, ingress/egress adapters, SSE passthrough
 │  ├─ pipeline/         # WS-B. Tiers 0-2 operators (dedupe, truncate, pointer, triage, self-gist)
 │  ├─ gist/             # WS-C. Schema, self-gist parsing, store, memory tiers, transaction
-│  ├─ governance/       # WS-D. Pin buffer, policy store, validators, byte-equality, canary
+│  ├─ governance/       # WS-D. Pin buffer, policy store, validators, byte-equality
 │  ├─ output-compress/  # WS-H. TOON/CSV, severity log compression, pointer-ization, directives
 │  ├─ telemetry/        # WS-G. Metrics, cost engine, CLI dashboard, pricing
 │  ├─ security/         # WS-I. Redaction, entropy, ACL, gist safety, purge, retention
 │  ├─ integrations/     # WS-E. Claude Code hooks, Gemini CLI, Aider/Cline/Roo profiles, Copilot MCP, OpenCode, MCP server
-│  ├─ eval/             # WS-F1. Fixture format, runner, reporter, mock arms, grading
+│  ├─ eval/             # WS-F1. Fixture format, runner, reporter, mock arms, grading, suites E1/E2/E3/E5/E6
+│  ├─ canary/           # WS-F1 (F1-11). Runtime rot + constraint probes, scheduler
 │  └─ testing/          # WS-J. Record/replay harness, fixtures, CLI
 ├─ docs/
 │  ├─ architecture.md   # Topology, pipeline order, canonical model
@@ -56,8 +57,9 @@ strata-ctx/
    └─ ci.yml            # 4 lanes: typecheck, tests, contract, selfcheck
 ```
 
-**Known doc drift:** `docs/development.md` §1 still names `packages/evals` and
-`packages/canary`. The real package is `packages/eval` (singular, no `canary`). Trust the
+**Resolved doc drift:** `docs/development.md` §1 named `packages/evals` and listed no
+`packages/canary`. Reality as of F1-11: the package is `packages/eval` (singular), and
+`packages/canary` **does** now exist (F1-11, the runtime rot + constraint probes). Trust the
 filesystem over the table; fix the table in a docs commit, not silently.
 
 `ci.yml` lanes, and what each one proves:
@@ -181,6 +183,43 @@ When you finish, return:
 | **P2** | Package-local test suites. Cross-stream integration tests live in WS-F's `integration` lane only. |
 | **P3** | WS-D (governance) has a separate reviewer and a veto. It can block WS-B/WS-C merges. |
 | **Barrels** | `packages/*/src/index.ts` is owned by the integrator, not by task agents. Create your module; the barrel export is added at integration time. |
+| **Root config** | `tsconfig.json` references, root `package.json`, lockfiles, `docs/tasks.csv`, and `.github/workflows/**` are integrator-owned. A new package ships its own `package.json` + `tsconfig.json`; the root reference is added at merge time. |
+
+### 7.1 Isolation rules (these exist because they were violated)
+
+Running N agents in one tree fails in three specific, repeatable ways. Each has a rule:
+
+| # | Failure | Rule |
+|---|---------|------|
+| **I1** | Agent A runs `npm test` or `packages/*/test/*.test.ts`, sees agent B's half-written suite fail, and "fixes" B's file or reports a false failure | **Run only your own test file(s)**, by exact path. Never a glob, never `npm test`, never `npm run check`. A failure in a file you do not own is *not yours* — report it, don't touch it. |
+| **I2** | Agent leaves `tmp-*.test.ts`, `scratch-*.ts`, or probe scripts in a `test/` dir; they get picked up by the root glob and break CI permanently | **No scratch files in the repo.** Use `/tmp`. The root glob is `packages/*/test/*.test.ts` — anything you leave there ships. |
+| **I3** | Agent edits a shared file (`runner.ts`, `types.ts`, a barrel, `docs/tasks.csv`) to unblock itself, creating a merge conflict or a silent behaviour change | **Touch only the files you were given.** If you need a shared file changed, report the required change precisely and let the integrator do it. |
+
+Two more that are not about interference but about wasted work:
+
+- **Don't run serial root commands.** `npm install`, `tsc --build`, `npm run check`, and anything
+  git-touching are integrator-only. Five agents each running `tsc --build` serialize against
+  each other and each other's build info.
+- **A cancelled agent leaves a broken tree, not an empty one.** If you are asked to finish a
+  partial file, first run the checks to see the actual damage, repair in place, and expect the
+  breakage to be subtler than "file missing". Half-written import lists and a test that *hangs*
+  rather than fails are the two that cost the most time.
+
+### 7.2 Merging is the integrator's job, at the end
+
+Agents produce **files**. They do not integrate, and they do not decide that the batch is done.
+After every agent in a batch reports:
+
+1. Check for stray scratch files (`git status`) and delete any that exist.
+2. Add barrels. Verify export-name collisions mechanically *before* re-exporting — 445 names
+   across five concurrently-written suites collided zero times, and that was checked, not hoped.
+3. Wire new packages into `tsconfig.json`; confirm a new package's declared dependencies match
+   its actual imports exactly.
+4. Run the whole-repo checks the agents were forbidden from running: `tsc --build`,
+   `tsc -p tsconfig.check.json --noEmit`, `eslint .`, `npm run check`.
+5. **Exercise the negative gates.** A green suite that cannot fail is worth nothing. Drive each
+   gate to its failing state and confirm it reports the failure.
+6. Only then update `docs/tasks.csv`, and ask before committing.
 | **Task execution hints** | `docs/tasks.csv` column `exec` has exactly four values |
 
 | `exec` | Meaning | Fan-out |
@@ -288,7 +327,7 @@ graph TD
   GW["gateway<br/>server · adapters · sse · config · credentials"]
   PL["pipeline<br/>Tiers 0-2 operators"]
   GI["gist<br/>schema · store · memory tiers · transaction"]
-  GV["governance<br/>pin buffer · validators · canary"]
+  GV["governance<br/>pin buffer · validators"]
   OC["output-compress<br/>TOON/CSV · severity · directives"]
   TL["telemetry<br/>metrics · cost · r/eps"]
   SE["security<br/>redaction · ACL · retention"]
@@ -296,6 +335,7 @@ graph TD
 
   IN["integrations<br/>hooks · profiles · MCP · opencode"]
   EV["eval — ZERO deps<br/>mirrors the contract, never imports it"]
+  CN["canary (F1-11)<br/>rot + constraint probes · scheduler"]
 
   GW --> CT
   PL --> CT
@@ -308,6 +348,7 @@ graph TD
   IN --> CT
   IN --> SE
   IN --> TL
+  CN --> CT
 
   classDef frozen fill:#2d1b1b,stroke:#c0392b,stroke-width:2px,color:#f5e6e6
   classDef nodeps fill:#1b2d1b,stroke:#27ae60,stroke-width:2px,color:#e6f5e9
@@ -319,6 +360,16 @@ Two edges carry the design, and both look like accidents if you don't know why:
 
 - **`integrations → security`, `integrations → telemetry`.** These are the only cross-stream imports in the repo, and they are deliberate. Agent hooks are where untrusted text and credential headers actually arrive, so the hook path must redact and must be measurable. This is the single documented exception to P1; there is no third.
 - **`eval` depends on nothing.** It has no project reference, no dependencies, and a test (`packages/eval/test/runner.test.ts`) asserting the package opens no sockets. It *mirrors* `ConstraintKind` in `types.ts` with a comment recording the freeze digest, rather than importing it — the measuring apparatus must not be able to drift with the thing it measures. If you "clean up" that duplication into a real import, you have broken the experiment.
+
+**`canary` vs `eval` — both measure, and they are not interchangeable.** `eval` is the
+offline harness: it measures suites, it must be able to run on every commit, so it is
+dependency-free and its subjects are *injected*. `canary` is the runtime product feature: it
+fires probes inside a live session, so it depends on `core-types` and its probe subjects are
+also injected (F2 drives them against a real model). Both keep the injected-subject shape for
+the same reason — a probe that imports the thing it grades cannot be used to detect that
+thing failing. Two `TODO(contract owner)` items in `packages/canary` ask for
+`RotCanaryEvent` and `DECAY_EXPOSED_STRATA` to move into frozen `core-types`; that is a
+contract change and needs the frozen-contract process, not a drive-by edit.
 
 ### 12.2 The request path, and where fail-open lives
 
