@@ -12,6 +12,8 @@ import {
 } from '@strata-ctx/core-types';
 import { runTier0, type Tier0Result } from '@strata-ctx/pipeline';
 import { DEFAULT_TAIL_BYTES, pipeSseUpstream } from './sse.js';
+import { ollamaClientFromFetch, type NarrationConfig } from './ollama-adapter.js';
+import { runTier3 } from './tier3.js';
 import {
   isConfigProvider,
   matchRoute,
@@ -51,6 +53,16 @@ export interface GatewayOptions {
   readonly sseTailBytes?: number;
   /** Session table bound. TODO(WS-A, A-7): pick this from a real turn count. */
   readonly maxSessions?: number;
+  /**
+   * Tier 3, opt-in. Absent means off, and the policy's
+   * `pipeline.tokenCompression` is the other half of the switch: this supplies the
+   * model, that says whether to run it. Both must agree, so an operator who sets
+   * the policy field without supplying a config gets a hold rather than a model
+   * call made with a default they never chose.
+   */
+  readonly narration?: NarrationConfig;
+  /** Injected so the Tier 3 tests do not reach a socket. Defaults to `fetch`. */
+  readonly narrationFetch?: typeof fetch;
 }
 
 export interface Session {
@@ -409,6 +421,23 @@ const handleIngress = async (
         runId: state.runId,
         prefixHit: false,
         prefixInvalidated: true,
+      });
+    }
+
+    // Tier 3. Opt-in twice over: the operator named a model in the config *and*
+    // set `tokenCompression: 'local'`. `state` is the post-Tier-0 context, so the
+    // span narrated is the one the next turn will actually be answered from.
+    if (d.rt.opts.policy.pipeline.tokenCompression === 'local') {
+      await runTier3({
+        state,
+        policy: d.rt.opts.policy,
+        policyTokens: tier0.tokensAfter,
+        config: d.rt.opts.narration,
+        client:
+          d.rt.opts.narration === undefined
+            ? undefined
+            : ollamaClientFromFetch(d.rt.opts.narrationFetch ?? fetch),
+        telemetry: d.rt.opts.telemetry,
       });
     }
 

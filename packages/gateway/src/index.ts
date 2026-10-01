@@ -27,6 +27,7 @@ export * as ollamaAdapter from './ollama-adapter.js';
 export * from './routing.js';
 export * from './server.js';
 export * from './sse.js';
+export * from './tier3.js';
 export * from './token-estimator.js';
 export * from './credentials.js';
 
