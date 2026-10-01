@@ -124,7 +124,16 @@ const round4 = (value: number): number => Math.round(value * 10_000) / 10_000;
 const gradeArm = (observation: ArmObservation, evalCase: EvalCase): ArmResult => {
   const expected = new Set(evalCase.constraints.map((c) => c.id));
   const observedRetained = new Set(observation.retainedConstraintIds);
-  const missing = [...expected].filter((id) => !observedRetained.has(id)).sort();
+  // Measured only for an invocation that actually produced output. An errored
+  // invocation reports `retainedConstraintIds: []` because it ran out of tokens
+  // or threw, not because the product dropped anything, so deriving `missing`
+  // from it attributes a total constraint loss to the product on the basis of a
+  // harness failure. The same reasoning already applies to `violations` below,
+  // which is likewise built only from what the observation actually reported.
+  const missing =
+    observation.ok === false
+      ? []
+      : [...expected].filter((id) => !observedRetained.has(id)).sort();
 
   const violations: ConstraintViolation[] = [];
   for (const constraintId of [...observation.violatedConstraintIds].sort()) {
@@ -237,7 +246,12 @@ export async function runSuite(fixture: EvalFixture, options: RunOptions = {}): 
       // null, not 0, when the arm never ran: a rate computed from no
       // observations is a rate that would clear G1 for an arm nobody tested.
       violationRate: forArm.length === 0 ? null : round4(violations / forArm.length),
-      retentionFailures: forArm.filter((a) => a.droppedConstraintIds.length > 0).length,
+      // `droppedConstraintIds` is already empty for errored observations (see
+      // `gradeArm`), so this counts only genuine losses; the explicit status
+      // check is kept so the count cannot silently start including them again.
+      retentionFailures: forArm.filter(
+        (a) => a.status !== 'error' && a.droppedConstraintIds.length > 0,
+      ).length,
       inputTokens: forArm.reduce((sum, a) => sum + a.inputTokens, 0),
       outputTokens: forArm.reduce((sum, a) => sum + a.outputTokens, 0),
     };
@@ -323,19 +337,32 @@ function buildClaims(
   }
 
   for (const totals of byArm) {
+    // A retention claim is only meaningful over observations that actually
+    // produced output. An arm that errored on every case retained nothing
+    // because it never ran, so with the `retentionFailures` fix above its count
+    // is legitimately 0 — and reporting `observed` off that would be a false
+    // green in the most dangerous direction: a harness that reports "pinning
+    // worked" for an arm that was down. `runnable` is the denominator that
+    // makes the two distinguishable.
+    const runnable = totals.observations - totals.errored;
     claims.push({
       id: `retention-${totals.arm}`,
       statement: `Arm "${totals.arm}" retained every declared constraint`,
       status:
-        totals.observations === 0
+        runnable === 0
           ? 'inconclusive'
           : totals.retentionFailures === 0
             ? 'observed'
             : 'not_observed',
       detail:
-        totals.observations === 0
-          ? 'arm did not run in this suite'
-          : `${totals.retentionFailures} of ${totals.observations} observation(s) lost a constraint`,
+        runnable === 0
+          ? totals.observations === 0
+            ? 'arm did not run in this suite'
+            : `no observation completed: all ${totals.observations} errored, so retention was never measured`
+          : totals.errored > 0
+            ? `${totals.retentionFailures} of ${runnable} completed observation(s) lost a constraint ` +
+              `(${totals.errored} errored and excluded)`
+            : `${totals.retentionFailures} of ${runnable} observation(s) lost a constraint`,
       blocking: false,
     });
   }

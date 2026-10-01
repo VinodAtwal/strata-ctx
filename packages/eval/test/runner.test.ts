@@ -472,6 +472,71 @@ describe('runner: totals', () => {
     assert.equal(claim?.status, 'inconclusive');
   });
 
+  it('does not count an errored observation as a lost constraint', async () => {
+    // `errorObservation` reports `retainedConstraintIds: []`, so comparing it to
+    // the declared set marks every constraint missing. Counting that made an arm
+    // that never produced output report as one that lost a constraint.
+    const report = await runSuite(fixtureOf([caseDoc('e1-900', ['control'], false)]), {
+      runArm: () => {
+        throw new Error('infrastructure down');
+      },
+    });
+    const control = report.totals.byArm.find((a) => a.arm === 'control');
+    assert.equal(control?.errored, 1);
+    assert.equal(control?.retentionFailures, 0);
+  });
+
+  it('reports the retention claim as inconclusive when every observation errored', async () => {
+    // The dangerous direction: with `retentionFailures` at 0 because nothing
+    // ran, the claim would otherwise read `observed` — "retained every declared
+    // constraint" for an arm that was down.
+    const report = await runSuite(fixtureOf([caseDoc('e1-901', ['control'], false)]), {
+      runArm: () => {
+        throw new Error('infrastructure down');
+      },
+    });
+    const claim = report.claims.find((c) => c.id === 'retention-control');
+    assert.equal(claim?.status, 'inconclusive');
+    assert.match(claim?.detail ?? '', /errored/);
+  });
+
+  it('still counts a real retention failure on the observations that completed', async () => {
+    // The fix must exclude only errored observations, not suppress the signal:
+    // one of two cases errors, the other genuinely drops its constraint.
+    const fixture = fixtureOf([
+      caseDoc('e1-902', ['control'], false, ['c1']),
+      caseDoc('e1-903', ['control'], false, ['c2']),
+    ]);
+    const report = await runSuite(fixture, {
+      runArm: (invocation) => {
+        if (invocation.case.id === 'e1-902') throw new Error('infrastructure down');
+        return {
+          arm: invocation.arm,
+          position: invocation.position,
+          caseId: invocation.case.id,
+          ok: true,
+          error: null,
+          response: 'did:c2',
+          retainedConstraintIds: [],
+          droppedConstraintIds: ['c2'],
+          violatedConstraintIds: ['c2'],
+          inputTokens: 1,
+          outputTokens: 1,
+          latencyMs: 1,
+        };
+      },
+    });
+    const control = report.totals.byArm.find((a) => a.arm === 'control');
+    assert.equal(control?.observations, 2);
+    assert.equal(control?.errored, 1);
+    assert.equal(control?.retentionFailures, 1);
+    const claim = report.claims.find((c) => c.id === 'retention-control');
+    assert.equal(claim?.status, 'not_observed');
+    // The denominator is the completed observations, and the excluded count is stated.
+    assert.match(claim?.detail ?? '', /1 of 1 completed observation/);
+    assert.match(claim?.detail ?? '', /1 errored and excluded/);
+  });
+
   it('computes the control violation rate over its own observations', async () => {
     const report = await runSuite(threeCaseFixture());
     const control = report.totals.byArm.find((a) => a.arm === 'control+');
