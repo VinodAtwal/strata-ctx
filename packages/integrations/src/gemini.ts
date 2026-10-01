@@ -66,8 +66,11 @@ export const GEMINI_SETTINGS_FILE = 'settings.json';
 /** The context file Gemini reads for system instructions, at the project root. */
 export const GEMINI_CONTEXT_FILE = 'GEMINI.md';
 
-/** The executable registered for both lifecycle events. */
-export const GEMINI_HOOK_COMMAND = 'strata-ctx-hook';
+/**
+ * Registered for both lifecycle events. A subcommand of the one binary this repo
+ * installs, not a `strata-ctx-hook` that nothing provides.
+ */
+export const GEMINI_HOOK_COMMAND = 'strata-ctx hook run';
 
 /**
  * Gemini CLI's file-touching tools.

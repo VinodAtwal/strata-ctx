@@ -46,7 +46,20 @@
 import { redactText } from '@strata-ctx/security';
 import { pinSetText, type StrataPolicy } from '@strata-ctx/core-types';
 
-export const STRATA_HOOK_MARKER = 'strata-ctx-hook';
+/**
+ * How our own hooks are identified inside a host settings file, and the first
+ * token of the command we write there.
+ *
+ * These must be the same string. The marker is how `removeHooks` finds the
+ * entries we added, so if the two ever diverge the settings file fills up with
+ * orphaned hook entries that nothing can remove.
+ *
+ * It names the `strata-ctx` dispatcher rather than a dedicated `strata-ctx-hook`
+ * binary. The profiles used to register `strata-ctx-hook`, which no package ever
+ * installed: `packages/cli` has exactly one bin, `strata-ctx`. A config pointing
+ * at a binary that does not exist is a config whose hooks never run.
+ */
+export const STRATA_HOOK_MARKER = 'strata-ctx hook run';
 export const POST_TOOL_USE_EVENT = 'PostToolUse';
 export const GOVERNANCE_BLOCK_OPEN = '<strata-ctx-governance>';
 export const GOVERNANCE_BLOCK_CLOSE = '</strata-ctx-governance>';

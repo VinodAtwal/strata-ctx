@@ -321,15 +321,20 @@ const cmdMcp = async (p: Parsed): Promise<void> => {
 };
 
 /**
- * `hook run` -- the executable the Claude Code and Gemini profiles name as
- * `strata-ctx-hook`.
+ * `hook run` -- the subcommand the Claude Code and Gemini profiles register.
  *
- * Those two profiles have been registering a hook command for a while and
- * nothing was ever installed to answer it, which is the same defect as the
- * `strata-ctx mcp serve` reference: the config claims a capability and cannot
- * deliver it. A host that runs an unregistered command is a tool call that
- * either errors or silently succeeds depending on the host, and neither outcome
- * is governance.
+ * Both profiles used to name a dedicated `strata-ctx-hook` binary and the package
+ * never installed one: this package has exactly one bin, `strata-ctx`. The
+ * profiles now name this dispatcher, and
+ * `packages/integrations/test/installed-bin.test.ts` reads `package.json` to keep
+ * it that way.
+ *
+ * The old wiring was the same defect as the Copilot `strata-ctx-mcp` reference: a
+ * host settings file that claims governance and cannot deliver it. What a host
+ * does with a command it cannot run -- error, or skip the hook quietly -- depends
+ * on the host and the event, and neither outcome is governance. A user who reads
+ * their settings file and concludes they are protected is the specific failure
+ * worth engineering against here.
  *
  * ## The fail-open / fail-closed asymmetry, stated deliberately
  *

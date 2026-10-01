@@ -56,7 +56,8 @@ const INTERCEPTED_TOOLS = ['Bash', 'Read', 'Write', 'Edit', 'Task'] as const;
 export type InterceptedTool = (typeof INTERCEPTED_TOOLS)[number];
 
 const CLAUDE_SETTINGS_PATH = join(homedir(), '.claude', 'settings.json');
-const STRATA_HOOK_COMMAND = 'strata-ctx-hook';
+/** The dispatcher subcommand. Must be a bin this repo actually installs. */
+const STRATA_HOOK_COMMAND = 'strata-ctx hook run';
 
 export interface ClaudeCodeHooksOptions {
   readonly policy: StrataPolicy;

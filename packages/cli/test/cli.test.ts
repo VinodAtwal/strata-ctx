@@ -303,7 +303,7 @@ describe('E-13: the strata-ctx CLI', () => {
 
 describe('E-13: hook run, the executable the Claude and Gemini profiles name', () => {
   /**
-   * Both profiles register `strata-ctx-hook` in their settings and nothing was
+   * Both profiles register a hook command in their settings and nothing was
    * ever installed to answer it. A host that runs an unregistered command either
    * errors or silently succeeds, and neither is governance.
    */

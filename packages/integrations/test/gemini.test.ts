@@ -178,7 +178,7 @@ function asInput(value: unknown): HookRequest & HookResultInput {
 function fakeJsonAgent(dir: string): AgentHookSpec {
   return {
     agent: 'codepilot',
-    hookCommand: 'strata-ctx-hook',
+    hookCommand: 'strata-ctx hook run',
     hooks: {
       kind: 'settings-json',
       path: join(dir, 'settings.json'),
@@ -200,7 +200,7 @@ function fakeJsonAgent(dir: string): AgentHookSpec {
 function fakeMarkdownAgent(dir: string): AgentHookSpec {
   return {
     agent: 'quill',
-    hookCommand: 'strata-ctx-hook',
+    hookCommand: 'strata-ctx hook run',
     hooks: {
       kind: 'markdown',
       path: join(dir, 'AGENTS.md'),

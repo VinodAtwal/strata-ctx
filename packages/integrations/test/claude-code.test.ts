@@ -89,8 +89,8 @@ describe('ClaudeCodeHooks', () => {
 
       assert.ok(preHook);
       assert.ok(postHook);
-      assert.equal(preHook.command, 'strata-ctx-hook');
-      assert.equal(postHook.command, 'strata-ctx-hook');
+      assert.equal(preHook.command, 'strata-ctx hook run');
+      assert.equal(postHook.command, 'strata-ctx hook run');
     });
 
     it('emits telemetry event on install', () => {
@@ -106,7 +106,7 @@ describe('ClaudeCodeHooks', () => {
       hooks.install();
 
       const settings = parseSettings(TEMP_SETTINGS_PATH);
-      const strataHooks = settings.hooks.filter((h: { command: string }) => h.command === 'strata-ctx-hook');
+      const strataHooks = settings.hooks.filter((h: { command: string }) => h.command === 'strata-ctx hook run');
       assert.equal(strataHooks.length, 2);
     });
 
@@ -123,7 +123,7 @@ describe('ClaudeCodeHooks', () => {
       hooks.install();
 
       const settings = parseSettings(TEMP_SETTINGS_PATH);
-      const otherHooks = settings.hooks.filter((h: { command: string }) => h.command !== 'strata-ctx-hook');
+      const otherHooks = settings.hooks.filter((h: { command: string }) => h.command !== 'strata-ctx hook run');
       assert.equal(otherHooks.length, 2);
     });
   });
@@ -134,7 +134,7 @@ describe('ClaudeCodeHooks', () => {
       hooks.uninstall();
 
       const settings = parseSettings(TEMP_SETTINGS_PATH);
-      const strataHooks = settings.hooks.filter((h: { command: string }) => h.command === 'strata-ctx-hook');
+      const strataHooks = settings.hooks.filter((h: { command: string }) => h.command === 'strata-ctx hook run');
       assert.equal(strataHooks.length, 0);
     });
 
@@ -152,7 +152,7 @@ describe('ClaudeCodeHooks', () => {
       const existingSettings = {
         hooks: [
           { type: 'pre_tool_use', command: 'other-hook', timeout: 1000 },
-          { type: 'pre_tool_use', command: 'strata-ctx-hook' },
+          { type: 'pre_tool_use', command: 'strata-ctx hook run' },
         ],
       };
       mkdirSync(dirname(TEMP_SETTINGS_PATH), { recursive: true });
@@ -161,7 +161,7 @@ describe('ClaudeCodeHooks', () => {
       hooks.uninstall();
 
       const settings = parseSettings(TEMP_SETTINGS_PATH);
-      const otherHooks = settings.hooks.filter((h: { command: string }) => h.command !== 'strata-ctx-hook');
+      const otherHooks = settings.hooks.filter((h: { command: string }) => h.command !== 'strata-ctx hook run');
       assert.equal(otherHooks.length, 1);
       assert.equal(at(otherHooks, 0, 'preserved non-strata hook').command, 'other-hook');
     });

@@ -30,7 +30,8 @@ export const COPILOT_AGENT_ID = 'github-copilot';
 export const COPILOT_SURFACE = 'vscode-extension';
 
 export const DEFAULT_MCP_SERVER_NAME = 'strata-ctx';
-export const DEFAULT_MCP_COMMAND = 'strata-ctx-mcp';
+/** `strata-ctx mcp serve`, not a `strata-ctx-mcp` binary that does not exist. */
+export const DEFAULT_MCP_COMMAND = 'strata-ctx mcp serve';
 export const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:8787';
 export const DEFAULT_POLICY_FILE = './.strata/policy.yaml';
 

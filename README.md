@@ -263,7 +263,7 @@ refactor.
 | [`eval`](packages/eval) | Offline deterministic eval harness: versioned fixture format + validator, interleaved per-case runner, stable reporter, mock arms, grading, statistics; suites E1, E2, E3, E5, E6. **Zero deps and opens no sockets by design**, enforced by a structural test. |
 | [`eval-live`](packages/eval-live) | Live A/B campaign: real chat-completions transport, three prompts (control / negative control / pinned treatment), temperature 0, infrastructure-only retries; gate evaluation for all twelve pre-registered gates; a claims audit that assigns each claim a derived High/Medium/Low confidence and lists what the report does *not* claim. Kept out of `eval` so that package's offline guarantee stays true. |
 | [`testing`](packages/testing) | Deterministic provider record/replay harness, fixture factories, and a `fixtures` CLI (`list`, `validate`, `summary`, `paths`). |
-| [`cli`](packages/cli) | The `strata-ctx` executable: `hook --check`, `hook run` (the `strata-ctx-hook` the Claude Code and Gemini profiles register), `mcp serve`, and `status`. Workspace deps load lazily so `--check` stays cheap. |
+| [`cli`](packages/cli) | The one executable every generated profile registers: `hook --check`, `hook run` (what the Claude Code and Gemini profiles invoke), `mcp serve` (what the Copilot profile invokes), and `status`. Workspace deps load lazily so `--check` stays cheap. |
 
 Dependency rules and the full graph: [`AGENTS.md` §12](AGENTS.md). `core-types` is the only
 cross-stream contract; the only documented exceptions are `integrations → security` and

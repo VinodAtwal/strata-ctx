@@ -143,9 +143,9 @@ describe('buildSettings', () => {
   });
 
   it('replaces a stale strata hook rather than stacking a second one', () => {
-    const hooks = new ClaudeCodeHooks({ hookCommand: 'strata-ctx-hook --event old' });
+    const hooks = new ClaudeCodeHooks({ hookCommand: 'strata-ctx hook run --event old' });
     const settings = hooks.buildSettings({
-      hooks: { PostToolUse: [{ matcher: 'X', hooks: [{ type: 'command', command: 'strata-ctx-hook --event old' }] }] },
+      hooks: { PostToolUse: [{ matcher: 'X', hooks: [{ type: 'command', command: 'strata-ctx hook run --event old' }] }] },
     });
     const groups = groupsOf(settings, POST_TOOL_USE_EVENT);
     assert.equal(groups.length, 1);
@@ -198,7 +198,7 @@ describe('removeHooks', () => {
 
   it('drops the hooks key when nothing is left', () => {
     const hooks = new ClaudeCodeHooks();
-    const cleaned = hooks.removeHooks({ hooks: { PostToolUse: [{ hooks: [{ command: 'strata-ctx-hook x' }] }] }, model: 'opus' });
+    const cleaned = hooks.removeHooks({ hooks: { PostToolUse: [{ hooks: [{ command: 'strata-ctx hook run x' }] }] }, model: 'opus' });
     assert.equal('hooks' in cleaned, false);
     assert.equal(cleaned['model'], 'opus');
   });
@@ -367,10 +367,10 @@ describe('rewritePostToolUse: no-op and malformed input', () => {
   });
 
   it('honours a custom hook command and matcher in the scaffold', () => {
-    const hooks = new ClaudeCodeHooks({ hookCommand: 'strata-ctx-hook --custom', matcher: 'Bash' });
+    const hooks = new ClaudeCodeHooks({ hookCommand: 'strata-ctx hook run --custom', matcher: 'Bash' });
     const group = strataGroups(hooks.buildSettings({}))[0];
     assert.equal(group?.matcher, 'Bash');
-    assert.equal(group?.hooks[0]?.command, 'strata-ctx-hook --custom');
+    assert.equal(group?.hooks[0]?.command, 'strata-ctx hook run --custom');
     assert.equal(hooks.rewritePostToolUse(payload()).modified, false);
   });
 
