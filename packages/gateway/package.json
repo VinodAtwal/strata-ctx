@@ -14,7 +14,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@strata-ctx/core-types": "1.0.0"
+    "@strata-ctx/core-types": "1.0.0",
+    "@strata-ctx/pipeline": "1.0.0"
   },
   "author": "The strata-ctx Authors"
 }

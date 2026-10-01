@@ -4,15 +4,13 @@ import { Readable } from 'node:stream';
 import type { ContextState, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
 import {
   enforcePins,
-  estimateTokens,
-  partitionForLossy,
   pinDrift,
   pinSetText,
-  restoreHeld,
   runId,
   sha256,
   StrataPolicySchema,
 } from '@strata-ctx/core-types';
+import { runTier0, type Tier0Result } from '@strata-ctx/pipeline';
 import { DEFAULT_TAIL_BYTES, pipeSseUpstream } from './sse.js';
 import {
   isConfigProvider,
@@ -299,6 +297,12 @@ const handleIngress = async (
   let expected: readonly string[];
   let outbound: unknown;
   let blocksIn = 0;
+  // Declared outside the `try` because the telemetry below reads it, and it is
+  // read after the stages have run. Initialised to a zero-delta result rather
+  // than left undefined so the telemetry loop is unconditional: a stage that
+  // never ran must not be silently reported as a stage that ran and saved
+  // nothing.
+  let tier0Run: Tier0Result | null = null;
   try {
     // Wall-clock, not a turn counter: the second argument is the block
     // timestamp. `ContextState.turn` belongs to the ingress adapter and the
@@ -311,15 +315,29 @@ const handleIngress = async (
     const before = adapter.toCanonical(parsed, Date.now());
     blocksIn = before.messages.length;
 
-    // Wave 0 has no lossy stages wired yet, so this is partition -> (nothing) ->
-    // restore -> pin. It is written in the final shape so that adding a stage
-    // cannot change where pinning happens: pinning is last, and it wraps any
-    // transform that follows it in the real order.
-    const lossy = partitionForLossy(before, d.rt.opts.policy);
-    const restored = restoreHeld(lossy, { ...before, tokenEstimate: estimateTokens(before) });
-    const applied = enforcePins(restored, d.rt.opts.policy);
+    // Tier 0 (partition -> dedupe, truncate, triage -> restore) -> pin.
+    //
+    // `runTier0` does the partition and restore internally, so this replaces
+    // both rather than wrapping them; running them here as well would apply
+    // partition twice and the second pass would see a context already restored.
+    //
+    // Pinning stays last, and that is not incidental. The stages above are lossy,
+    // and a pin restored before them could be dropped by the very next stage --
+    // which would make the safety claim true in a test that never compacts and
+    // false in the only place it matters. Order is a safety property
+    // (docs/architecture.md §4), which is why `runTier0` takes the stage order
+    // from `TIER0_STAGE_ORDER` and reports `policyOrderIgnored` rather than
+    // obeying a config file that reorders it.
+    //
+    // Whether the stages run at all is the policy's call, not this file's: the
+    // default policy lists all three, so a default gateway compresses. That was
+    // already the documented intent -- `order.ts` describes Tier 0 as running on
+    // every outbound request -- and this request path was simply not honoring it.
+    const tier0 = runTier0(before, d.rt.opts.policy);
+    const applied = enforcePins(tier0.state, d.rt.opts.policy);
     state = applied.state;
     expected = applied.expected;
+    tier0Run = tier0;
 
     // Drift is measured against what we sent last turn, not against policy: on
     // turn 1 nothing was sent, and "everything is missing" is not a finding.
@@ -349,6 +367,48 @@ const handleIngress = async (
         runId: state.runId,
         missingBefore: 0,
         constraints: expected.length,
+      });
+    }
+
+    // Per-stage telemetry, emitted for every stage that actually ran and not
+    // for the ones policy left out. `runTier0` already measured each stage, so
+    // re-measuring here would be a second implementation of the same number;
+    // these are the numbers the pipeline produced.
+    //
+    // Without this the lossy half of the product is invisible: a gateway that
+    // compressed 40k tokens to 6k and one that forwarded both unchanged emit an
+    // identical `request_in`, and the operator has no way to tell which is
+    // running. Emitted after the stages and before the response goes out, so a
+    // telemetry sink that throws cannot cost the request -- the catch below
+    // fails the whole turn open, and losing the user's context to a logging
+    // failure is precisely the trade this design refuses to make.
+    for (const stageRun of tier0Run.runs) {
+      d.rt.opts.telemetry?.({
+        type: 'stage',
+        runId: state.runId,
+        stage: stageRun.name,
+        bytesIn: stageRun.telemetry.bytesIn,
+        bytesOut: stageRun.telemetry.bytesOut,
+        blocksIn: stageRun.telemetry.blocksIn,
+        blocksOut: stageRun.telemetry.blocksOut,
+        durationMs: stageRun.telemetry.durationMs,
+        changed: stageRun.telemetry.changed,
+      });
+      // A stage that failed open is reported with its code rather than as a
+      // normal saving: the context went upstream unmodified, so a report that
+      // counted it as a reduction would be claiming work that did not happen.
+      if (stageRun.failedOpen) {
+        fail(d, 'stage_failed_open', stageRun.code ?? stageRun.name, true);
+      }
+    }
+    if (tier0Run.prefixInvalidated) {
+      // R4: moving or editing a cacheable block destroys the economics of the
+      // whole system, so it is reported rather than absorbed.
+      d.rt.opts.telemetry?.({
+        type: 'cache',
+        runId: state.runId,
+        prefixHit: false,
+        prefixInvalidated: true,
       });
     }
 
