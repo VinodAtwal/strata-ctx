@@ -1,0 +1,13 @@
+{
+  "name": "@strata-ctx/canary",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runtime canary probes: constraint-retention (with the soft-org flag that prevents a false green) and context-rot, plus the turn scheduler that decides when each fires.",
+  "license": "Apache-2.0",
+  "author": "The strata-ctx Authors",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "dependencies": { "@strata-ctx/core-types": "1.0.0" }
+}
