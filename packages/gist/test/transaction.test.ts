@@ -219,14 +219,44 @@ describe('runCompactionTransaction', () => {
     });
   });
 
-  describe('validation fails - unresolved dropped (4b)', () => {
-    it('aborts when unresolved array is empty', async () => {
+  describe('unresolved threads must round-trip (4b)', () => {
+    // A thread is only "dropped" relative to a source. These two tests pin both
+    // sides of that distinction, because conflating them made every
+    // default-path compaction abort (see transaction.ts 4b).
+    it('aborts when the source had an open thread and the gist lost it', async () => {
+      const priorGist = createTestGist({ unresolved: ['How to handle edge case X'] });
+      const stateWithOpenThread = createTestContextState({ gists: [priorGist] });
       const gistDroppedUnresolved = createGistDroppedUnresolved();
       mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
 
       const result = await runCompactionTransaction({
-        state: baseState,
+        state: stateWithOpenThread,
         gist: gistDroppedUnresolved,
+        policy: basePolicy,
+        artifactStore: mockStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript: JSON.stringify(stateWithOpenThread.messages),
+        toolLog,
+      });
+
+      assert.ok(!result.ok, 'a dropped open thread must abort the transaction');
+      assert.equal(result.state, stateWithOpenThread);
+      assert.ok(
+        result.defects.some(
+          (d) => d.step === '4b_invariants' && d.detail.includes('How to handle edge case X'),
+        ),
+        `expected the lost thread to be named in the defect, got: ${JSON.stringify(result.defects)}`,
+      );
+    });
+
+    it('commits when the source had no open threads and none are invented', async () => {
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: createGistDroppedUnresolved(),
         policy: basePolicy,
         artifactStore: mockStore,
         emit: telemetry.emit,
@@ -236,9 +266,11 @@ describe('runCompactionTransaction', () => {
         toolLog,
       });
 
-      assert.ok(!result.ok);
-      assert.equal(result.state, baseState);
-      assert.ok(result.defects.some((d) => d.step === '4b_invariants' && d.detail.includes('dropped')));
+      assert.ok(
+        result.ok,
+        `an empty unresolved[] means nothing was dropped when no prior gist recorded a thread; defects: ${JSON.stringify(result.defects)}`,
+      );
+      assert.ok(!result.defects.some((d) => d.step === '4b_invariants'));
     });
   });
 

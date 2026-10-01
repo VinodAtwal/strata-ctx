@@ -83,6 +83,26 @@ export interface ValidationDefect {
 }
 
 /**
+ * The open threads ("unresolved") already carried by gists in the context.
+ *
+ * This is the source of truth for the 4b invariant: a thread is only "dropped"
+ * if some earlier gist recorded it. Gists already in the context are the
+ * structured record of what was outstanding, so this deliberately does not
+ * guess by scanning transcript prose. A context with no prior gists therefore
+ * has no unresolved contract to violate.
+ */
+function collectPriorUnresolved(gists: readonly Gist[]): string[] {
+  const threads = new Set<string>();
+  for (const gist of gists) {
+    for (const item of gist.unresolved) {
+      const trimmed = item.trim();
+      if (trimmed.length > 0) threads.add(trimmed);
+    }
+  }
+  return [...threads].sort();
+}
+
+/**
  * The 8-step compaction transaction (docs/architecture.md §7).
  *
  * Steps:
@@ -232,14 +252,29 @@ export async function runCompactionTransaction(
     }
   }
 
-  // 4b (additional): unresolved_survives - the scary one must round-trip
-  // An empty unresolved array indicates the scary one was dropped.
-  if (schemaValidation.gist !== undefined && gistWithRawUri.unresolved.length === 0) {
-    validationDefects.push({
-      step: '4b_invariants',
-      detail: 'unresolved[] was dropped',
-      constraintIds: [],
-    });
+  // 4b (additional): unresolved_survives - open threads must round-trip.
+  //
+  // "Dropped" is only meaningful relative to a source. An empty unresolved[]
+  // means either (a) the source carried open threads and the gist lost them,
+  // or (b) the session had none outstanding, which is the healthy case.
+  // Aborting on (b) made every default-path compaction a silent no-op:
+  // GistAssembler only fills unresolved[] from a prior self-gist block, so a
+  // plain "context grew too big, compact it" always produced an empty array
+  // and always aborted at 4b, returning the original state at 0% savings.
+  //
+  // So the invariant is checked against the source: the open threads carried
+  // by gists already in the context must all still be present.
+  const priorUnresolved = collectPriorUnresolved(originalState.gists);
+  if (schemaValidation.gist !== undefined && priorUnresolved.length > 0) {
+    const kept = new Set(gistWithRawUri.unresolved.map((u) => u.trim().toLowerCase()));
+    const lost = priorUnresolved.filter((u) => !kept.has(u.trim().toLowerCase()));
+    if (lost.length > 0) {
+      validationDefects.push({
+        step: '4b_invariants',
+        detail: `unresolved[] dropped ${lost.length} open thread(s): ${lost.slice(0, 3).join(' | ')}`,
+        constraintIds: [],
+      });
+    }
   }
 
   // 4c: SECURITY GATE - constraints_byte_equal
