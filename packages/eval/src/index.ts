@@ -35,3 +35,15 @@ export * from './runner.js';
 export * from './reporter.js';
 export * from './grading.js';
 export * from './statistics.js';
+
+// The suites, in E-number order. Barrel exports are integrator-owned (AGENTS.md
+// §6), so each suite agent owned exactly its own file under `suites/` and the
+// aggregation happens here, once. The five suite modules were developed
+// concurrently and their 445 export names are collision-free, which is checked
+// rather than assumed -- two suites that both exported `SUITE_ID` would break
+// every consumer at import time.
+export * from './suites/e1-constraint-retention.js';
+export * from './suites/e2-rot-probe.js';
+export * from './suites/e3-output-format.js';
+export * from './suites/e5-cost-breakeven.js';
+export * from './suites/e6-redaction.js';
