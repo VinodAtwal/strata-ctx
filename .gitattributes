@@ -1,0 +1,13 @@
+# Normalize text files in the repository so `git diff --check` reports real
+# whitespace problems instead of line-ending noise.
+#
+# docs/tasks.csv is CRLF in both the working tree and history. Left alone, every
+# line of it is flagged as "trailing whitespace" on any edit to the board, which
+# trains you to ignore the one tool that would otherwise catch a stray space in
+# a code file. `text=auto` fixes the diagnosis without rewriting history: the
+# bytes on disk are untouched and existing diffs are unaffected.
+* text=auto
+
+# Generated build output and dependencies are never diffed.
+node_modules/ -diff -mergebinary
+dist/ -diff -mergebinary
