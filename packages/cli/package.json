@@ -1,0 +1,24 @@
+{
+  "name": "@strata-ctx/cli",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "strata-ctx": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@strata-ctx/integrations": "1.0.0",
+    "@strata-ctx/security": "1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.2"
+  }
+}

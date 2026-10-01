@@ -262,6 +262,7 @@ refactor.
 | [`canary`](packages/canary) | Runtime constraint-retention probe (soft-org flag prevents a false green), rot probe, and the turn scheduler. |
 | [`eval`](packages/eval) | Offline deterministic eval harness: versioned fixture format + validator, interleaved per-case runner, stable reporter, mock arms, grading, statistics; suites E1, E2, E3, E5, E6. **Zero deps and opens no sockets by design.** |
 | [`testing`](packages/testing) | Deterministic provider record/replay harness, fixture factories, and a `fixtures` CLI (`list`, `validate`, `summary`, `paths`). |
+| [`cli`](packages/cli) | The `strata-ctx` executable: `hook --check`, `hook run` (the `strata-ctx-hook` the Claude Code and Gemini profiles register), `mcp serve`, and `status`. Workspace deps load lazily so `--check` stays cheap. |
 
 Dependency rules and the full graph: [`AGENTS.md` §12](AGENTS.md). `core-types` is the only
 cross-stream contract; the only documented exceptions are `integrations → security` and
@@ -313,6 +314,30 @@ That works today for pinning, telemetry, passthrough, and the request-path trans
 wired. It does **not** yet compress end-to-end, because the lossy stages are not wired into the
 gateway (`CHANGELOG.md`, *Not yet*). Until they are, the honest claim is "context is preserved and
 measured".
+
+### The `strata-ctx` executable
+
+```bash
+node --import tsx packages/cli/src/index.ts hook --check --agent opencode
+```
+
+`hook --check` is a health check, not a description: it exits 0 only when the host config
+references the plugin **and** the plugin file exists (OpenCode), or references `strata-ctx hook
+run` **and** that command is on `PATH` (Claude Code, Gemini). A config pointing at a plugin that
+was never written, or at a command that is not installed, is the state a half-finished install
+leaves behind, and calling that "governance active" is how a project ends up running unguarded.
+
+| Command | What it does |
+|---|---|
+| `hook --check [--agent N] [--root D]` | Exit 0 if governance is live, 1 if not, 2 on a bad command line. |
+| `hook run [--event pre-tool-use\|post-tool-use]` | Reads a host hook payload on stdin, writes one JSON object on stdout. Applies the destructive-command floor and, post-tool-use, redaction. |
+| `mcp serve` | The six context tools over newline-delimited JSON on stdio. |
+| `status [--log P] [--json]` | Events and violations from a telemetry log. |
+
+`hook run` fails **closed** on `pre-tool-use`, including on a payload it cannot parse: a hook we
+cannot read is a hook that would let anything through. It fails **open** on `post-tool-use`,
+because the tool has already run and the only thing left to do is redact — refusing there would
+leak the secret and lose the governance block.
 
 ### Docker Compose
 
@@ -490,9 +515,11 @@ implemented.
 > function that synthesizes arm behavior (including deliberately dropping constraints so a retention
 > failure is observable). Fixtures are injected scenarios; grading runs on the resulting
 > observations. Nothing in `packages/eval/src/` opens a socket, by design. **Live A/B validation
-> (F2-1–F2-3) is not done** — it is marked `todo` and is externally blocked on model-provider
-> credentials and real agent surfaces. The canary probes likewise take **injected subjects**; the
-> offline tests drive a deterministic subject and a live gateway is what F2 would drive. Do not read
+> (F2-1–F2-3) is not done** — it is marked `todo`. An upstream credential is available and one free
+> model answers, but free endpoints rate-limit and vary between runs, so the blocker is obtaining a
+> *stable* upstream (or paying for heavy replication), not having no endpoint at all. The canary
+> probes likewise take **injected subjects**; the offline tests drive a deterministic subject and a
+> live gateway is what F2 would drive. Do not read
 > the gate thresholds below as evidence about production behavior. They are pre-registered bars;
 > the campaign that would clear or fail them has not been run.
 
@@ -529,7 +556,7 @@ Benjamini–Hochberg FDR control across the suite family. Underpowered cases mus
 
 ## Project status
 
-From `docs/tasks.csv`, the queue of record: **89 of 95 tasks are marked done** (6 `todo`). The
+From `docs/tasks.csv`, the queue of record: **96 of 101 tasks are marked done** (5 `todo`). The
 contract is frozen at `core-types@1.0.0` (digest `0a3c0fea6360e6d9`, 114 exports, drift-checked in
 CI).
 
@@ -543,12 +570,14 @@ CI).
 | Telemetry: cost engine, gross/net savings, `strata status` | **done** |
 | Output compression: TOON/TRON, classifier, directives | **done** |
 | Integrations: MCP server, Claude Code/Gemini/Aider/Cline/Roo/Copilot/OpenCode, surface-check | **done** |
+| `strata-ctx` executable: `hook --check`, `hook run`, `mcp serve`, `status` | **done** |
+| Live governance: OpenCode plugin and destructive-command floor, verified against a real agent | **done** |
 | Canary probes + scheduler | **done** |
 | Eval harness + statistics/grading + suites E1, E2, E3, E5, E6 | **done (offline / injected subjects)** |
-| `B-9` Ollama Tier 3 narration | **todo** — externally blocked on a running Ollama |
-| `F1-4` corpus curation (3 repos + licensing) | **todo** — externally blocked on download/clearance |
+| `B-9` Ollama Tier 3 narration | **done** — double opt-in; wired to the request path behind a profile, governance-stripped before narration |
+| `F1-4` corpus curation (3 repos + licensing) | **todo** — needs a repo selection and licensing clearance from you |
 | `F1-8` Suite E4 coding-task A/B | **todo** — depends on F1-4 |
-| `F2-1`–`F2-3` live A/B runner, report generator, full campaign | **todo** — externally blocked on live credentials and real agent surfaces |
+| `F2-1`–`F2-3` live A/B runner, report generator, full campaign | **todo** — an upstream credential is available and one free model answers; a defensible result still needs a stable model or heavy replication, because free endpoints rate-limit and vary |
 
 Be precise about the compression claim: the operator tasks are done, but `CHANGELOG.md` states
 plainly that **nothing compresses end-to-end yet** and the honest current claim is "context is

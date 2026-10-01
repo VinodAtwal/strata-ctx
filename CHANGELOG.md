@@ -42,6 +42,12 @@ release.
 - **The offline eval harness** (fixture format, interleaved runner, stable reporter, mock arm) and
   the statistics that go with it (McNemar exact, paired bootstrap, non-inferiority, Benjamini–
   Hochberg).
+- **The `strata-ctx` executable** (`packages/cli`): `hook --check` (a health check that exits 0 only
+  when the host config references the plugin *and* the plugin exists, or references `strata-ctx hook
+  run` *and* that command is on `PATH`), `hook run` (the executable the Claude Code and Gemini
+  profiles had been registering with nothing installed to answer them), `mcp serve` (the six context
+  tools over stdio), and `status`. Workspace dependencies load lazily, so `--check` does not
+  construct a context store to answer a question about configuration.
 - **Developer infrastructure**: four CI lanes with a self-check that proves the contract gate *can*
   fail, a weekly agent-surface sweep, and a local dev loop (`docker compose up`).
 
@@ -51,9 +57,14 @@ release.
   The honest current claim is "context is preserved and measured", not "context is reduced".
 - **No release has been cut.** The release pipeline exists and is green-capable; the manifests still
   need the changes listed in the first release note before a tag means anything.
-- **Blocked on the outside world:** `B-9` (Tier 3 local-model narration) needs a running Ollama,
-  `F1-4` needs a cleared 3-repo corpus, `F2-1`–`F2-3` need live model-provider credentials and real
-  agent surfaces. None of them are startable. [AGENTS.md §7](AGENTS.md)
+- **Blocked on the outside world:** `F1-4` needs a cleared 3-repo corpus (a repo selection and a
+  licensing decision). `F2-1`–`F2-3` have a working upstream endpoint and a credential, but a
+  *defensible* result needs a stable model: the free endpoints that answer today rate-limit and vary
+  between runs, so replication or a paid upstream is the remaining blocker. [AGENTS.md §7](AGENTS.md)
+- **Enforcement is a deterministic floor, not comprehension.** Pins, redaction, and an enumerated
+  destructive-command catalogue are enforced against real agent sessions. Prose policy that requires
+  interpreting intent is not enforced, and `hook run` is honest about coverage rather than implying
+  it. [decisions R11](docs/decisions.md)
 
 ---
 
