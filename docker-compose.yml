@@ -1,0 +1,209 @@
+# strata-ctx — local dev loop (J-7)
+#
+#   docker compose up                      gateway + ollama, nothing to configure
+#   docker compose --profile tier3 up      ...and pull the Tier 3 model
+#
+# Then point a real agent at it:
+#
+#   export ANTHROPIC_BASE_URL="http://127.0.0.1:8787"
+#
+# Three decisions worth knowing before you change anything here:
+#
+# 1. Every image is pinned by tag. `latest` in a dev loop is how a Tuesday
+#    disappears: the base image moves, and the thing that breaks is a line of
+#    your code that did not change. `node:20.19.0-bookworm-slim` also matches
+#    NODE_VERSION in .github/workflows/ci.yml, so the container and CI run the
+#    same runtime. For stronger pinning, add the digest from `docker inspect`
+#    after the first pull: `image: node:20.19.0-bookworm-slim@sha256:...`
+#
+# 2. The gateway does NOT depend on ollama. Not `service_started`, not
+#    `service_healthy` -- no edge at all. Tier 3 local-model narration is opt-in
+#    (docs/integrations.md §8, `local_model.enabled: false`), so a cold or
+#    broken ollama must not be able to keep the proxy down: pinning and
+#    telemetry are the product, narration is a dial. The ordering that *is*
+#    real is ollama -> ollama-pull, and it is expressed as a health condition
+#    rather than a sleep.
+#
+# 3. No secret appears in this file, in any image, or in any volume. There is
+#    no `.env` and no `env_file`. The dev loop runs against a deterministic
+#    in-process mock upstream, so it needs no provider key at all; real
+#    credentials stay on the host, on the client side, where the gateway
+#    forwards them (passthrough -- docs/decisions.md R7).
+
+name: strata-ctx
+
+services:
+  # ------------------------------------------------------------------ ollama
+  # Tier 3, opt-in. Present in the default `up` so the endpoint exists for
+  # anyone who wants it, without being required by anything. It binds 0.0.0.0
+  # inside its own namespace (the image's own default) and the published port
+  # is loopback-only, so it is not reachable from off-host.
+  ollama:
+    image: ollama/ollama:0.34.4
+    container_name: strata-ctx-ollama
+    init: true
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:11434:11434'
+    volumes:
+      # A named volume, not a bind: the weights are several gigabytes and
+      # `docker compose down -v` should not be the way you lose them.
+      - ollama-models:/root/.ollama
+    # `ollama list` is a real round trip to the server -- it has to list the
+    # local models to do it -- and it exits non-zero when the server is not up.
+    # Chosen over curling the API because the ollama binary is guaranteed to be
+    # in the ollama image and curl is not.
+    healthcheck:
+      test: ['CMD', 'ollama', 'list']
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 10s
+
+  # ------------------------------------------------------------- ollama-pull
+  # Behind a profile, so `docker compose up` never runs it. This is the whole of
+  # Tier 3's opt-in: nothing pulls 4.7 GiB because someone started the dev loop.
+  #
+  # Honest scope: the model named here is the one docs/integrations.md §8
+  # configures (`local_model.model: qwen2.5-coder:7b`), but the adapter that
+  # would *use* it -- B-9, local-model narration -- is `exec: ext` and still
+  # blocked on a running instance. So today this gives you an endpoint to point
+  # a client at, not a feature that switches on.
+  ollama-pull:
+    image: ollama/ollama:0.34.4
+    container_name: strata-ctx-ollama-pull
+    profiles: ['tier3']
+    # The image's ENTRYPOINT is `/bin/ollama` and its CMD is `serve`, so this
+    # overrides the command only: `/bin/ollama pull qwen2.5-coder:7b`.
+    command: ['pull', 'qwen2.5-coder:7b']
+    depends_on:
+      ollama:
+        # The real startup ordering. A pull issued before the server is
+        # listening fails, and a `sleep 5` that happens to work on your machine
+        # is not an ordering guarantee.
+        condition: service_healthy
+    restart: 'no'
+
+  # ----------------------------------------------------------------- gateway
+  gateway:
+    image: node:20.19.0-bookworm-slim
+    container_name: strata-ctx-gateway
+    init: true
+    restart: unless-stopped
+    working_dir: /app
+    ports:
+      # 8787 on the host, 8788 in the container -- see the command below. Both
+      # ends are loopback: nothing here is reachable from another machine.
+      - '127.0.0.1:8787:8788'
+    volumes:
+      # The repo, so an edit in your editor and a `docker compose restart` is
+      # the whole inner loop.
+      - .:/app
+      # Shadows the host's node_modules. This is not an optimisation: the host
+      # copy holds platform-specific binaries (tsx -> esbuild), and mounting it
+      # into a Linux container fails with an "invalid ELF header" that reads
+      # like a broken dependency tree. The volume is Linux-native; your host
+      # tree is untouched.
+      - gateway-node-modules:/app/node_modules
+      # Same reasoning for the npm cache, so a restart is seconds not a minute.
+      - gateway-npm-cache:/home/node/.npm
+      # Durable state: the artifact store, gists and the telemetry file are
+      # configured to live here (docs/integrations.md §8,
+      # `telemetry.file: ./.ctx/telemetry.jsonl`), and the directory is already
+      # gitignored, so transcripts and artifacts cannot be committed by
+      # accident. A bind rather than a named volume on purpose -- you can read
+      # these files with your own tools, which is the point of looking at them.
+      # tools/dev.ts currently streams telemetry to stdout instead, so this may
+      # well stay empty until a config file is in play.
+      - ./.ctx:/app/.ctx
+    environment:
+      NODE_ENV: development
+      npm_config_audit: 'false'
+      npm_config_fund: 'false'
+      # Deliberately no provider key. The upstream is the in-process mock, so a
+      # key here would be a secret with no job to do.
+    # tools/dev.ts drains in-flight requests for 10s on SIGTERM (DEFAULT_DRAIN_MS
+    # in packages/gateway/src/server.ts). Allow a little over that, so a
+    # `docker compose restart` during a request is a drain and not a kill.
+    stop_grace_period: 15s
+    healthcheck:
+      # /healthz is the real route, and node is already here, so this needs no
+      # curl, no wget and no extra image layer. It fails while the process is
+      # still installing or booting, which is the point: `docker compose ps`
+      # should say `starting`, not `Up`.
+      test:
+        - CMD
+        - node
+        - -e
+        - 'fetch("http://127.0.0.1:8787/healthz").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))'
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      # Covers the cold `npm ci`. During start_period a failing check does not
+      # count as a failure, so a slow first boot is not a crash loop.
+      start_period: 120s
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+
+        # 1. Dependencies, only when they are actually stale. Re-resolving the
+        #    same lockfile on every restart is a minute of the developer's
+        #    afternoon for nothing. `-nt` is a bash test, hence bash and not sh.
+        if [ ! -f node_modules/.package-lock.json ] || [ package-lock.json -nt node_modules/.package-lock.json ]; then
+          echo "[gateway] installing from package-lock.json"
+          npm ci
+        fi
+
+        # 2. Reachability. tools/dev.ts binds the gateway to 127.0.0.1, which is
+        #    the right posture for a single-user local tool (docs/decisions.md
+        #    Q5: refuse non-loopback binds) and useless from outside the
+        #    container's network namespace -- a published port cannot reach a
+        #    loopback-only listener. This forwards 0.0.0.0:8788 to
+        #    127.0.0.1:8787 so the host gets http://127.0.0.1:8787 without the
+        #    gateway ever binding a routable address.
+        #
+        #    Delete this whole step once the gateway reads its bind address from
+        #    the environment (the fix belongs in tools/dev.ts, not here); then
+        #    publish 8787 straight through and drop the 8788 above.
+        node -e '
+          const net = require("node:net");
+          const server = net.createServer((down) => {
+            const up = net.connect(8787, "127.0.0.1");
+            // Nagle batching adds latency to small SSE chunks, and first-token
+            // delta is a stated constraint of this product (N3). Two lines, on
+            // the one component that could otherwise reintroduce it.
+            up.setNoDelay(true);
+            down.setNoDelay(true);
+            const close = () => { up.destroy(); down.destroy(); };
+            up.on("error", close);
+            down.on("error", close);
+            up.on("close", close);
+            down.on("close", close);
+            up.pipe(down);
+            down.pipe(up);
+          });
+          server.listen(8788, "0.0.0.0");
+        ' &
+
+        # 3. The dev loop: `npm run dev`, invoked as node directly rather than
+        #    through npm. npm does not reliably forward SIGTERM to the script it
+        #    runs, so `stop_grace_period` above would expire against a node
+        #    process that never heard about the shutdown and the graceful drain
+        #    in tools/dev.ts would never run. This is the exact command from the
+        #    root package.json `dev` script, minus the wrapper.
+        #
+        #    What it gives you: the gateway on :8787, a deterministic mock
+        #    upstream on :8799 that replays fixtures instead of calling a
+        #    provider, two demo constraints pinned (one hard safety rule, one
+        #    soft org policy -- the split where the research says compaction
+        #    does its damage), and a real request sent through the proxy at
+        #    startup that asserts both constraints arrive intact at the
+        #    provider. No API key, no network, no fixtures on disk to curate.
+        exec node --import tsx tools/dev.ts
+
+volumes:
+  gateway-node-modules:
+  gateway-npm-cache:
+  ollama-models:

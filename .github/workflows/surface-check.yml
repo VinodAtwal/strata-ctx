@@ -4,11 +4,32 @@ on:
   push:
     branches: [main]
   pull_request:
+  # J-6. The weekly drift sweep. Agent extension surfaces move on the vendor's
+  # release schedule, not on ours, so a check that only ever runs on our pushes
+  # answers "did we break it" and never "did they".
+  #
+  # Monday 04:23 UTC, deliberately off :00. GitHub queues every scheduled
+  # workflow to the top of the hour, so the repository-wide `0 * * * *` crowd
+  # all wakes at once; :23 is an arbitrary minute that cannot collide with that
+  # default, and 04:23 UTC is late Sunday evening for the Americas -- where most
+  # Actions capacity and most of this project's contributors are -- so the run
+  # does not compete for runners or land in anyone's working day. Early in the
+  # week on purpose: drift found on Monday has a full week of owner time in
+  # front of it.
+  schedule:
+    - cron: '23 4 * * 1'
   workflow_dispatch:
 
 concurrency:
-  group: surface-check-${{ github.ref }}
-  cancel-in-progress: true
+  # Scheduled runs are keyed separately from the branch runs on purpose. Under a
+  # single key a `main` push and Monday's sweep would share a group, and with
+  # cancel-in-progress the two would cancel each other -- a sweep could silently
+  # delete a required gate, or a push could kill the weekly drift report. So the
+  # key includes the event name, and a sweep is never cancelled at all: it is
+  # cheap, it is the only run of its kind that week, and starting it twice in a
+  # row is not a cost worth optimising.
+  group: surface-check-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 env:
   NODE_VERSION: '20.19'
