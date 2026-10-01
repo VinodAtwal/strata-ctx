@@ -93,4 +93,9 @@ J-4,J,Dev infra,Fixtures + snapshot tooling; provider record/replay,par,1.5,J-1,
 J-5,J,Dev infra,Release pipeline: versioned packages + changelog + migration notes,par,1,J-1,1,-,done
 J-6,J,Dev infra,surface-check weekly scheduler,par,0.5,E-8,2,-,done
 J-7,J,Dev infra,Local dev loop: compose for gateway + ollama; fixture-seeded,par,1,J-1,0,-,done
-E-9,E,Integrations,OpenCode plugin + MCP profile (governed tool provider),agent,1.5d,"E-1,E-5,E-6",3,none,done
+E-9,E,Integrations,OpenCode plugin + MCP profile (governed tool provider),agent,1.5d,"E-1,E-5,E-6",3,none,todo
+E-10,E,Integrations,OpenCode plugin: self-contained emit (no bare imports) + fail-loud on unloadable governance,seq,1.0,E-9,3,none,todo
+E-11,E,Integrations,Drop non-OpenCode config keys from profile: strataHooks (not an OpenCode key) + mcp block (no CLI binary),seq,0.5,E-9,3,none,todo
+E-12,E,Integrations,Verify a real OpenCode session loads the plugin and a pre_tool_use hook fires (binding proof),seq,1.0,"E-10,E-11",3,none,todo
+E-13,E,Integrations,strata-ctx CLI binary: mcp serve + hook entrypoints (deferred; unblocks the MCP profile),seq,2.0,E-11,3,none,todo
+F2-0,F,Evals,"Local-machine real-mode E2E: OpenCode -> gateway -> real upstream, with a governed refusal assertion",seq,1.5,E-12,3,none,todo

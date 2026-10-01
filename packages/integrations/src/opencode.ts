@@ -105,7 +105,20 @@ export const OPENCODE_CONFIG_SCHEMA = 'https://opencode.ai/config.json';
 
 /** Auto-loaded by OpenCode at startup; this is where the plugin module lives. */
 export const OPENCODE_PLUGIN_DIR = '.opencode/plugins';
-export const OPENCODE_PLUGIN_FILE = 'strata-governed.js';
+/**
+ * `.mjs`, not `.js`. The emitted module uses `import`, and a `.js` file is
+ * CommonJS to Node unless the nearest `package.json` says `"type": "module"`.
+ * In a user's OpenCode project there is usually no such `package.json`, so the
+ * plugin failed to load with `SyntaxError: Cannot use import statement outside a
+ * module` and OpenCode registered no hooks -- governance silently off.
+ *
+ * OpenCode itself runs on Bun and would have tolerated the `.js`, which is what
+ * makes this worth fixing rather than shrugging at: the plugin then worked on
+ * one host and not another, which is a property of the filename rather than of
+ * anything the code did. `.mjs` is unambiguous under Node, Bun and any other ESM
+ * host.
+ */
+export const OPENCODE_PLUGIN_FILE = 'strata-governed.mjs';
 
 /** OpenCode's rules file, and therefore its system-instruction surface. */
 export const OPENCODE_RULES_FILE = 'AGENTS.md';
@@ -471,6 +484,12 @@ export function resolveOpenCodePaths(options: OpenCodePathOptions = {}): OpenCod
 
 export interface OpenCodeSpecOptions extends OpenCodePathOptions {
   /**
+   * Emit and reconcile the `strataHooks` declarations. Off by default because
+   * OpenCode does not read that key; see `OpenCodeProfileOptions` for the long
+   * form. Shared with `buildOpenCodeProfile` so the two surfaces cannot disagree.
+   */
+  readonly includeHookDeclarations?: boolean;
+  /**
    * The identity `install()`/`uninstall()` use to recognise their own hook
    * entries. Defaults to the plugin module path, which is what the profile
    * writes into `strataHooks`, so the two cannot name different things.
@@ -511,6 +530,11 @@ export function openCodeHookSpec(options: OpenCodeSpecOptions = {}): AgentHookSp
     },
     tools,
     rewrite: OPENCODE_RESULT_REWRITE,
+    // The profile omits `strataHooks` unless `includeHookDeclarations` is set, so
+    // the installer must not add them on its own. A host that does not read the
+    // key would treat the written entries as configuration it silently ignores,
+    // and a file whose two writers disagree is a file nobody can trust.
+    declarationsEnabled: options.includeHookDeclarations ?? false,
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: requireTimeout(options.timeoutMs) }),
   };
 }
@@ -566,11 +590,20 @@ export interface OpenCodeProfileDocument {
   /** `provider/model`, the form OpenCode's picker expects. */
   readonly model: string;
   readonly provider: Readonly<Record<string, OpenCodeProviderEntry>>;
-  readonly mcp: Readonly<Record<string, OpenCodeMcpServerEntry>>;
+  /**
+   * Absent unless `includeMcpServer`. Optional rather than an empty record: an
+   * empty `mcp` object is indistinguishable from "no MCP configured", while an
+   * absent key says the question was never asked.
+   */
+  readonly mcp?: Readonly<Record<string, OpenCodeMcpServerEntry>>;
   readonly plugin: readonly string[];
   readonly instructions: readonly string[];
-  /** See `OPENCODE_HOOKS_KEY`; the interface spells the literal. */
-  readonly strataHooks: readonly OpenCodeHookDeclaration[];
+  /**
+   * Absent unless `includeHookDeclarations`. See the option's doc comment: this
+   * is not a key OpenCode reads, so emitting it by default would document a
+   * mechanism in the shape of a setting.
+   */
+  readonly strataHooks?: readonly OpenCodeHookDeclaration[];
   readonly 'x-strata-governance'?: string;
   readonly 'x-strata-guarantee-tier'?: GovernanceGuaranteeTier;
 }
@@ -595,6 +628,23 @@ export interface OpenCodeProfileOptions extends OpenCodePathOptions {
    * caveat travels with the file so nobody enables this path without reading it.
    */
   readonly includeGovernanceNotice?: boolean;
+  /**
+   * Emit the `mcp` block. Off by default: the block starts a `strata-ctx mcp
+   * serve` child process, and no package in this repo declares a `bin`, so with
+   * it on the generated config names a command that cannot run. It is opt-in
+   * because the tools are worth having once the CLI exists, and the CLI is a
+   * separate piece of work -- not because it works today.
+   */
+  readonly includeMcpServer?: boolean;
+  /**
+   * Emit the `strataHooks` declarations. Off by default, and for a different
+   * reason: `strataHooks` is a key this repo invented. OpenCode does not read
+   * it, so the declarations are documentation of the hook events, not something
+   * that causes them to fire. The hooks themselves run because OpenCode loads
+   * the plugin named under `plugin`, which exports them. Writing them into the
+   * config implies a mechanism that does not exist.
+   */
+  readonly includeHookDeclarations?: boolean;
 }
 
 export interface OpenCodeProfile {
@@ -737,10 +787,10 @@ export function buildOpenCodeProfile(options: OpenCodeProfileOptions = {}): Open
     $schema: OPENCODE_CONFIG_SCHEMA,
     model: `${resolved.providerId}/${resolved.model}`,
     provider: { [resolved.providerId]: providerEntry(resolved, credential.placeholder) },
-    mcp: { [resolved.mcpServerName]: mcpServerEntry(resolved) },
     plugin: [relativeToRoot(resolved.rootDir, paths.pluginPath)],
     instructions: [relativeToRoot(resolved.rootDir, paths.rulesPath)],
-    strataHooks: hookDeclarations(resolved),
+    ...(options.includeMcpServer ? { mcp: { [resolved.mcpServerName]: mcpServerEntry(resolved) } } : {}),
+    ...(options.includeHookDeclarations ? { strataHooks: hookDeclarations(resolved) } : {}),
     ...noticeKeys,
   };
 
@@ -869,6 +919,12 @@ export interface OpenCodePluginOptions extends OpenCodeSpecOptions {
    * case: with no inbound context, `enforcePins` produces the policy set anyway.
    */
   readonly contextProvider?: (input: OpenCodeToolCallInput) => ContextState | undefined;
+  /**
+   * Where the generated plugin imports governance from. Defaults to
+   * `DEFAULT_PLUGIN_SPECIFIER`, which only resolves when
+   * `@strata-ctx/integrations` is installed beside the plugin.
+   */
+  readonly pluginSpecifier?: string;
 }
 
 export class OpenCodePlugin {
@@ -1095,17 +1151,46 @@ export function createOpenCodePlugin(options: OpenCodePluginOptions): OpenCodePl
  * returns its hooks. `strata-ctx` writes this file; nothing else imports it,
  * which is why it is a string rather than a second implementation.
  */
+/**
+ * The specifier the generated plugin imports governance from.
+ *
+ * A bare package name only resolves if `@strata-ctx/integrations` is installed
+ * where OpenCode loads the plugin -- the user's project directory, which has its
+ * own `node_modules` and its own lockfile, and is not this monorepo. When it is
+ * absent the import throws at load and OpenCode registers no hooks, so the
+ * gateway is left enforcing nothing while the config still advertises a
+ * `hook_enforced` tier. A caller that knows where the module actually lives --
+ * an absolute path, a `file:` URL, a linked workspace -- passes it here.
+ */
+export const DEFAULT_PLUGIN_SPECIFIER = '@strata-ctx/integrations';
+
 export function renderPluginModule(options: OpenCodePluginOptions): string {
+  const specifier = options.pluginSpecifier ?? DEFAULT_PLUGIN_SPECIFIER;
+  const policy = options.policy;
   return [
-    '// Generated by strata-ctx (E-9). Do not hand-edit; regenerate instead.',
+    '// Generated by strata-ctx (E-9/E-10). Do not hand-edit; regenerate instead.',
     '//',
     '// Enforcement lives here, not in the config: OpenCode only guarantees that a',
     "// registered plugin's tool.execute.* hooks run. This file is that plugin.",
-    "import { createOpenCodePlugin } from '@strata-ctx/integrations';",
+    '//',
+    '// Governance is fail-closed, and that is the opposite of how the context',
+    '// path behaves on purpose. A lossy stage that throws must forward the user\'s',
+    '// context untouched, because losing their work is worse than spending more',
+    '// tokens. But a governance layer that fails to load has no correct degraded',
+    '// mode: without it every tool call runs unguarded and the constraint set was',
+    '// never enforced at all. Returning empty hooks would turn a broken install',
+    '// into a silent one, so this throws instead.',
+    `import { createOpenCodePlugin } from ${JSON.stringify(specifier)};`,
     '',
-    `const POLICY = ${JSON.stringify(options.policy, null, 2)};`,
+    `const POLICY = ${JSON.stringify(policy, null, 2)};`,
     '',
     'export const StrataGoverned = async () => {',
+    '  if (POLICY === undefined) {',
+    '    throw new Error(',
+    '      "strata-ctx: this plugin was generated without a policy, so there is nothing to enforce. " +',
+    '      "Regenerate it with buildOpenCodeProfile/renderPluginModule rather than hand-writing the file.",',
+    '    );',
+    '  }',
     '  const plugin = createOpenCodePlugin({',
     '    policy: POLICY,',
     `    rootDir: ${JSON.stringify(resolveRootDir(options.rootDir))},`,

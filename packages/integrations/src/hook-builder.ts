@@ -173,6 +173,17 @@ export interface AgentHookSpec {
   readonly tools: readonly string[];
   readonly rewrite: ResultRewriteSpec;
   readonly timeoutMs?: number;
+  /**
+   * Whether this host's config should carry the hook declarations at all.
+   *
+   * Defaults to true, which is correct for every host whose config format
+   * actually defines a hook list. A host whose key is not read by the host --
+   * OpenCode's `strataHooks` is not -- sets this false, and then `install()` is a
+   * no-op that reports so. Otherwise the profile and the installer disagree
+   * about the same file, and `install()` silently rewrites what
+   * `buildOpenCodeProfile()` just wrote.
+   */
+  readonly declarationsEnabled?: boolean;
 }
 
 export interface BuildHooksOptions {
@@ -245,6 +256,9 @@ export interface PostToolUseResult {
 export type HookAction = 'install' | 'uninstall' | 'instructions' | 'remove-instructions';
 
 export type HookReportStatus = 'ok' | 'unchanged' | 'blocked' | 'absent';
+
+/** Reported as `reason` when a host's config does not act on hook declarations. */
+const DECLARATIONS_DISABLED_REASON = 'host_config_does_not_read_hook_declarations';
 
 export interface HookReport {
   readonly agent: string;
@@ -572,6 +586,9 @@ class ParameterizedHooks implements HookBundle {
   // -- install / uninstall ------------------------------------------------
 
   install(): HookReport {
+    if (this.#spec.declarationsEnabled === false) {
+      return this.#report('install', 'unchanged', this.#spec.hooks.path, [], [], 0, DECLARATIONS_DISABLED_REASON);
+    }
     const report = this.#writeHooks('install');
     // Instructions are a second file-level surface, so they get their own report;
     // a blocked hook install must not be followed by an instruction write that
@@ -581,6 +598,9 @@ class ParameterizedHooks implements HookBundle {
   }
 
   uninstall(): HookReport {
+    if (this.#spec.declarationsEnabled === false) {
+      return this.#report('install', 'unchanged', this.#spec.hooks.path, [], [], 0, DECLARATIONS_DISABLED_REASON);
+    }
     const report = this.#writeHooks('uninstall');
     if (report.status !== 'blocked') this.removeInstructions();
     return report;

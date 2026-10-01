@@ -258,8 +258,10 @@ describe('buildOpenCodeProfile()', () => {
   });
 
   it('registers the strata MCP server as an enabled local server', () => {
-    const profile = buildOpenCodeProfile({ rootDir: root });
-    const server = parseProfile(profile).mcp[OPENCODE_MCP_SERVER_NAME];
+    const profile = buildOpenCodeProfile({ rootDir: root, includeMcpServer: true });
+    const mcp = parseProfile(profile).mcp;
+    assert.ok(mcp, 'the MCP block was requested and must be present');
+    const server = mcp[OPENCODE_MCP_SERVER_NAME];
 
     assert.ok(server, 'the strata MCP server must be registered');
     assert.equal(server.type, 'local');
@@ -275,8 +277,9 @@ describe('buildOpenCodeProfile()', () => {
   });
 
   it('passes the gateway and policy file to the MCP server as an argv array, never a shell string', () => {
-    const profile = buildOpenCodeProfile({ rootDir: root });
+    const profile = buildOpenCodeProfile({ rootDir: root, includeMcpServer: true });
     const document = parseProfile(profile);
+    assert.ok(document.mcp, 'the MCP block was requested and must be present');
     const server = document.mcp[OPENCODE_MCP_SERVER_NAME];
     assert.ok(server);
     const command = server.command;
@@ -311,8 +314,9 @@ describe('buildOpenCodeProfile()', () => {
   });
 
   it('declares both tool-execution lifecycle hooks in the strata-owned key', () => {
-    const profile = buildOpenCodeProfile({ rootDir: root });
+    const profile = buildOpenCodeProfile({ rootDir: root, includeHookDeclarations: true });
     const declarations = parseProfile(profile).strataHooks;
+    assert.ok(declarations, 'declarations were requested and must be present');
 
     assert.equal(declarations.length, HOOK_EVENTS.length);
     assert.deepEqual(declarations.map((d) => d.event), [...HOOK_EVENTS]);
@@ -320,6 +324,22 @@ describe('buildOpenCodeProfile()', () => {
       assert.equal(declaration.command, profile.pluginPath);
       assert.equal(typeof declaration.timeout, 'number');
     }
+  });
+
+  it('emits neither the MCP block nor the strataHooks key by default', () => {
+    const document = parseProfile(buildOpenCodeProfile({ rootDir: root }));
+
+    // Both keys name things that do not work: `strataHooks` is not read by
+    // OpenCode at all, and the MCP block starts a `strata-ctx` command that no
+    // package in this repo declares a `bin` for. Emitting them by default makes
+    // the generated config a list of intentions, and a reader has no way to tell
+    // which entries are wired up. Absent keys say the question was never asked.
+    assert.equal(document.mcp, undefined);
+    assert.equal(document.strataHooks, undefined);
+    assert.equal(document[OPENCODE_HOOKS_KEY], undefined);
+    // The enforcement path itself is still there: the plugin is what runs the
+    // hooks, and it is registered unconditionally.
+    assert.deepEqual([...document.plugin], [join('.opencode', 'plugins', OPENCODE_PLUGIN_FILE)]);
   });
 
   it('carries the credential as an {env:} reference and never as a value', () => {
@@ -837,6 +857,13 @@ describe('buildOpenCodePlugin() governance', () => {
 
 describe('buildOpenCodePlugin() file surfaces', () => {
   function installed(policy: StrataPolicy = TEST_POLICY): { p: OpenCodePlugin; profile: OpenCodeProfile } {
+    const profile = buildOpenCodeProfile({ rootDir: root, includeHookDeclarations: true });
+    writeFileSync(profile.targetPath, profile.content);
+    const p = createOpenCodePlugin({ policy, rootDir: root, includeHookDeclarations: true });
+    return { p, profile };
+  }
+
+  function installedDeclarationsOff(policy: StrataPolicy = TEST_POLICY): { p: OpenCodePlugin; profile: OpenCodeProfile } {
     const profile = buildOpenCodeProfile({ rootDir: root });
     writeFileSync(profile.targetPath, profile.content);
     const p = createOpenCodePlugin({ policy, rootDir: root });
@@ -852,8 +879,21 @@ describe('buildOpenCodePlugin() file surfaces', () => {
     assert.equal(readFileSync(profile.targetPath, 'utf8'), profile.content);
   });
 
+  it('install() leaves the config alone when declarations are disabled', () => {
+    const { p, profile } = installedDeclarationsOff();
+    const before = readFileSync(profile.targetPath, 'utf8');
+
+    const report = p.install();
+
+    assert.equal(report.status, 'unchanged');
+    assert.equal(report.changed, false);
+    assert.equal(report.reason, 'host_config_does_not_read_hook_declarations');
+    assert.deepEqual([...report.added], []);
+    assert.equal(readFileSync(profile.targetPath, 'utf8'), before);
+  });
+
   it('install() adds the hook declarations and preserves foreign config', () => {
-    const profile = buildOpenCodeProfile({ rootDir: root });
+    const profile = buildOpenCodeProfile({ rootDir: root, includeHookDeclarations: true });
     const foreign = {
       $schema: OPENCODE_CONFIG_SCHEMA,
       model: 'anthropic/claude-sonnet-4-5',
@@ -861,7 +901,7 @@ describe('buildOpenCodePlugin() file surfaces', () => {
       plugin: ['someone-elses-plugin'],
     };
     writeFileSync(profile.targetPath, `${JSON.stringify(foreign, null, 2)}\n`);
-    const p = createOpenCodePlugin({ policy: TEST_POLICY, rootDir: root });
+    const p = createOpenCodePlugin({ policy: TEST_POLICY, rootDir: root, includeHookDeclarations: true });
 
     const report = p.install();
 
@@ -891,9 +931,12 @@ describe('buildOpenCodePlugin() file surfaces', () => {
   });
 
   it('refuses to touch a config it cannot parse', () => {
-    const profile = buildOpenCodeProfile({ rootDir: root });
+    // Declarations on, because that is the mode in which the config is written
+    // at all. The point of the guarantee is that an unparsable file is never
+    // rewritten, and a build that never touches the file has not earned it.
+    const profile = buildOpenCodeProfile({ rootDir: root, includeHookDeclarations: true });
     writeFileSync(profile.targetPath, '{ this is not json');
-    const p = createOpenCodePlugin({ policy: TEST_POLICY, rootDir: root });
+    const p = createOpenCodePlugin({ policy: TEST_POLICY, rootDir: root, includeHookDeclarations: true });
 
     const report = p.install();
 
@@ -1026,7 +1069,7 @@ describe('renderPluginModule()', () => {
   it('emits a plugin module that wires createOpenCodePlugin to the generated root', () => {
     const text = renderPluginModule({ policy: TEST_POLICY, rootDir: root });
 
-    assert.ok(text.includes("import { createOpenCodePlugin } from '@strata-ctx/integrations';"));
+    assert.ok(text.includes('import { createOpenCodePlugin } from "@strata-ctx/integrations";'));
     assert.ok(text.includes('export const StrataGoverned'));
     assert.ok(text.includes('return plugin.hooks;'));
     assert.ok(text.includes(JSON.stringify(root)));
@@ -1050,6 +1093,34 @@ describe('renderPluginModule()', () => {
       parsed.constraints.map((c) => c.text).sort(),
       [...PINNED],
     );
+  });
+
+  it('fails loudly instead of registering empty hooks when the policy is missing', () => {
+    // The failure this guards is silent and total: OpenCode loads the plugin,
+    // the import fails or the policy is absent, the export yields no hooks, and
+    // every tool call then runs with no constraint enforced -- while the config
+    // still advertises `hook_enforced`. Nothing errors, nothing is logged, and
+    // the guarantee is simply false.
+    const text = renderPluginModule({ policy: undefined as unknown as StrataPolicy, rootDir: root });
+
+    assert.ok(text.includes('throw new Error('), 'the generated module throws instead of returning no hooks');
+    assert.ok(text.includes('POLICY === undefined'));
+    // Still returns the hook bundle on the happy path, or the guard would be
+    // trivially satisfiable by never registering anything.
+    assert.ok(text.includes('return plugin.hooks;'));
+  });
+
+  it('names a specifier that is resolvable from the project, not the monorepo', () => {
+    const bare = renderPluginModule({ policy: TEST_POLICY, rootDir: root });
+    assert.ok(bare.includes('from "@strata-ctx/integrations"'));
+
+    const linked = renderPluginModule({
+      policy: TEST_POLICY,
+      rootDir: root,
+      pluginSpecifier: 'file:///opt/strata/integrations/dist/index.js',
+    });
+    assert.ok(linked.includes('from "file:///opt/strata/integrations/dist/index.js"'));
+    assert.ok(!linked.includes('@strata-ctx/integrations'), 'the default specifier should be replaced, not appended');
   });
 
   it('is deterministic for a given policy and root', () => {

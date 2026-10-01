@@ -270,7 +270,7 @@
         "instructionFile": "AGENTS.md"
       },
       "profiles": [
-        ".opencode/plugins/strata-governed.js",
+        ".opencode/plugins/strata-governed.mjs",
         "AGENTS.md",
         "opencode.json"
       ],
