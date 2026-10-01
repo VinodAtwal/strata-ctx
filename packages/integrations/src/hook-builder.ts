@@ -68,8 +68,14 @@ import {
   runId as brandRunId,
   sha256,
 } from '@strata-ctx/core-types';
-import type { RedactionFinding } from '@strata-ctx/security';
-import { RedactionEngine, SecretBlockedError, optionsFromPolicy } from '@strata-ctx/security';
+import type { DestructiveFinding, RedactionFinding } from '@strata-ctx/security';
+import {
+  RedactionEngine,
+  SecretBlockedError,
+  assertDestructiveRulesWellFormed,
+  optionsFromPolicy,
+  scanDestructive,
+} from '@strata-ctx/security';
 import { MemorySink, type StrataTelemetryEvent, type TelemetrySink } from '@strata-ctx/telemetry';
 
 // ---------------------------------------------------------------------------
@@ -189,6 +195,13 @@ export interface AgentHookSpec {
 export interface BuildHooksOptions {
   readonly policy: StrataPolicy;
   readonly telemetrySink?: TelemetrySink;
+  /**
+   * The deterministic tool-argument floor (I-9). Defaults to on, because a
+   * constraint system that silently cannot refuse anything is a logging system --
+   * but it is a switch rather than a constant so a user who hits a false positive
+   * can turn it off rather than abandoning the pin guarantee to get there.
+   */
+  readonly destructiveGuard?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +247,12 @@ export interface PreToolUseResult {
   readonly turn: number;
   /** Pin-integrity defects observed on this request. */
   readonly defects: readonly string[];
+  /**
+   * What the deterministic tool-argument floor blocked, if anything. Separate
+   * from `defects` because a pin defect means *we* lost something and this means
+   * the call was refused: one is a bug in us, the other is the product working.
+   */
+  readonly blocked?: readonly DestructiveFinding[];
   readonly problem?: HookRequestProblem;
 }
 
@@ -471,6 +490,7 @@ class ParameterizedHooks implements HookBundle {
   readonly #pinnedText: readonly string[];
   readonly #policyHash: string;
   readonly #tools: ReadonlySet<string>;
+  readonly #guard: boolean;
   readonly #sessions = new Map<string, Session>();
 
   constructor(spec: AgentHookSpec, options: BuildHooksOptions) {
@@ -481,6 +501,11 @@ class ParameterizedHooks implements HookBundle {
     this.#pinnedText = Object.freeze(pinSetText(options.policy));
     this.#policyHash = sha256(this.#pinnedText.join('\n'));
     this.#tools = new Set(spec.tools);
+    this.#guard = options.destructiveGuard ?? true;
+    // Structural, once per bundle rather than per call: a rule missing its `g`
+    // flag reports the first match per string and nothing else, which looks
+    // healthy in a test and misses in production.
+    if (this.#guard) assertDestructiveRulesWellFormed();
   }
 
   get agent(): string {
@@ -793,6 +818,41 @@ class ParameterizedHooks implements HookBundle {
     });
 
     session.lastSent = applied.expected;
+
+    // The floor. Runs after the pin work on purpose: a blocked call still has to
+    // have had its constraints materialised, so the user refusing one command does
+    // not quietly un-pin the session.
+    if (this.#guard) {
+      const scan = scanDestructive({ tool: request.tool, parameters: request.parameters });
+      if (scan.verdict === 'deny') {
+        // `canary_fail`, not a new kind: `core-types` is frozen, so the union
+        // cannot gain a member without a contract bump, and the honest reuse is
+        // the existing "the safety system caught something" kind. The findings
+        // carry the rule ids, so the report says which floor fired. Reusing a
+        // kind is worse than a new one only if a reader cannot tell them apart,
+        // and `blocked: true` versus `false` is exactly that distinction.
+        this.#emit({
+          type: 'violation',
+          runId: request.runId,
+          kind: 'canary_fail',
+          constraintIds: scan.findings.map((f) => f.id),
+          blocked: true,
+        });
+        return {
+          decision: 'block',
+          handled: true,
+          tool: request.tool,
+          context: applied.state,
+          instructions: applied.expected.join('\n'),
+          pinned: applied.expected,
+          sessionId: request.sessionId,
+          runId: request.runId,
+          turn: request.turn,
+          defects: drift === null || drift.ok ? [] : drift.defects.map((d) => d.text),
+          blocked: scan.findings,
+        };
+      }
+    }
 
     return {
       decision: 'allow',

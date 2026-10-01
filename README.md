@@ -76,13 +76,23 @@ upstream wire format. Around the pipeline sit four subsystems: the **gist engine
 compaction + artifact store), **governance** (immutable pinning), the **canary scheduler**
 (runtime probes), and **telemetry** (cost/savings accounting).
 
-> **Read this before you read the feature list.** As of this writing, the lossy stages are
-> **implemented and unit-tested as library operators, but not yet wired into the gateway's request
-> path.** `packages/gateway/src/server.ts` currently runs `partition → (no lossy stage) → restore →
-> pin`. So the honest current claim is **"context is preserved and measured"**, not "context is
-> reduced". This is stated in [`CHANGELOG.md`](CHANGELOG.md) under *Not yet* and enforced by the
-> code comment at `server.ts:314`. The board marks the operator tasks done; end-to-end compaction is
-> not.
+> **Read this before you read the feature list.** Tier 0 (`dedupe`, `truncate`, `triage`) is
+> **wired into the gateway's request path** — `packages/gateway/src/server.ts` calls `runTier0`, then
+> `enforcePins` last — so the current claim is **"context is reduced, pinned, and measured"**.
+> Tiers 1–2 (`compact`, `compress`, `serialize`) remain library operators that are not yet on the
+> request path, and Tier 3 narration is opt-in via `pipeline.tokenCompression: 'local'` with a
+> configured model.
+>
+> What "enforced" means, stated plainly, because it is narrower than the word suggests:
+>
+> - **Pin survival, integrity, and redaction are enforced.** Constraints are materialised into the
+>   request every turn, drift is detected and reported, and tool results are scanned for credentials.
+> - **A deterministic floor refuses destructive tool calls** (`rm -rf`, force-push, `DROP TABLE`,
+>   setuid, writes to shell profiles and `authorized_keys`, and similar). It is enumerated rules,
+>   not intent: `mv /data /dev/null` and a command assembled from runtime variables are not caught.
+> - **Semantic policy enforcement is not implemented.** No component reads a constraint's *meaning*
+>   and judges a tool call against it, so a policy written as prose cannot yet veto an action it
+>   does not have a literal rule for.
 
 ## Feature overview
 

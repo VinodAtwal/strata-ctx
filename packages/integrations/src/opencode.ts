@@ -65,6 +65,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { ContextState, StrataPolicy } from '@strata-ctx/core-types';
+import type { DestructiveFinding } from '@strata-ctx/security';
 import type { TelemetrySink } from '@strata-ctx/telemetry';
 
 import {
@@ -897,6 +898,12 @@ export interface OpenCodeMaterialization {
   readonly context?: ContextState;
   /** Pin-integrity defects observed against the previous send. */
   readonly defects: readonly string[];
+  /**
+   * Which deterministic rules refused this call, when the decision is `block`
+   * because of them rather than because a constraint failed to materialise.
+   * Carried so the host can name the reason instead of guessing.
+   */
+  readonly blocked?: readonly DestructiveFinding[];
   readonly problem?: PreToolUseResult['problem'];
 }
 
@@ -951,12 +958,18 @@ export class OpenCodePlugin {
     this.#pluginHooks = {
       'tool.execute.before': (input, output) => {
         const materialization = this.materialize(input, output);
-        if (materialization.decision === 'block') {
-          throw new StrataGovernanceError(
-            'strata-ctx blocked this tool call: the pinned governance constraints could not be materialised.',
-            materialization.pinned,
-          );
-        }
+        if (materialization.decision !== 'block') return;
+        // Two different reasons to refuse, and the message has to name which.
+        // Reporting a blocked destructive command as "constraints could not be
+        // materialised" sends an operator looking at the pin pipeline -- which is
+        // working fine -- instead of at the rule that fired.
+        const refused = materialization.blocked;
+        throw new StrataGovernanceError(
+          refused !== undefined && refused.length > 0
+            ? `strata-ctx blocked this tool call: ${refused.map((f) => f.description).join('; ')} (${refused.map((f) => f.id).join(', ')}).`
+            : 'strata-ctx blocked this tool call: the pinned governance constraints could not be materialised.',
+          materialization.pinned,
+        );
       },
       'tool.execute.after': (input, output) => this.#applyRedaction(input, output),
       'experimental.session.compacting': (_input, output) => this.reassert(output),
@@ -1028,6 +1041,7 @@ export class OpenCodePlugin {
       ...(result.context === undefined ? {} : { context: result.context }),
       defects: result.defects,
       ...(result.problem === undefined ? {} : { problem: result.problem }),
+      ...(result.blocked === undefined ? {} : { blocked: result.blocked }),
     };
   }
 

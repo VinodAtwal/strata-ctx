@@ -57,6 +57,22 @@ export type { EntropyOptions, EntropyRejection, EntropyVerdict } from './entropy
 export { DEFAULT_REDACTION_OPTIONS, RedactionEngine, SecretBlockedError, SecretLeakError, assertCatalogueWellFormed, containsSecret, optionsFromPolicy, rankOf, redactDeep, redactText, redactionModeFromPolicy, resolveEntropyOptions, scanSecrets } from './redact.js';
 export type { Confidence, RedactionFinding, RedactionMode, RedactionOptions, RedactionResult, SecretKind } from './redact.js';
 export { SECRET_PATTERNS } from './patterns.js';
+export {
+  DESTRUCTIVE_RULES,
+  assertDestructiveRulesWellFormed,
+  commandSegments,
+  extractTargets,
+  invokes,
+  scanDestructive,
+} from './destructive.js';
+export type {
+  DestructiveFinding,
+  DestructiveRule,
+  DestructiveRuleId,
+  DestructiveScan,
+  DestructiveVerdict,
+  ScanTarget,
+} from './destructive.js';
 export type { SecretPattern } from './patterns.js';
 export type { ArtifactRef } from '@strata-ctx/core-types';
 
