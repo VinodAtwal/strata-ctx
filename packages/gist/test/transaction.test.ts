@@ -9,6 +9,7 @@ import {
   createTestPolicy,
   createTestContextState,
   createMockArtifactStore,
+  createSystemMessage,
   createTelemetryCapture,
   createGistMissingConstraint,
   createGistExtraConstraint,
@@ -69,9 +70,21 @@ describe('runCompactionTransaction', () => {
       // Turn counter incremented
       assert.equal(result.state.turn, baseState.turn + 1);
 
-      // Original transcript range [2, 5] evicted, but gist message added
-      // Original had 6 messages (indices 0-5), evict 2-5 (4 messages), add 1 gist message = 3 messages
-      assert.equal(result.state.messages.length, 3);
+      // What survives eviction is exactly: one repinned governance message plus
+      // the gist just committed. The transcript is gone, but only because the
+      // raw artifact was proven to still hold it.
+      assert.equal(result.state.messages.length, 2);
+      const [survivor, gistMessage] = result.state.messages;
+      assert.ok(survivor !== undefined && gistMessage !== undefined);
+      assert.ok(
+        survivor.content.every((block) => block.meta.tier === 'governance'),
+        'the surviving message must be the repinned governance block',
+      );
+      assert.equal(
+        survivor.content.length,
+        2,
+        'repin collapses governance into one message carrying both constraints',
+      );
 
       // Pins should be intact (repinned)
       assert.deepEqual(result.state.pinned, ['Never delete user data', 'Always validate input']);
@@ -96,7 +109,7 @@ describe('runCompactionTransaction', () => {
       assert.equal(compactionEvent.validationPassed, true);
       assert.equal(compactionEvent.beforeTokens, baseState.tokenEstimate);
       assert.ok(compactionEvent.afterTokens < compactionEvent.beforeTokens);
-      assert.equal(compactionEvent.droppedCount, 4); // turns 2,3,4,5
+      assert.equal(compactionEvent.droppedCount, 4); // user, assistant, tool_result, assistant
     });
   });
 
@@ -426,6 +439,104 @@ describe('runCompactionTransaction', () => {
       assert.ok(!result.ok);
       assert.equal(result.state, baseState);
       assert.ok(telemetry.events.some((e) => e.type === 'error' && e.code === 'GIST_WRITE_FAILED'));
+    });
+  });
+
+  describe('eviction is gated on the raw artifact (step 6)', () => {
+    // Eviction is the only irreversible step. These tests pin the gate: the
+    // transcript may only be discarded when the artifact can serve it back,
+    // and otherwise the commit stands with the transcript intact.
+    it('evicts when the raw artifact verifiably holds the dropped run', async () => {
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: baseGist,
+        policy: basePolicy,
+        artifactStore: mockStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(result.ok);
+      assert.equal(result.state.messages.length, 2, 'transcript dropped, governance and gist kept');
+      const gistEvent = telemetry.events.find((e) => e.type === 'gist');
+      assert.equal(gistEvent?.rawRecoverable, true);
+      assert.deepEqual(gistEvent?.failed, []);
+    });
+
+    it('keeps the transcript and reports it when the raw artifact is absent', async () => {
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+
+      // A store that has lost the transcript: writes succeed, but the artifact
+      // is not there to be read back. This is what an evicted or rotated
+      // retention window looks like from the transaction's side.
+      const lossyStore = {
+        put: mockStore.put.bind(mockStore),
+        read: mockStore.read.bind(mockStore),
+        // The gist's own file artifact resolves (4d passes); the raw
+        // transcript does not, which is exactly the eviction precondition.
+        exists: (uri: string) => Promise.resolve(uri === 'artifact://file/abc123'),
+      };
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: baseGist,
+        policy: basePolicy,
+        artifactStore: lossyStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(result.ok, 'the commit itself is sound, only eviction is deferred');
+      assert.ok(
+        result.state.messages.length > 2,
+        'transcript must be retained when it cannot be proven recoverable',
+      );
+      const gistEvent = telemetry.events.find((e) => e.type === 'gist');
+      assert.equal(gistEvent?.rawRecoverable, false, 'rawRecoverable must not be claimed');
+      assert.ok(
+        gistEvent?.failed.some((f) => f.startsWith('eviction_skipped')),
+        `expected the skip to be reported, got: ${JSON.stringify(gistEvent?.failed)}`,
+      );
+      assert.ok(
+        telemetry.events.some(
+          (e) => e.type === 'error' && e.code === 'EVICTION_SKIPPED_UNVERIFIED',
+        ),
+        'a deferred eviction must be visible in telemetry, not silent',
+      );
+    });
+
+    it('keeps the transcript when the artifact does not contain the dropped messages', async () => {
+      // The artifact exists but holds a different session: resolving it is not
+      // enough, its contents have to match what would be discarded.
+      const foreign = createTestContextState({
+        messages: [createSystemMessage('an entirely different session')],
+      });
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: baseGist,
+        policy: basePolicy,
+        artifactStore: mockStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript: JSON.stringify(foreign.messages),
+        toolLog,
+      });
+
+      assert.ok(result.ok);
+      assert.ok(result.state.messages.length > 2, 'unverifiable transcript must be kept');
+      const gistEvent = telemetry.events.find((e) => e.type === 'gist');
+      assert.equal(gistEvent?.rawRecoverable, false);
     });
   });
 });

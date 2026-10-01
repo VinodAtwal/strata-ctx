@@ -9,6 +9,7 @@ import type {
 } from '@strata-ctx/core-types';
 import { enforcePins, verifyPinIntegrity, validateGist, pinSetText } from '@strata-ctx/core-types';
 import type { ReadResult } from '@strata-ctx/security';
+import { parseRawTranscript } from './reversibility.js';
 import type { StrataTelemetryEvent, GistEvent } from '@strata-ctx/telemetry';
 
 /**
@@ -100,6 +101,139 @@ function collectPriorUnresolved(gists: readonly Gist[]): string[] {
     }
   }
   return [...threads].sort();
+}
+
+/**
+ * Whether the messages eviction would discard can actually be served back.
+ *
+ * Eviction is the only irreversible step: afterwards those messages exist
+ * solely in the raw artifact. So it is gated on the artifact holding them.
+ * If it does not, compaction still commits (the gist and the repin are sound)
+ * but the transcript is kept, because holding a larger context is recoverable
+ * and losing the only copy is not.
+ *
+ * The check is content-based, not index-based, and deliberately so. Step 5
+ * repin rewrites the message list -- it collapses governance blocks into a
+ * single system message -- so the same numeric offset addresses a different
+ * message before and after. Any index arithmetic spanning that rewrite can
+ * certify one range and discard another, so the whole run must be found
+ * intact in the transcript or nothing is discarded.
+ *
+ * @param dropping the exact messages eviction would remove
+ * @returns how many would go, whether the transcript can restore all of them,
+ *          and why not when it cannot.
+ */
+async function assessEvictable(
+  dropping: readonly Message[],
+  artifactStore: TransactionArtifactStore,
+  gist: Gist,
+): Promise<{ evicted: number; verified: boolean; reason: string }> {
+  const evicted = dropping.length;
+  if (evicted === 0) return { evicted: 0, verified: true, reason: 'nothing to evict' };
+
+  if (gist.raw_recoverable !== true) {
+    return {
+      evicted,
+      verified: false,
+      reason: 'gist does not assert raw_recoverable, so eviction cannot be undone',
+    };
+  }
+
+  const rawUri = gist.log_gist.raw_uri;
+  if (!/^artifact:\/\//.test(rawUri)) {
+    return {
+      evicted,
+      verified: false,
+      reason: `raw_uri "${rawUri}" is not an artifact reference, so the transcript is unresolvable`,
+    };
+  }
+
+  let exists: boolean;
+  try {
+    exists = await artifactStore.exists(rawUri);
+  } catch {
+    return { evicted, verified: false, reason: `artifact store threw while resolving ${rawUri}` };
+  }
+  if (!exists) {
+    return {
+      evicted,
+      verified: false,
+      reason: `raw transcript artifact ${rawUri} is not in the store, so ${evicted} message(s) would be unrecoverable`,
+    };
+  }
+
+  let persisted: Message[];
+  try {
+    const read: ReadResult = await artifactStore.read(rawUri);
+    persisted = parseRawTranscript(read.text);
+  } catch (e) {
+    return {
+      evicted,
+      verified: false,
+      reason: `raw transcript artifact ${rawUri} could not be parsed: ${e instanceof Error ? e.message : 'unknown'}`,
+    };
+  }
+
+  const found = findRun(persisted, dropping);
+  if (found === -1) {
+    return {
+      evicted,
+      verified: false,
+      reason:
+        `the ${evicted} message(s) eviction would drop do not appear as a contiguous run ` +
+        `anywhere in ${rawUri}, so the transcript cannot restore them`,
+    };
+  }
+
+  return {
+    evicted,
+    verified: true,
+    reason: `round-trip verified: the ${evicted} dropped message(s) were found at offset ${found} of ${rawUri}`,
+  };
+}
+
+/**
+ * Offset of the first place `span` occurs contiguously in `haystack`, or -1.
+ *
+ * Compared with `sameMessage`, so a partial match does not count: the whole
+ * run has to be present, in order, for eviction to be reversible.
+ */
+function findRun(haystack: readonly Message[], span: readonly Message[]): number {
+  if (span.length === 0) return -1;
+  const last = haystack.length - span.length;
+  for (let start = 0; start <= last; start++) {
+    let ok = true;
+    for (let i = 0; i < span.length; i++) {
+      const candidate = haystack[start + i];
+      const wanted = span[i];
+      if (!candidate || !wanted || !sameMessage(candidate, wanted)) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return start;
+  }
+  return -1;
+}
+
+/**
+ * Byte-equality for one message, by role, timestamp and content-block digests.
+ *
+ * Comparing blocks through their sha256 rather than their text means a
+ * mismatch cannot be masked by a field that does not affect content, and it
+ * matches how governance round-tripping is already verified elsewhere.
+ */
+function sameMessage(a: Message, b: Message): boolean {
+  if (a.role !== b.role || a.ts !== b.ts) return false;
+  if (a.content.length !== b.content.length) return false;
+  return a.content.every((block, i) => {
+    const other = b.content[i];
+    if (!other || other.type !== block.type) return false;
+    if (block.meta?.sha256 && other.meta?.sha256) {
+      return block.meta.sha256 === other.meta.sha256;
+    }
+    return JSON.stringify(block) === JSON.stringify(other);
+  });
 }
 
 /**
@@ -398,25 +532,60 @@ export async function runCompactionTransaction(
   const pinApplication = enforcePins(newState, policy);
   newState = pinApplication.state;
 
-  // Step 6: EVICT - remove compacted transcript range from live context
-  const [fromTurn, toTurn] = gistWithRawUri.source_turn_range;
-  // Keep messages before fromTurn and after toTurn
-  // Also keep the new gist message we just added (at the end)
-  const messagesBeforeRange = newState.messages.slice(0, fromTurn);
-  const messagesAfterRange = newState.messages.slice(toTurn + 1, newState.messages.length - 1);
-  const gistMessageAdded = newState.messages[newState.messages.length - 1];
+  // Step 6: EVICT - drop the compacted transcript, keeping governance and the gist
+  //
+  // Eviction is the only irreversible step: afterwards the dropped messages
+  // exist solely in the raw artifact. So it is gated on the artifact holding
+  // them intact. When it does not, compaction still commits (the gist and the
+  // repin are sound) but the transcript is kept, because holding a larger
+  // context is recoverable and losing the only copy is not.
+  //
+  // The drop set is chosen by identity, not by index: everything that is not
+  // a governance message and not the gist just committed. Index arithmetic
+  // cannot be used here because step 5 repin collapses governance blocks into a
+  // single system message, which shifts every offset after them.
+  const isGovernanceMessage = (message: Message): boolean =>
+    message.content.length > 0 && message.content.every((block) => block.meta.tier === 'governance');
 
+  const gistMessageAdded = newState.messages[newState.messages.length - 1];
   if (!gistMessageAdded) {
     throw new Error('gist message not found after commit');
   }
 
-  const remainingMessages = [...messagesBeforeRange, ...messagesAfterRange, gistMessageAdded];
-  newState = {
-    ...newState,
-    messages: remainingMessages,
-    // Recalculate token estimate after eviction
-    tokenEstimate: remainingMessages.reduce((acc, msg) => acc + msg.content.reduce((sum, block) => sum + block.meta.bytes, 0), 0),
-  };
+  const keep = newState.messages.filter(
+    (message, index) =>
+      index === newState.messages.length - 1 || isGovernanceMessage(message),
+  );
+  const dropping = newState.messages.filter(
+    (message, index) =>
+      index !== newState.messages.length - 1 && !isGovernanceMessage(message),
+  );
+
+  const evictable = await assessEvictable(dropping, artifactStore, gistWithRawUri);
+
+  let evicted = 0;
+  if (evictable.verified) {
+    newState = {
+      ...newState,
+      messages: keep,
+      // Recalculate token estimate after eviction
+      tokenEstimate: keep.reduce((acc, msg) => acc + msg.content.reduce((sum, block) => sum + block.meta.bytes, 0), 0),
+    };
+    evicted = evictable.evicted;
+  } else {
+    // Reported as an error rather than a violation: no pinned constraint was
+    // breached, the transcript just is not safe to discard yet.
+    const evictionSkipped: TelemetryEvent = {
+      type: 'error',
+      runId: originalState.runId,
+      stage: 'compact',
+      code: 'EVICTION_SKIPPED_UNVERIFIED',
+      message: `${evictable.reason}; kept ${newState.messages.length} message(s) instead of evicting ${evictable.evicted}`,
+      failedOpen: false,
+    };
+    telemetry.push(evictionSkipped);
+    emit(evictionSkipped);
+  }
 
   // Step 7: LOG - emit telemetry gist + compaction events
   const gistEvent: GistEvent = {
@@ -425,14 +594,16 @@ export async function runCompactionTransaction(
     taskId: gistWithRawUri.task_id,
     schemaValid: true,
     constraintsIntact: true,
-    rawRecoverable: gistWithRawUri.raw_recoverable === true,
+    rawRecoverable: gistWithRawUri.raw_recoverable === true && evictable.verified,
     compressionBy: gistWithRawUri.compressed_by,
-    failed: [],
+    // A skipped eviction is not a validation failure, so it is reported here
+    // rather than aborting: the commit stands, only the size win is deferred.
+    failed: evictable.verified ? [] : [`eviction_skipped: ${evictable.reason}`],
   };
   emit(gistEvent);
   telemetry.push(gistEvent);
 
-  const droppedCount = toTurn - fromTurn + 1;
+  const droppedCount = evicted;
   const compactionEvent: TelemetryEvent = {
     type: 'compaction',
     runId: originalState.runId,

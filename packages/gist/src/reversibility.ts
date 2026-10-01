@@ -95,7 +95,7 @@ export async function recoverTurns(
  * Parse raw transcript text into Message array.
  * Supports JSONL (one message per line) and JSON array formats.
  */
-function parseRawTranscript(text: string): Message[] {
+export function parseRawTranscript(text: string): Message[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
 
@@ -120,7 +120,7 @@ function parseRawTranscript(text: string): Message[] {
     });
 }
 
-function isMessage(value: unknown): value is Message {
+export function isMessage(value: unknown): value is Message {
   return (
     typeof value === 'object' &&
     value !== null &&

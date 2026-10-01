@@ -42,14 +42,29 @@ export interface GistAssemblyInput {
   readonly selfGistBlock?: ContentBlock;
 }
 
+/**
+ * The index span, in the full message array, that compaction covers: from the
+ * first conversational turn to the last.
+ *
+ * Indices must address the unfiltered array, because both consumers slice the
+ * unfiltered array: eviction in transaction.ts step 6, and recovery in
+ * reversibility.ts. Deriving them from a user/assistant-filtered list made
+ * those two consumers address different messages, so a gist could evict a
+ * range that recovery never returned. Tool messages between turns are included
+ * in the span on purpose: they carry the file contents and are exactly what
+ * has to stay recoverable.
+ */
 function extractTurnRange(state: ContextState): [number, number] {
-  const turns = state.messages
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m, i) => i);
-  if (turns.length === 0) return [0, 0];
-  const first = turns[0];
-  const last = turns[turns.length - 1];
-  return [first ?? 0, last ?? 0];
+  let first = -1;
+  let last = -1;
+  for (let i = 0; i < state.messages.length; i++) {
+    const role = state.messages[i]?.role;
+    if (role !== 'user' && role !== 'assistant') continue;
+    if (first === -1) first = i;
+    last = i;
+  }
+  if (first === -1) return [0, 0];
+  return [first, last];
 }
 
 function _extractToolCalls(messages: readonly Message[]): ToolCallSummary[] {
