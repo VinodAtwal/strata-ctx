@@ -334,6 +334,30 @@ test('pin drift against the previous turn is still measured', async () => {
   await up.close();
 });
 
+test('drift telemetry names policy ids, not truncated constraint text', async () => {
+  // constraintIds is a field callers join against, so it has to hold ids. It
+  // once held the first 40 characters of the constraint text, which matched
+  // nothing: not the policy, not another event, not a digest. This pins the
+  // field's contents, which the drift test above never checked.
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  await post(`${h.url}/v1/messages`, requestBody(''));
+  await post(`${h.url}/v1/messages`, requestBody(''));
+
+  const violation = h.events.find((e) => e.type === 'violation');
+  assert.ok(violation, 'turn 2 drifts against turn 1');
+  assert.equal(violation?.type === 'violation' && violation.kind, 'pin_missing_pre_apply');
+
+  const ids = violation?.type === 'violation' ? violation.constraintIds : undefined;
+  assert.deepEqual(ids, ['c1'], 'the drifted constraint must be identified by its policy id');
+  assert.ok(
+    !ids?.some((id) => id.includes(' ') || id.length > 8),
+    `ids must not be prose: ${JSON.stringify(ids)}`,
+  );
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
 test('the same request twice produces a byte-identical upstream body', async () => {
   const up = await startUpstream(echoJson);
   const h = await startGateway({}, up.url);

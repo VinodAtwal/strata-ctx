@@ -1,7 +1,7 @@
 import { Server, type IncomingMessage, type RequestListener, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { Readable } from 'node:stream';
-import type { ContextState, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
+import type { ContextState, PinDefect, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
 import {
   enforcePins,
   pinDrift,
@@ -21,6 +21,40 @@ import {
   type AdapterTable,
   type ConfigProvider,
 } from './routing.js';
+
+/**
+ * Resolve pin-drift defects to the policy ids of the constraints involved.
+ *
+ * The drift detector works in text, because that is what the pin buffer holds,
+ * but the telemetry event's field is `constraintIds`. Reporting the text there
+ * -- truncated to fit, as this once did -- put cut-off prose in a field callers
+ * are meant to join against, and the truncation meant the value matched
+ * nothing: not the policy, not another event, not a digest.
+ *
+ * Defects whose text is not a policy constraint are dropped from the list.
+ * They are inbound governance we did not author, so there is no id to report,
+ * and inventing one would be a worse lie than an empty list. The event still
+ * fires, so their occurrence remains countable.
+ */
+function driftConstraintIds(
+  defects: readonly { readonly kind: PinDefect; readonly text: string }[],
+  policy: StrataPolicy,
+): string[] {
+  const idByText = new Map<string, string>();
+  for (const constraint of policy.constraints) {
+    if (!idByText.has(constraint.text)) idByText.set(constraint.text, constraint.id);
+  }
+
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const defect of defects) {
+    const id = idByText.get(defect.text);
+    if (id === undefined || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
+}
 
 export interface GatewayOptions {
   readonly port: number;
@@ -360,7 +394,7 @@ const handleIngress = async (
           type: 'violation',
           runId: state.runId,
           kind: 'pin_missing_pre_apply',
-          constraintIds: drift.defects.map((x) => x.text.slice(0, 40)),
+          constraintIds: driftConstraintIds(drift.defects, d.rt.opts.policy),
           blocked: false,
         });
       }
