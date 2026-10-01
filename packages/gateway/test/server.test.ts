@@ -307,7 +307,11 @@ test('the pin count is reported on every governed turn', async () => {
   assert.equal(pin?.type === 'pin' && pin.constraints, 1);
   assert.equal(pin?.type === 'pin' && pin.missingBefore, 0);
   assert.ok(h.events.some((e) => e.type === 'request_in'));
-  const stage = h.events.find((e) => e.type === 'stage');
+  // Select the pin stage by name rather than by position. Before Tier 0 was
+  // wired, pin was the only stage that reported, so `find` returning it was
+  // incidental; the lossy stages now report too, and this test is about the pin
+  // count, so it must not depend on what ran before pin.
+  const stage = h.events.find((e) => e.type === 'stage' && e.stage === 'pin');
   assert.equal(stage?.type === 'stage' && stage.stage, 'pin');
   assert.equal(stage?.type === 'stage' && stage.changed, true);
   await h.gateway.closeGracefully();
@@ -601,6 +605,111 @@ test('the session table is bounded', async () => {
   const body = (await (await get(`${h.url}/healthz`)).json()) as Record<string, unknown>;
   assert.equal(body['sessions'], 2, 'a client-supplied header cannot grow the map without bound');
   assert.equal(h.gateway.sessions, 2);
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+// ------------------------------------------------------------- tier 0 wiring
+
+test('the request path runs the Tier 0 stages, so outbound context is smaller than what arrived', async () => {
+  // A tool_result above the default 20_000-char `tool_state` cap. The adapter
+  // files tool_result under tool_state, so truncate has a cap to cut against.
+  const flood = 'E'.repeat(40_000);
+  const body = JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [
+      { role: 'user', content: 'refactor the uploader' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read', input: { path: 'a.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: flood }] },
+    ],
+  });
+
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  const res = await post(`${h.url}/v1/messages`, body);
+  assert.equal(res.status, 200);
+
+  // The proof is the bytes that left, not a telemetry event: an event can be
+  // emitted for a stage that ran and changed nothing, and asserting on it would
+  // pass against a gateway that forwards everything.
+  assert.equal(up.calls.length, 1);
+  const sent = up.calls[0]?.body ?? '';
+  assert.ok(
+    sent.length < body.length,
+    `expected the outbound request to be smaller than the ${body.length}-byte inbound, got ${sent.length}`,
+  );
+  assert.ok(!sent.includes(flood), 'the over-cap tool output reached the upstream intact');
+
+  const truncate = h.events.find((e) => e.type === 'stage' && e.stage === 'truncate');
+  assert.equal(truncate?.type === 'stage' && truncate.changed, true, 'truncate reported no change');
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('a pin survives the Tier 0 stages that run after it is computed', async () => {
+  const flood = 'P'.repeat(40_000);
+  const body = JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [
+      { role: 'user', content: 'refactor the uploader' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read', input: { path: 'a.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: flood }] },
+    ],
+  });
+
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  const res = await post(`${h.url}/v1/messages`, body);
+  assert.equal(res.status, 200);
+
+  // Pinning runs after the lossy stages. If it moved earlier, the constraint
+  // would be filed under episodic and truncate would be free to cut it, so this
+  // is the assertion that keeps the stage order a safety property rather than a
+  // preference (docs/architecture.md §4).
+  const sent = up.calls[0]?.body ?? '';
+  assert.ok(sent.includes('never delete production data'), 'the pin was truncated away');
+  assert.equal(res.headers.get('x-strata-pinned'), '1');
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('with the lossy stages disabled the request is forwarded byte-identical', async () => {
+  const flood = 'E'.repeat(40_000);
+  const body = JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [
+      { role: 'user', content: 'refactor the uploader' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read', input: { path: 'a.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: flood }] },
+    ],
+  });
+
+  const noLossy = StrataPolicySchema.parse({
+    ...policy,
+    pipeline: { stages: ['pin'] },
+  });
+
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({ policy: noLossy }, up.url);
+  const res = await post(`${h.url}/v1/messages`, body);
+  assert.equal(res.status, 200);
+
+  // "Byte-identical" means byte-identical. The pin buffer is re-emitted as a
+  // separate system block, so the strict claim is that the flood survived
+  // uncut: a stage that ran and found nothing to do would still satisfy a
+  // comparison of the overflowed run alone.
+  assert.ok((up.calls[0]?.body ?? '').includes(flood), 'truncate cut the block with the stage disabled');
+  assert.equal(
+    h.events.some((e) => e.type === 'stage' && e.stage === 'truncate'),
+    false,
+    'truncate reported a stage run that policy had disabled',
+  );
   await h.gateway.closeGracefully();
   await up.close();
 });
