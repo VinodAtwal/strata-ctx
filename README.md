@@ -261,7 +261,7 @@ refactor.
 | [`integrations`](packages/integrations) | Claude Code hooks/observers, Gemini adapter, Aider/Cline/Roo profiles, Copilot MCP-only path, OpenCode profile, MCP server, templates, and the `surface-check` drift gate. |
 | [`canary`](packages/canary) | Runtime constraint-retention probe (soft-org flag prevents a false green), rot probe, and the turn scheduler. |
 | [`eval`](packages/eval) | Offline deterministic eval harness: versioned fixture format + validator, interleaved per-case runner, stable reporter, mock arms, grading, statistics; suites E1, E2, E3, E5, E6. **Zero deps and opens no sockets by design**, enforced by a structural test. |
-| [`eval-live`](packages/eval-live) | F2-1 live A/B arm: real chat-completions transport, three prompts (control / negative control / pinned treatment), temperature 0, infrastructure-only retries. Kept out of `eval` so that package's offline guarantee stays true. |
+| [`eval-live`](packages/eval-live) | Live A/B campaign: real chat-completions transport, three prompts (control / negative control / pinned treatment), temperature 0, infrastructure-only retries; gate evaluation for all twelve pre-registered gates; a claims audit that assigns each claim a derived High/Medium/Low confidence and lists what the report does *not* claim. Kept out of `eval` so that package's offline guarantee stays true. |
 | [`testing`](packages/testing) | Deterministic provider record/replay harness, fixture factories, and a `fixtures` CLI (`list`, `validate`, `summary`, `paths`). |
 | [`cli`](packages/cli) | The `strata-ctx` executable: `hook --check`, `hook run` (the `strata-ctx-hook` the Claude Code and Gemini profiles register), `mcp serve`, and `status`. Workspace deps load lazily so `--check` stays cheap. |
 
@@ -517,9 +517,11 @@ implemented.
 > failure is observable). Fixtures are injected scenarios; grading runs on the resulting
 > observations. Nothing in `packages/eval/src/` opens a socket, by design. **Live A/B validation
 > (F2-1–F2-3) is not done** — it is marked `todo`. The live *transport* now exists and has been run
-> against a real endpoint (`packages/eval-live`); what is missing is a defensible *campaign*, because
-> free endpoints rate-limit and vary between runs, so the blocker is obtaining a stable upstream (or
-> paying for heavy replication), not having no endpoint at all. The canary
+> against a real endpoint (`packages/eval-live`), and the F2-2 claims audit now grades every gate and
+> publishes an explicit list of what a report does not support. What is missing is a defensible
+> *campaign*: the first live run failed G1, because the negative control did not decay under a small
+> free model on six cases. Free endpoints rate-limit and vary between runs, so the blocker is
+> obtaining a stable upstream (or paying for heavy replication), not having no endpoint at all. The canary
 > probes likewise take **injected subjects**; the offline tests drive a deterministic subject and a
 > live gateway is what F2 would drive. Do not read
 > the gate thresholds below as evidence about production behavior. They are pre-registered bars;

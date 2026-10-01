@@ -123,6 +123,22 @@ export interface ArmObservation {
   readonly outputTokens: number;
   /** Synthetic latency, in milliseconds. Not a measurement of a provider. */
   readonly latencyMs: number;
+  /**
+   * Where the answer came from, when the arm knows.
+   *
+   * Optional and absent for every offline arm: a mock has no model to name, and
+   * pretending otherwise would put a fabricated id into a report. A live provider
+   * routinely answers under an alias or a dated snapshot of the model that was
+   * requested, and a campaign that cannot report that difference is asserting it
+   * measured the model it asked for rather than the model it got.
+   */
+  readonly provenance?: ObservationProvenance;
+}
+
+export interface ObservationProvenance {
+  /** The model string the provider returned, verbatim. */
+  readonly model?: string;
+  readonly latencyMs?: number;
 }
 
 /**
@@ -179,6 +195,8 @@ export interface ArmResult {
   readonly outputTokens: number;
   readonly latencyMs: number;
   readonly error: string | null;
+  /** Carried through from the observation. See `ObservationProvenance`. */
+  readonly provenance?: ObservationProvenance;
 }
 
 export interface CaseResult {

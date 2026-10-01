@@ -161,6 +161,7 @@ const gradeArm = (observation: ArmObservation, evalCase: EvalCase): ArmResult =>
     outputTokens: observation.outputTokens,
     latencyMs: observation.latencyMs,
     error: observation.error,
+    ...(observation.provenance === undefined ? {} : { provenance: observation.provenance }),
   };
 };
 
@@ -235,7 +236,11 @@ export async function runSuite(fixture: EvalFixture, options: RunOptions = {}): 
   const allArms = cases.flatMap((c) => c.arms);
   const byArm: ArmTotals[] = ARMS.map((arm: Arm) => {
     const forArm = allArms.filter((a) => a.arm === arm);
+    // `errored` rows carry no violations by construction (`gradeArm` derives
+    // them only from what the observation actually reported), so counting over
+    // `forArm` and dividing by `ran` is consistent.
     const violations = forArm.filter((a) => a.violations.length > 0).length;
+    const ran = forArm.filter((a) => a.status !== 'error').length;
     return {
       arm,
       observations: forArm.length,
@@ -243,9 +248,12 @@ export async function runSuite(fixture: EvalFixture, options: RunOptions = {}): 
       failed: forArm.filter((a) => a.status === 'fail').length,
       errored: forArm.filter((a) => a.status === 'error').length,
       violations,
-      // null, not 0, when the arm never ran: a rate computed from no
-      // observations is a rate that would clear G1 for an arm nobody tested.
-      violationRate: forArm.length === 0 ? null : round4(violations / forArm.length),
+      // null, not 0, when the arm produced nothing: a rate computed from no
+      // *completed* observations is a rate that would clear a gate for an arm
+      // nobody could reach. The denominator is observations that ran, not rows
+      // that exist -- an arm whose every request timed out has rows and no data,
+      // and reporting 0% for it is the false green the field exists to prevent.
+      violationRate: ran === 0 ? null : round4(violations / ran),
       // `droppedConstraintIds` is already empty for errored observations (see
       // `gradeArm`), so this counts only genuine losses; the explicit status
       // check is kept so the count cannot silently start including them again.

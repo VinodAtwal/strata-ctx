@@ -461,6 +461,34 @@ describe('runner: totals', () => {
     assert.deepEqual(report.totals.byArm.map((a) => a.arm), ['control', 'control+', 'treatment']);
   });
 
+  it('reports a null violation rate for an arm whose every request failed, not 0%', async () => {
+    // The all-errored case is the one that actually happens: rows exist, so the
+    // old `length === 0` guard passed and an unreachable arm reported 0%
+    // violations, which clears G2 for a treatment nobody could reach.
+    const fixture = fixtureOf([caseDoc('e1-601', ['treatment'], false)]);
+    const report = await runSuite(fixture, {
+      runArm: (invocation) => ({
+        arm: invocation.arm,
+        position: invocation.position,
+        caseId: invocation.case.id,
+        ok: false,
+        error: 'HTTP 503',
+        response: '',
+        retainedConstraintIds: [],
+        droppedConstraintIds: [],
+        violatedConstraintIds: [],
+        inputTokens: 0,
+        outputTokens: 0,
+        latencyMs: 12,
+      }),
+    });
+    const treatment = report.totals.byArm.find((a) => a.arm === 'treatment');
+    assert.equal(treatment?.observations, 1, 'the row exists');
+    assert.equal(treatment?.errored, 1, 'and it is an error, not a pass');
+    assert.equal(treatment?.violationRate, null, 'so there is no rate to report');
+    assert.equal(treatment?.violations, 0);
+  });
+
   it('reports a null violation rate for an arm that never ran, not 0%', async () => {
     // A rate with no denominator behind it would clear G1 for an arm nobody ran.
     const fixture = fixtureOf([caseDoc('e1-600', ['control', 'control+'], false)]);
