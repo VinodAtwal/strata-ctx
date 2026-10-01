@@ -5,10 +5,18 @@ import type {
   LossyStageName,
   StageName,
   StrataPolicy,
+  TelemetryEvent,
   TotalStage,
   TotalStageName,
 } from '@strata-ctx/core-types';
-import { estimateTokens, partitionForLossy, restoreHeld } from '@strata-ctx/core-types';
+import {
+  estimateTokens,
+  isLossyContext,
+  partitionForLossy,
+  restoreHeld,
+} from '@strata-ctx/core-types';
+import type { CachePrefixDiff } from './cache-prefix.js';
+import { observeCachePrefix } from './cache-prefix.js';
 import { LOSSY_TIER0_STAGES, PIPELINE_STAGE_ORDER, runStageFailOpen } from './order.js';
 import type { Tier0Stage } from './stage.js';
 
@@ -84,6 +92,13 @@ export interface RunPipelineOptions {
   readonly stopOnFailure?: boolean;
   /** Observability hook, invoked once per stage that actually ran, in order. */
   readonly onStage?: (result: StageResult) => void;
+  /**
+   * Telemetry sink, same shape the gateway's server already accepts
+   * (`telemetry?: (e: TelemetryEvent) => void`). Receives one `cache` event per
+   * stage that ran, plus an `error` event when a stage is found to have
+   * reordered the cached prefix or when the accounting itself failed open.
+   */
+  readonly onTelemetry?: (event: TelemetryEvent) => void;
 }
 
 export interface PipelineRun {
@@ -92,6 +107,13 @@ export interface PipelineRun {
   /** One entry per stage that ran, in `PIPELINE_STAGE_ORDER` position order. */
   readonly stageResults: readonly StageResult[];
   readonly stagesRun: readonly StageName[];
+  /**
+   * One entry per stage that ran, in `PIPELINE_STAGE_ORDER` position order:
+   * what happened to the provider's cached prefix, and whether it was measured.
+   * Populated whether or not `onTelemetry` is wired, so a caller can read the
+   * accounting without owning a sink.
+   */
+  readonly cachePrefix: readonly CachePrefixDiff[];
   /** Number of failed stages. Zero for a clean run. */
   readonly failed: number;
   /** True when `stopOnFailure` cut the run short after a failure. */
@@ -174,6 +196,8 @@ const defaultLossy: ReadonlyMap<LossyStageName, LossyStage> = new Map(
   LOSSY_TIER0_STAGES.map((stage) => [stage.name, stage] as const),
 );
 
+const NO_EMIT = (): void => {};
+
 export function runPipeline(state: ContextState, opts: RunPipelineOptions): PipelineRun {
   const lossy: ReadonlyMap<LossyStageName, LossyStage> =
     opts.lossyStages === undefined
@@ -184,9 +208,14 @@ export function runPipeline(state: ContextState, opts: RunPipelineOptions): Pipe
         );
   const total = opts.totalStages ?? {};
   const stopOnFailure = opts.stopOnFailure === true;
+  const runId = state.runId;
+  // The accounting is computed either way, because `cachePrefix` is part of the
+  // run result; `emit` only decides whether it is also reported.
+  const emit = opts.onTelemetry ?? NO_EMIT;
 
   let current: ContextState = state;
   const stageResults: StageResult[] = [];
+  const cachePrefix: CachePrefixDiff[] = [];
   let halted = false;
 
   for (const name of PIPELINE_STAGE_ORDER) {
@@ -198,7 +227,15 @@ export function runPipeline(state: ContextState, opts: RunPipelineOptions): Pipe
 
       const tokensIn = estimateTokens(current);
       const started = performance.now();
-      const outcome = isolateTotal(stage, current);
+      // The spy captures what the stage actually produced. Measuring the
+      // committed state instead would be blind here: `isolateTotal` discards the
+      // output on failure, so a reordered prefix would be reverted before the
+      // tracker ever saw it, and these two stages have no other guard.
+      let observed: ContextState | undefined;
+      const outcome = isolateTotal(
+        { name, run: (s) => (observed = stage.run(s)) },
+        current,
+      );
       const next: ContextState = outcome.code === undefined ? outcome.state : current;
       const result: StageResult = {
         name,
@@ -209,6 +246,18 @@ export function runPipeline(state: ContextState, opts: RunPipelineOptions): Pipe
         ...(outcome.code === undefined ? {} : { code: outcome.code }),
       };
       stageResults.push(result);
+      cachePrefix.push(
+        observeCachePrefix(
+          name,
+          {
+            before: current.messages,
+            after: isContextState(observed) ? observed.messages : undefined,
+            reverted: outcome.code !== undefined,
+          },
+          runId,
+          emit,
+        ),
+      );
       current = next;
       opts.onStage?.(result);
       if (stopOnFailure && !result.ok) halted = true;
@@ -220,7 +269,14 @@ export function runPipeline(state: ContextState, opts: RunPipelineOptions): Pipe
 
     const tokensIn = estimateTokens(current);
     const started = performance.now();
-    const outcome = runStageFailOpen(asTier0(stage), partitionForLossy(current, opts.policy));
+    const lossyIn = partitionForLossy(current, opts.policy);
+    // Same reason as the total-stage spy: `runStageFailOpen` reverts a reordered
+    // stage, so the committed state alone would report the prefix as intact.
+    let observed: LossyContext | undefined;
+    const outcome = runStageFailOpen(
+      asTier0({ name, run: (ctx) => (observed = stage.run(ctx)) }),
+      lossyIn,
+    );
     let next: ContextState = current;
     if (outcome.code === undefined) {
       next = restoreHeld(outcome.ctx, {
@@ -240,6 +296,22 @@ export function runPipeline(state: ContextState, opts: RunPipelineOptions): Pipe
       ...(code === undefined ? {} : { code }),
     };
     stageResults.push(result);
+    // `before` is the partitioned view, matching what a lossy stage can reach:
+    // `partitionForLossy` holds governance out of reach by construction, so
+    // holding it out of the measurement too keeps the verdict attributable to
+    // the stage. Governance is in scope for the total stages, which see it.
+    cachePrefix.push(
+      observeCachePrefix(
+        name,
+        {
+          before: lossyIn.messages,
+          after: isLossyContext(observed) ? observed.messages : undefined,
+          reverted: outcome.code !== undefined,
+        },
+        runId,
+        emit,
+      ),
+    );
     current = next;
     opts.onStage?.(result);
     if (stopOnFailure && !result.ok) halted = true;
@@ -249,6 +321,7 @@ export function runPipeline(state: ContextState, opts: RunPipelineOptions): Pipe
     state: current,
     stageResults,
     stagesRun: stageResults.map((result) => result.name),
+    cachePrefix,
     failed: stageResults.reduce((count, result) => (result.ok ? count : count + 1), 0),
     halted,
   };

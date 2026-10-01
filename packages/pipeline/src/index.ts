@@ -37,3 +37,4 @@ export * from './trigger.js';
 export * from './order.js';
 export * from './self-gist.js';
 export * from './runner.js';
+export * from './cache-prefix.js';
