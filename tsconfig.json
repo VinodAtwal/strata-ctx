@@ -39,6 +39,9 @@
     },
     {
       "path": "packages/cli"
+    },
+    {
+      "path": "packages/eval-live"
     }
   ]
 }

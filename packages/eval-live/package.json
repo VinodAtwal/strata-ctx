@@ -1,10 +1,11 @@
 {
-  "name": "@strata-ctx/gateway",
+  "name": "@strata-ctx/eval-live",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local HTTP/SSE proxy between a coding agent and a model provider.",
+  "description": "F2-1 live A/B runner: two matched instances, interleaved, temperature 0.",
   "license": "Apache-2.0",
+  "author": "The strata-ctx Authors",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -14,8 +15,6 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@strata-ctx/core-types": "1.0.0",
-    "@strata-ctx/pipeline": "0.1.0"
-  },
-  "author": "The strata-ctx Authors"
+    "@strata-ctx/eval": "0.1.0"
+  }
 }

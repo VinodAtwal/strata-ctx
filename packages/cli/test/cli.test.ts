@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, chmod, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 import { promisify } from 'node:util';
 
@@ -27,7 +27,11 @@ interface Result {
  */
 const cli = async (...args: readonly string[]): Promise<Result> => {
   try {
-    const { stdout, stderr } = await run(process.execPath, [CLI, ...args]);
+    const { stdout, stderr } = await withTimeout(
+      run(process.execPath, [CLI, ...args]),
+      30_000,
+      `strata-ctx ${args.join(' ')}`,
+    );
     return { code: 0, stdout, stderr };
   } catch (err) {
     const e = err as { code?: number; stdout?: string; stderr?: string };
@@ -35,14 +39,50 @@ const cli = async (...args: readonly string[]): Promise<Result> => {
   }
 };
 
+/**
+ * Run `fn` with PATH replaced by `dir` plus node's own directory.
+ *
+ * Replaces rather than prepends, because appending the ambient PATH would leave
+ * whatever the developer has installed globally still resolvable and the test
+ * would pass or fail based on their machine.
+ *
+ * node's directory is kept for a non-obvious reason: the executable's shebang is
+ * `#!/usr/bin/env node`, so a PATH without node cannot start the binary at all.
+ * That is worth knowing rather than working around -- an installer that does not
+ * put node on PATH has installed a command that cannot run.
+ */
 const withPath = async <T>(dir: string, fn: () => Promise<T>): Promise<T> => {
   const saved = process.env['PATH'];
-  process.env['PATH'] = `${dir}:${saved ?? ''}`;
+  const nodeDir = dirname(process.execPath);
+  process.env['PATH'] = `${dir}:${nodeDir}`;
   try {
     return await fn();
   } finally {
     if (saved === undefined) delete process.env['PATH'];
     else process.env['PATH'] = saved;
+  }
+};
+
+/**
+ * Never let a test hang the suite.
+ *
+ * A child process that fails to start -- a missing interpreter, a shebang the
+ * platform rejects -- does not exit, does not error, and does not close stdio. The
+ * `close` event simply never fires, so an unguarded `await` waits forever and the
+ * whole run reports nothing. This was found the hard way: the suite hit its
+ * 15-minute ceiling with no output.
+ */
+const withTimeout = async <T>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${what} did not finish within ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 };
 
@@ -274,7 +314,14 @@ describe('E-13: hook run, the executable the Claude and Gemini profiles name', (
     let stderr = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
     child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
-    const code = await new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1)));
+    const code = await withTimeout(
+      new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
+      30_000,
+      'hook run',
+    ).catch(() => {
+      child.kill('SIGKILL');
+      throw new Error('hook run never exited; a hook that cannot exit would hang every tool call');
+    });
     const lines = stdout.trim().split('\n').filter((l) => l !== '');
     return {
       code,
@@ -365,7 +412,14 @@ describe('E-13: mcp serve', () => {
     child.stdin.end(`${requests.map((r) => JSON.stringify(r)).join('\n')}\n`);
     let stdout = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-    const code = await new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1)));
+    const code = await withTimeout(
+      new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
+      30_000,
+      'mcp serve',
+    ).catch(() => {
+      child.kill('SIGKILL');
+      throw new Error('mcp serve never exited after stdin closed');
+    });
     assert.equal(code, 0, 'a host closing stdin is a normal shutdown, not a crash');
     return stdout
       .trim()
@@ -398,7 +452,12 @@ describe('E-13: mcp serve', () => {
     child.stdin.end('');
     let stdout = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-    await new Promise((resolve) => child.on('close', resolve));
+    await withTimeout(new Promise((resolve) => child.on('close', resolve)), 30_000, 'mcp serve').catch(
+      () => {
+        child.kill('SIGKILL');
+        throw new Error('mcp serve never exited');
+      },
+    );
     assert.equal(stdout.trim(), '');
   });
 
@@ -428,7 +487,12 @@ describe('E-13: hook --check for the hosts that register a command', () => {
 
   it('fails when the command is not on PATH', async () => {
     const dir = await withSettings('claude-code', config);
-    const r = await cli('hook', '--check', '--agent', 'claude-code', '--root', dir);
+    // An empty PATH, not the inherited one: whether this machine happens to have
+    // strata-ctx installed globally must not decide whether the test passes.
+    const empty = await mkdtemp(join(tmpdir(), 'strata-cli-empty-'));
+    const r = await withPath(empty, () =>
+      cli('hook', '--check', '--agent', 'claude-code', '--root', dir),
+    );
     assert.equal(r.code, 1);
     assert.match(r.stderr, /not on PATH/);
   });
@@ -441,6 +505,7 @@ describe('E-13: hook --check for the hosts that register a command', () => {
     // rather than asserting on the string in the config.
     await symlink(CLI, join(bin, 'strata-ctx'));
     const r = await withPath(bin, () => cli('hook', '--check', '--agent', 'claude-code', '--root', dir));
+    // PATH is *only* this directory, so a pass cannot be an accident.
     assert.equal(r.code, 0);
     assert.match(r.stdout, /governance active/);
     assert.match(r.stdout, /strata-ctx hook run/);
@@ -448,14 +513,23 @@ describe('E-13: hook --check for the hosts that register a command', () => {
 
   it('works for gemini-cli too', async () => {
     const dir = await withSettings('gemini-cli', config);
-    const r = await cli('hook', '--check', '--agent', 'gemini-cli', '--root', dir);
+    const empty = await mkdtemp(join(tmpdir(), 'strata-cli-empty-'));
+    const r = await withPath(empty, () =>
+      cli('hook', '--check', '--agent', 'gemini-cli', '--root', dir),
+    );
     assert.equal(r.code, 1);
+    assert.match(r.stderr, /not on PATH/);
   });
 
-  it('fails when the config does not name the command', async () => {
+  it('fails when the config does not name the command, PATH or not', async () => {
     const dir = await withSettings('claude-code', '{"hooks":{}}');
-    const r = await cli('hook', '--check', '--agent', 'claude-code', '--root', dir);
+    const empty = await mkdtemp(join(tmpdir(), 'strata-cli-empty-'));
+    const r = await withPath(empty, () =>
+      cli('hook', '--check', '--agent', 'claude-code', '--root', dir),
+    );
     assert.equal(r.code, 1);
+    // The *config* is the reason here, not the PATH, and the message has to say
+    // which one so the fix is obvious.
     assert.match(r.stderr, /does not reference/);
   });
 });
@@ -468,12 +542,19 @@ describe('E-13: mcp serve end to end, as an installed bin', () => {
     await symlink(CLI, join(bin, 'strata-ctx'));
 
     const child = spawn('strata-ctx', ['mcp', 'serve'], {
-      env: { ...process.env, PATH: `${bin}:${process.env['PATH'] ?? ''}` },
+      env: { ...process.env, PATH: `${bin}:${dirname(process.execPath)}` },
     });
     child.stdin.end('{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n');
     let stdout = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-    const code = await new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1)));
+    const code = await withTimeout(
+      new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
+      30_000,
+      'installed strata-ctx mcp serve',
+    ).catch(() => {
+      child.kill('SIGKILL');
+      throw new Error('the installed strata-ctx never exited');
+    });
     assert.equal(code, 0);
 
     const res = JSON.parse(stdout.trim()) as { result: { tools: { name: string }[] } };

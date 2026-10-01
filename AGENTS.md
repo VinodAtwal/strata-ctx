@@ -335,6 +335,7 @@ graph TD
 
   IN["integrations<br/>hooks · profiles · MCP · opencode"]
   EV["eval — ZERO deps<br/>mirrors the contract, never imports it"]
+  EL["eval-live (F2-1)<br/>live transport, live subjects"]
   CN["canary (F1-11)<br/>rot + constraint probes · scheduler"]
 
   GW --> CT
@@ -349,16 +350,19 @@ graph TD
   IN --> SE
   IN --> TL
   CN --> CT
+  EL --> EV
 
   classDef frozen fill:#2d1b1b,stroke:#c0392b,stroke-width:2px,color:#f5e6e6
   classDef nodeps fill:#1b2d1b,stroke:#27ae60,stroke-width:2px,color:#e6f5e9
   class CT frozen
   class EV nodeps
+  class EL nodeps
 ```
 
 Two edges carry the design, and both look like accidents if you don't know why:
 
 - **`integrations → security`, `integrations → telemetry`.** These are the only cross-stream imports in the repo, and they are deliberate. Agent hooks are where untrusted text and credential headers actually arrive, so the hook path must redact and must be measurable. This is the single documented exception to P1; there is no third.
+- **`eval-live → eval`, and nothing else.** The live A/B runner consumes the offline harness's types and reporter so a live run and an offline run produce the same shape — and it lives in a separate package because `eval` has a structural test asserting it opens no sockets. Putting `fetch` behind a subdirectory to dodge that assertion would keep the letter of the rule and break its intent. A live run measures a *prompt prefix*, not a pin: pinning is a gateway property and no single-turn API call demonstrates it.
 - **`eval` depends on nothing.** It has no project reference, no dependencies, and a test (`packages/eval/test/runner.test.ts`) asserting the package opens no sockets. It *mirrors* `ConstraintKind` in `types.ts` with a comment recording the freeze digest, rather than importing it — the measuring apparatus must not be able to drift with the thing it measures. If you "clean up" that duplication into a real import, you have broken the experiment.
 
 **`canary` vs `eval` — both measure, and they are not interchangeable.** `eval` is the

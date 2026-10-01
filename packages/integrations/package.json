@@ -19,7 +19,7 @@
   "dependencies": {
     "@strata-ctx/core-types": "1.0.0",
     "yaml": "^2.5.0",
-    "@strata-ctx/security": "1.0.0"
+    "@strata-ctx/security": "0.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
