@@ -406,11 +406,18 @@ test('an SSE response is forwarded chunk by chunk, never buffered', async () => 
   const h = await startGateway({}, up.url);
 
   const order: string[] = [];
+  let firstArrived: () => void = () => undefined;
+  const sawFirst = new Promise<void>((resolve) => {
+    firstArrived = resolve;
+  });
   const complete = new Promise<void>((resolve, reject) => {
     void httpRequest(`${h.url}/v1/messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, agent: false }, (res) => {
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => {
-        if (chunk.includes('message_start')) order.push('first');
+        if (chunk.includes('message_start')) {
+          order.push('first');
+          firstArrived();
+        }
         if (chunk.includes('content_block_delta')) {
           order.push('second');
           resolve();
@@ -420,10 +427,26 @@ test('an SSE response is forwarded chunk by chunk, never buffered', async () => 
     }).on('error', reject).end(requestBody(''));
   });
 
-  // The upstream is still holding the second frame. If the gateway buffered,
-  // `complete` would not have resolved by now and the assertion below is the
-  // one that catches it -- a buffered proxy passes every other test here.
-  await new Promise((r) => setTimeout(r, 50));
+  // Wait for the first frame rather than sleeping a fixed interval and hoping.
+  // The upstream is still holding the second frame, so if the gateway buffered,
+  // `complete` would still be pending at this point -- and a buffered proxy
+  // passes every other test in this file. A sleep makes this assertion
+  // non-deterministic under load: it failed only in full-suite runs, where the
+  // event loop is busy enough that the first frame had not been parsed yet, and
+  // `order` was still `[]`. The property under test is about ordering, not about
+  // how long the machine took, so it is observed rather than waited for.
+  //
+  // Bounded, and deliberately so: with a genuinely buffering proxy `sawFirst`
+  // never resolves, so an unbounded await turns this into a hang rather than a
+  // failure. A regression that costs CI a timeout costs more than one that costs
+  // it a red line, and the timeout is what keeps the distinction between "slow"
+  // and "buffered" visible.
+  await Promise.race([
+    sawFirst,
+    new Promise((_resolve, rejectRace) =>
+      setTimeout(() => rejectRace(new Error('the first SSE frame never arrived')), 5_000),
+    ),
+  ]);
   assert.deepEqual(order, ['first'], 'the first frame arrived before the rest existed');
   release();
   await complete;
