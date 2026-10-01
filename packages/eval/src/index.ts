@@ -30,6 +30,7 @@
 
 export * from './types.js';
 export * from './fixture.js';
+export * from './corpus.js';
 export * from './mock-arm.js';
 export * from './runner.js';
 export * from './reporter.js';

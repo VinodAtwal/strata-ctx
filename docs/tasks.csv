@@ -52,7 +52,7 @@ E-8,E,Integrations,surface-check CI job: detect hook-schema drift,par,1.5,E-2,2,
 F1-1,F,Evals,Harness skeleton: fixture format + runner + reporter + mock only,seq,2,A-11,0,M0,done
 F1-2,F,Evals,Grading primitives: deterministic tool-call grading + rubric judge,seq,2,F1-1,1,-,done
 F1-3,F,Evals,Statistics: McNemar exact + paired bootstrap + non-inferiority + BH,seq,2.5,F1-2,1,-,done
-F1-4,F,Evals,Corpus curation: 3 repos + real issue tasks + licensing check,par,3,F1-1,1,-,todo
+F1-4,F,Evals,Corpus curation: real issue tasks + licensing check (1 repo: aegis; scope cut from 3 by owner decision),par,3,-,1,-,done
 F1-5,F,Evals,Suite E1 constraint retention (ConstraintRot port) + NEGATIVE CONTROL,par,2.5,"F1-2,D-6",1,"G1,G2",done
 F1-6,F,Evals,Suite E2 context rot probe (slope-based + NIAH control),par,1.5,F1-2,1,G5,done
 F1-7,F,Evals,Suite E3 output format: accuracy + diversity + lossless round-trip,par,1.5,"F1-2,H-1",1,G10,done
