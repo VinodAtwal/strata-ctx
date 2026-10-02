@@ -46,5 +46,6 @@ export * from './statistics.js';
 export * from './suites/e1-constraint-retention.js';
 export * from './suites/e2-rot-probe.js';
 export * from './suites/e3-output-format.js';
+export * from './suites/e4-coding-tasks.js';
 export * from './suites/e5-cost-breakeven.js';
 export * from './suites/e6-redaction.js';

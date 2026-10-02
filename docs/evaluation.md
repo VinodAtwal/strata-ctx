@@ -210,8 +210,7 @@ verbosity directives. This suite is allowed to kill a feature.
 
 **Question:** on real engineering work, is the treatment non-inferior to the control?
 
-**Design.** ≥100 task instances across 3 curated repositories, tasks derived from real issues and PRs
-(not synthetic toy edits), licensing cleared. Paired, interleaved, temperature 0.
+**Design.** Pre-registered target: ≥100 task instances across 3 curated repositories, tasks derived from real issues and PRs (not synthetic toy edits), licensing cleared. Shipped corpus: **12 task instances from 1 repository** (`VinodAtwal/aegis`, private, Python). The target was reduced by owner decision (not met); the second candidate (Mimoto) was excluded as too early and fragile to be a stable evaluation target. Paired, interleaved, temperature 0.
 
 | Task category | Why |
 |---|---|
@@ -235,6 +234,16 @@ the default.
 
 **Source of truth:** SWE-bench-style construction methodology with our own licensed corpus; a strong
 full-context control per §2.
+
+### Status and limits
+
+The shipped corpus size constrains what G3 (coding task pass rate) and G4 (refinement subset pass rate) can claim, independent of the measurement logic:
+
+1. **G3 cannot fire in the direction it protects against at n=12.** Under the pre-registered −2pp margin and the Agresti–Min continuity correction used by `pairedNonInferiority` (`packages/eval/src/statistics.ts:MIN_DISCORDANT_FRACTION` and `pairedNonInferiority`/`exactMcNemar`), enumerating all assignments for n=12 paired cases shows that every instance where `observed` is reached has more treatment gains than losses. When treatment is no better than control (`n01 <= n10`), none reach `observed`. Therefore **no non-inferiority claim in the direction G3 protects can be supported at the shipped corpus size**, and G4 cannot be confirmed at all — see below. A G3 that *does* fire at n=12 can only be firing on a treatment win large enough to be visible against the correction, which is a different and much weaker statement than "compression did not hurt". The corpus shortfall is the binding constraint on the suite's headline A/B, not a cosmetic bookkeeping gap.
+
+2. **Balanced results do not clear the margin until ~n=600.** With equal losses and gains at ~5% discordant pairs, the Agresti–Min lower bound crosses −2pp around n=300, n=400, n=480, and n=500, and clears it at n=600. The continuity correction — not the task sample — sets this floor.
+
+3. **G4 at 3 refinement cases is not confirmatory for non-inferiority.** With all arms agreeing it returns `inconclusive` / `no_discordant_pairs`; with a single treatment loss it returns `not_observed` / `interval_crosses_margin`. A passing G4 at this n is not available; a failing one is. Also note: G3 and G4 are excluded from `EVALUATED_GATES` in `packages/eval-live/src/gates.ts` (line 319; see also unevaluatedGates note at ~340) with the existing note "needs suite E4 (refinement), which has no live arm", and no live arm has been scored yet.
 
 ## E5 — Cost, Latency & Breakeven
 
