@@ -79,7 +79,7 @@ export {
 } from './cost.js';
 
 // H-6 reference instead of inline.
-export type { ReferencePolicy, ReferenceReport } from './reference.js';
+export type { PendingArtifact, ReferencePolicy, ReferenceReport } from './reference.js';
 export {
   REFERENCE_MARKER,
   REFERENCE_SCHEME,

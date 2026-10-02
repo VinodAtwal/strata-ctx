@@ -8,7 +8,7 @@ import type { JsonValue } from './json-value.js';
 import { assertJsonValue } from './json-value.js';
 import type { MachineFormat, ModelRegistry } from './registry.js';
 import { DEFAULT_REGISTRY } from './registry.js';
-import type { ReferenceReport } from './reference.js';
+import type { PendingArtifact, ReferenceReport } from './reference.js';
 import { referenceOversized } from './reference.js';
 import type { Selection } from './select.js';
 import { DEFAULT_MIN_SAVINGS_FRAC, selectMachineFormat } from './select.js';
@@ -57,7 +57,17 @@ export interface OutputCompressPolicy {
   readonly minSavingsFrac: number;
   /** Optional table name, carried in the header. Omitted when absent. */
   readonly tableName?: string;
-  readonly reference: { readonly enabled: boolean; readonly maxInlineBytes: number };
+  /**
+   * H-6's switch. `durable` is omitted by `DEFAULT_POLICY` and therefore false,
+   * which is the point: this stage has no store, so enabling `enabled` alone
+   * must reference nothing rather than publish a URI no store can answer to.
+   * See `ReferencePolicy.durable`.
+   */
+  readonly reference: {
+    readonly enabled: boolean;
+    readonly maxInlineBytes: number;
+    readonly durable?: boolean;
+  };
   /**
    * Serve format statistics (`rho`, `k`) for the breakeven verdict.
    *
@@ -139,6 +149,16 @@ export interface CompressInput {
 export interface CompressResult {
   readonly messages: readonly NonGovernanceMessage[];
   readonly artifacts: readonly ArtifactRef[];
+  /**
+   * Bytes the reference operator removed and did not store.
+   *
+   * Carried here rather than left inside `report` because the stage drops
+   * whatever `referenceOversized` hands it: a `pending` that stopped at this
+   * boundary would make the operator's fix cosmetic, since the stub would still
+   * be published with its bytes nowhere. Whoever publishes the context must put
+   * these in the store first. Mirrors `pointerizeBlocks` in the pipeline.
+   */
+  readonly pending: readonly PendingArtifact[];
   readonly report: CompressReport;
 }
 
@@ -286,6 +306,8 @@ function unchangedResult(
   return {
     messages: input.messages,
     artifacts: input.artifacts,
+    // Nothing was rewritten, so nothing is owed to a store.
+    pending: Object.freeze([]),
     report: {
       blocks,
       compressed: 0,
@@ -336,6 +358,7 @@ export function applyOutputCompression(input: CompressInput): CompressResult {
         skippedNotEligible: 0,
         skippedHighSeverity: 0,
         skippedAlreadyReference: 0,
+        skippedNoWriter: 0,
         references: Object.freeze([]),
       },
       `the reference operator threw, so the context is unchanged: ${String(error)}`,
@@ -343,10 +366,13 @@ export function applyOutputCompression(input: CompressInput): CompressResult {
   }
 
   // Which blocks the reference operator already handled, and what each one cost.
-  // Keyed by sha because that is the identity the operator rewrote on, and read
-  // once here rather than re-derived by sniffing stub text per block.
+  // Keyed by `blockSha256` -- the digest of the block, not the artifact digest --
+  // because that is the identity the operator rewrote on and the one a block
+  // still carries afterwards; `meta.sha256` is deliberately left untouched. Keyed
+  // on `sha256` instead this map never matches anything, and every referenced
+  // block falls through to the serializer with its report count at zero.
   const referencedBySha = new Map(
-    referenced.report.references.map((r) => [r.sha256, r.originalChars] as const),
+    referenced.report.references.map((r) => [r.blockSha256, r.originalChars] as const),
   );
 
   const decisions: BlockDecision[] = [];
@@ -403,6 +429,7 @@ export function applyOutputCompression(input: CompressInput): CompressResult {
     // large and mostly unchanged.
     messages,
     artifacts: referenced.artifacts,
+    pending: referenced.pending,
     report: {
       blocks: decisions.length,
       compressed,
