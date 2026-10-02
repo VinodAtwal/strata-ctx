@@ -11,6 +11,8 @@ import {
   StrataPolicySchema,
 } from '@strata-ctx/core-types';
 import { runTier0, type Tier0Result } from '@strata-ctx/pipeline';
+import type { PendingArtifact } from '@strata-ctx/pipeline';
+import { ArtifactStore } from '@strata-ctx/security';
 import { DEFAULT_TAIL_BYTES, pipeSseUpstream } from './sse.js';
 import { ollamaClientFromFetch, type NarrationConfig } from './ollama-adapter.js';
 import { runTier3 } from './tier3.js';
@@ -97,6 +99,17 @@ export interface GatewayOptions {
   readonly narration?: NarrationConfig;
   /** Injected so the Tier 3 tests do not reach a socket. Defaults to `fetch`. */
   readonly narrationFetch?: typeof fetch;
+  /**
+   * Where `artifact://` pointers go. Absent means pointer-ization is off.
+   *
+   * Not a default for convenience. A pointer replaces a file read's text with a
+   * URI, and that URI is only worth anything if something can resolve it -- so
+   * a gateway with no store configured must not mint them, which is why this
+   * feeds `runTier0`'s `durable` flag rather than being a fallback path inside
+   * the store. With no root, oversized reads take the byte cap instead: still
+   * lossy, but the loss is visible in a report instead of silent in a URI.
+   */
+  readonly artifactRoot?: string;
 }
 
 export interface Session {
@@ -149,6 +162,16 @@ export interface GatewayRuntime {
   readonly sessions: Map<string, Session>;
   /** Byte-identical to the digest `verifyPinIntegrity` computes. */
   readonly policyHash: string;
+  /**
+   * The artifact store, opened once and reused.
+   *
+   * Memoized as a promise rather than a value because `ArtifactStore.open`
+   * creates directories and resolves the root's real path; doing that per
+   * request would be a filesystem round trip on the hot path, and doing it at
+   * startup would make an unreachable root a boot failure for a gateway whose
+   * default configuration never uses the store at all.
+   */
+  artifacts(): Promise<ArtifactStore>;
 }
 
 interface Dispatcher {
@@ -179,6 +202,48 @@ const sendJson = (
 const fail = (d: Dispatcher, code: string, message: string, failedOpen: boolean): void => {
   d.rt.opts.telemetry?.({ type: 'error', runId: 'unknown', stage: 'pin', code, message, failedOpen });
 };
+
+/**
+ * Write what a Tier 0 run pointer-ized, or say why it could not.
+ *
+ * The URI in the pointer was minted by the pipeline before anything reached
+ * disk, from the digest the producer put on the block. `ArtifactStore.put`
+ * digests what it *stored*, so the two agree only when that declared digest was
+ * the digest of the block's text and redaction left the bytes untouched. Either
+ * way the object is filed under a URI nothing in the transcript points at, and
+ * publishing the pointer would trade a large inline read for a reference that
+ * cannot be followed -- so a mismatch is a refusal, not a warning. The
+ * mismatching URI is returned either way; it names the block to look at.
+ *
+ * Exported because the guarantee is only worth something if it can be exercised
+ * against a real store on a real filesystem -- a mock that records `put` calls
+ * passes whether or not the URI it was handed actually resolves.
+ */
+export async function persistPending(
+  store: ArtifactStore,
+  pending: readonly PendingArtifact[],
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  for (const item of pending) {
+    let landed: string;
+    try {
+      landed = (await store.put(item.text, item.kind)).uri;
+    } catch (e) {
+      return {
+        ok: false,
+        reason: `artifact write failed for ${item.uri}: ${e instanceof Error ? e.message : String(e)}`,
+      };
+    }
+    if (landed !== item.uri) {
+      return {
+        ok: false,
+        reason:
+          `pointer ${item.uri} does not name the object that was stored (${landed}); either the ` +
+          `block's declared digest was not the digest of its text, or redaction changed the content`,
+      };
+    }
+  }
+  return { ok: true };
+}
 
 /**
  * `GET /healthz`.
@@ -379,7 +444,38 @@ const handleIngress = async (
     // default policy lists all three, so a default gateway compresses. That was
     // already the documented intent -- `order.ts` describes Tier 0 as running on
     // every outbound request -- and this request path was simply not honoring it.
-    const tier0 = runTier0(before, d.rt.opts.policy);
+    const durable = d.rt.opts.artifactRoot !== undefined;
+    let tier0 = runTier0(before, d.rt.opts.policy, { durable });
+    if (tier0.pending.length > 0) {
+      // Tier 0 is synchronous, so the bytes it dropped are already out of the
+      // messages and nothing has written them yet. Until this returns, the
+      // state about to be published is a set of pointers to nothing.
+      let refusal: string | undefined;
+      try {
+        const store = await d.rt.artifacts();
+        const outcome = await persistPending(store, tier0.pending);
+        if (!outcome.ok) refusal = outcome.reason;
+      } catch (e) {
+        refusal = `artifact store unavailable: ${e instanceof Error ? e.message : String(e)}`;
+      }
+      if (refusal !== undefined) {
+        d.rt.opts.telemetry?.({
+          type: 'error',
+          runId: before.runId,
+          stage: 'truncate',
+          code: 'artifact_write_refused',
+          message: refusal,
+          failedOpen: true,
+        });
+        // Re-run rather than un-pointer-ize what came back: the cap stage has
+        // already run, and putting the text back afterwards would leave an
+        // oversized block past its cap with nothing downstream to catch it. A
+        // second Tier 0 from the same input is cheap, deterministic, and yields
+        // metrics for the context that is actually sent -- the refused run's
+        // savings never happened, so they are not reported.
+        tier0 = runTier0(before, d.rt.opts.policy, { durable: false });
+      }
+    }
     const applied = enforcePins(tier0.state, d.rt.opts.policy);
     state = applied.state;
     expected = applied.expected;
@@ -756,6 +852,24 @@ export function createGateway(opts: GatewayOptions): Gateway {
       // Byte-identical to the digest `verifyPinIntegrity` computes, so a health
       // check and a step-4c gate agree by construction rather than by convention.
       policyHash: sha256(pinSetText(opts.policy).join('\n')),
+      artifacts: (() => {
+        // Memoized as a promise, rejection included, so a root that cannot be
+        // opened reports the same way on every request instead of paying for a
+        // fresh `mkdir` each time and surfacing a different message.
+        let opened: Promise<ArtifactStore> | undefined;
+        return (): Promise<ArtifactStore> => {
+          if (opts.artifactRoot === undefined) {
+            // Only reachable if a caller asks for the store without configuring
+            // a root, which the request path does not do -- it gates on the same
+            // value. A default here would be the worst option: `ArtifactStore.open`
+            // creates directories, so it would scatter `objects/`, `aliases/` and
+            // `audit/` into whatever the process's working directory happens to be.
+            return Promise.reject(new Error('no artifactRoot configured'));
+          }
+          opened ??= ArtifactStore.open({ root: opts.artifactRoot });
+          return opened;
+        };
+      })(),
     },
     server: undefined as unknown as Gateway,
     drainMs: opts.drainMs ?? DEFAULT_DRAIN_MS,

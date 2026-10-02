@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { NonGovernanceBlock, NonGovernanceMessage } from '@strata-ctx/core-types';
-import { isHighSeverity, partitionForLossy } from '@strata-ctx/core-types';
+import { isHighSeverity, partitionForLossy, sha256 } from '@strata-ctx/core-types';
 
 import {
   HEAD_SHARE,
@@ -200,7 +200,7 @@ describe('B-2 truncate: Tier 0 does not eat its own bookkeeping', () => {
     assert.ok(stub);
     assert.ok(stub.text?.startsWith(POINTER_MARKER), 'the pointer survived');
     assert.ok(stub.text?.includes(`path: ${longPath}`), 'and still names the file');
-    assert.ok(stub.text?.includes(`uri: ${artifactUriFor(stub.meta.sha256)}`), 'and is still fetchable');
+    assert.ok(stub.text?.includes(`uri: ${artifactUriFor(sha256(lines(400)))}`), 'and is still fetchable');
     assert.ok(!stub.text?.includes(TRUNCATION_MARKER), 'no truncation marker was written into it');
     assert.equal(report.skippedAlreadyPointer, 1);
     assert.equal(report.truncatedBlocks, 0);

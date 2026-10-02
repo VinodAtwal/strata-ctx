@@ -5,11 +5,11 @@ import type {
   Tier,
 } from '@strata-ctx/core-types';
 import { isHighSeverity } from '@strata-ctx/core-types';
-import type { PointerizeReport } from './pointer.js';
+import type { PendingArtifact, PointerizeReport } from './pointer.js';
 import { isPointerized, pointerizeBlocks } from './pointer.js';
 import type { SeverityReport } from './severity.js';
 import { applySeverityClassification, isHighSeverityLine } from './severity.js';
-import type { Tier0Stage } from './stage.js';
+import type { Tier0Stage, Tier0StageOptions } from './stage.js';
 
 /**
  * B-2. Per-tier byte caps, with head + tail and unconditional severity
@@ -200,6 +200,12 @@ export interface TruncateReport {
   readonly truncatedByTier: ReadonlyMap<Tier, number>;
   readonly severity: SeverityReport;
   readonly pointerize: PointerizeReport;
+  /**
+   * Bytes stage 1 removed from the messages and did not store. The report is the
+   * only channel out of a synchronous stage, so a pointer-ized block cannot be
+   * published until whoever owns this report has written these out.
+   */
+  readonly pending: readonly PendingArtifact[];
 }
 
 export interface TruncateInput {
@@ -217,7 +223,7 @@ export function truncateBlocks(
   input: TruncateInput,
 ): {
   readonly messages: readonly NonGovernanceMessage[];
-  readonly report: Omit<TruncateReport, 'severity' | 'pointerize'>;
+  readonly report: Omit<TruncateReport, 'severity' | 'pointerize' | 'pending'>;
 } {
   const truncatedByTier = new Map<Tier, number>();
   let truncatedBlocks = 0;
@@ -309,7 +315,7 @@ export function truncateBlocks(
  * inline) need them on their own, but they are not separate *stages*: the fixed
  * order in docs/architecture.md §4 has seven slots and no room for them.
  */
-export function applyTruncate(ctx: LossyContext): {
+export function applyTruncate(ctx: LossyContext, opts?: Tier0StageOptions): {
   readonly ctx: LossyContext;
   readonly report: TruncateReport;
 } {
@@ -317,7 +323,12 @@ export function applyTruncate(ctx: LossyContext): {
   const capFor = (block: NonGovernanceBlock): number | undefined =>
     capForTier(caps, block.meta.tier);
 
-  const pointerized = pointerizeBlocks(ctx.messages, ctx.artifacts, { capFor });
+  const pointerized = pointerizeBlocks(ctx.messages, ctx.artifacts, {
+    capFor,
+    // Conditional spread: `exactOptionalPropertyTypes` treats an explicit
+    // undefined as "present and undefined", which is not the same as absent.
+    ...(opts?.durable === undefined ? {} : { durable: opts.durable }),
+  });
   const capped = truncateBlocks(pointerized.messages, { caps });
   const severity = applySeverityClassification({
     ...ctx,
@@ -327,7 +338,12 @@ export function applyTruncate(ctx: LossyContext): {
 
   return {
     ctx: severity.ctx,
-    report: { ...capped.report, severity: severity.report, pointerize: pointerized.report },
+    report: {
+      ...capped.report,
+      severity: severity.report,
+      pointerize: pointerized.report,
+      pending: pointerized.pending,
+    },
   };
 }
 

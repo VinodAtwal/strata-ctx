@@ -15,7 +15,19 @@ export interface StageApplied<T> {
   readonly report: T;
 }
 
+/**
+ * Stage-wide switches the caller knows and a stage cannot infer.
+ *
+ * `durable` is the important one. A stage must not mint an `artifact://` URI
+ * unless the caller has somewhere to put the bytes, and a synchronous stage has
+ * no way to ask -- so the answer arrives here, from the only party that knows
+ * whether a store was opened. Stages that need nothing ignore it.
+ */
+export interface Tier0StageOptions {
+  readonly durable?: boolean;
+}
+
 export interface Tier0Stage<T> {
   readonly name: LossyStageName;
-  run(ctx: LossyContext): StageApplied<T>;
+  run(ctx: LossyContext, opts?: Tier0StageOptions): StageApplied<T>;
 }

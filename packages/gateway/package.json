@@ -15,7 +15,8 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@strata-ctx/core-types": "1.0.0",
-    "@strata-ctx/pipeline": "0.1.0"
+    "@strata-ctx/pipeline": "0.1.0",
+    "@strata-ctx/security": "file:../security"
   },
   "author": "The strata-ctx Authors"
 }

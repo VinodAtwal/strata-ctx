@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { ArtifactRef, NonGovernanceBlock, NonGovernanceMessage } from '@strata-ctx/core-types';
-import { partitionForLossy } from '@strata-ctx/core-types';
+import { partitionForLossy, sha256 } from '@strata-ctx/core-types';
 
 import {
   ARTIFACT_SCHEME,
@@ -93,8 +93,12 @@ describe('B-3 pointerize: the stub', () => {
     assert.ok(stub);
     const text = stub.text ?? '';
     assert.ok(text.includes('path: src/a.ts'), 'the path is in the stub, not only in meta');
-    assert.ok(text.includes(`uri: ${ARTIFACT_SCHEME}file/${read.meta.sha256}`));
-    assert.ok(text.includes(`sha256: ${read.meta.sha256}`));
+    // The artifact digest, not `meta.sha256`. Those are different hashes -- see
+    // `artifactDigest` -- and only the artifact one names an object the store
+    // can actually hold, so it is the one recovery has to be able to check.
+    const digest = sha256(lines(400));
+    assert.ok(text.includes(`uri: ${ARTIFACT_SCHEME}file/${digest}`));
+    assert.ok(text.includes(`sha256: ${digest}`));
     assert.ok(text.includes(`chars: ${lines(400).length}`));
     assert.ok(text.includes('lines: 400'));
   });
@@ -105,6 +109,11 @@ describe('B-3 pointerize: the stub', () => {
     const stub = messages[0]?.content[0];
 
     assert.equal(stub?.meta.sha256, read.meta.sha256, 'the hash identifies the file, not the stub');
+    assert.notEqual(
+      read.meta.sha256,
+      sha256(lines(400)),
+      'and it is deliberately not the artifact digest: meta.sha256 hashes the block, the URI hashes the text',
+    );
     assert.deepEqual(stub?.meta.subject, read.meta.subject);
     assert.equal(stub?.meta.tier, 'artifact_ref');
     assert.equal(stub?.type, read.type);
@@ -167,7 +176,7 @@ describe('B-3 pointerize: helpers', () => {
   });
 
   it('builds a stub that the classifier reads as bookkeeping, not evidence', () => {
-    const stub = pointerStub(toolResult({ ref: 'a.ts', kind: 'file', text: lines(10) }), artifactUriFor('abc'));
+    const stub = pointerStub(toolResult({ ref: 'a.ts', kind: 'file', text: lines(10) }), artifactUriFor('abc'), 'abc');
     assert.ok(stub.startsWith(POINTER_MARKER));
   });
 });

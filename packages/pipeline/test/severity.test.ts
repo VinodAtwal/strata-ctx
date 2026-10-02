@@ -103,7 +103,7 @@ describe('B-4 severity: line classification', () => {
     // Guards the namespace convention itself: every marker a Tier 0 operator
     // writes must survive the classifier untouched, whatever it says.
     const rendered = [
-      pointerStub(toolResult({ ref: 'f.ts', kind: 'file', text: lines(50) }), 'artifact://file/abc'),
+      pointerStub(toolResult({ ref: 'f.ts', kind: 'file', text: lines(50) }), 'artifact://file/abc', 'abc'),
       truncateText(lines(500, 'noisy'), 200).text,
       truncateText(`${lines(60, 'head')}\nfatal: disk full\n${lines(60, 'tail')}`, 300).text,
     ];

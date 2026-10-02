@@ -17,9 +17,10 @@ import {
 } from '@strata-ctx/core-types';
 import type { DedupeReport } from './dedupe.js';
 import { dedupeStage } from './dedupe.js';
-import type { StageApplied, Tier0Stage } from './stage.js';
+import type { StageApplied, Tier0Stage, Tier0StageOptions } from './stage.js';
 import type { TruncateReport } from './truncate.js';
 import { truncateStage } from './truncate.js';
+import type { PendingArtifact } from './pointer.js';
 import type { TriageReport } from './triage.js';
 import { triageStage } from './triage.js';
 
@@ -140,9 +141,13 @@ export interface FailOpenOutcome<T> {
  * exercised, and because the gateway's generic runner wants the same guarantee
  * for the stages this package does not own.
  */
-export function runStageFailOpen<T>(stage: Tier0Stage<T>, ctx: LossyContext): FailOpenOutcome<T> {
+export function runStageFailOpen<T>(
+  stage: Tier0Stage<T>,
+  ctx: LossyContext,
+  opts?: Tier0StageOptions,
+): FailOpenOutcome<T> {
   try {
-    const out: StageApplied<T> = stage.run(ctx);
+    const out: StageApplied<T> = stage.run(ctx, opts);
     if (!isLossyContext(out.ctx)) return { ctx, report: undefined, code: 'not_a_lossy_context' };
     // Cheap, and it catches a bug during development rather than in a user's
     // context window. R4: reordering inside the cached prefix destroys the
@@ -174,6 +179,14 @@ export interface Tier0Result {
   readonly stagesRun: readonly LossyStage['name'][];
   /** Policy listed the Tier 0 stages in some order other than the fixed one. */
   readonly policyOrderIgnored: boolean;
+  /**
+   * `artifact://` references this run published whose bytes are not stored yet.
+   *
+   * A caller that publishes `state` while this is non-empty has published a
+   * pointer to nothing. So the contract is narrow and absolute: persist these
+   * first, or discard `state` and re-run with `durable: false`.
+   */
+  readonly pending: readonly PendingArtifact[];
 }
 
 /**
@@ -187,8 +200,19 @@ export interface Tier0Result {
  *
  * The stages are pure functions. The measurement wrapped around them is not, and
  * that is the only impurity in this package.
+ *
+ * `opts.durable` is the caller's promise that it can store what stage 2 hands
+ * back. It is a parameter because Tier 0 cannot verify it and cannot fail on it:
+ * the stage is synchronous, so it publishes a reference it cannot back and the
+ * store write happens later, on the other side of this call. Passing
+ * `durable: false` is the honest answer when no store was opened, and it costs
+ * compression rather than content.
  */
-export function runTier0(state: ContextState, policy: StrataPolicy): Tier0Result {
+export function runTier0(
+  state: ContextState,
+  policy: StrataPolicy,
+  opts?: Tier0StageOptions,
+): Tier0Result {
   const enabled = new Set<StageName>(policy.pipeline.stages);
   const activeTier0 = TIER0_STAGE_ORDER.filter((n) => enabled.has(n));
   const policyTier0 = policy.pipeline.stages.filter((n): n is LossyStage['name'] =>
@@ -229,7 +253,7 @@ export function runTier0(state: ContextState, policy: StrataPolicy): Tier0Result
       code = r.code;
       if (r.report !== undefined) reports.dedupe = r.report;
     } else if (name === 'truncate') {
-      const r = runStageFailOpen(truncateStage, ctx);
+      const r = runStageFailOpen(truncateStage, ctx, opts);
       next = r.ctx;
       code = r.code;
       if (r.report !== undefined) reports.truncate = r.report;
@@ -288,5 +312,9 @@ export function runTier0(state: ContextState, policy: StrataPolicy): Tier0Result
     prefixInvalidated: cacheableFingerprint(out.messages) !== beforeCache,
     stagesRun,
     policyOrderIgnored,
+    // Truncate is the only stage that mints references, but the caller should not
+    // have to know that -- and a stage policy that omits truncate must yield an
+    // empty list rather than an undefined one that needs a guard downstream.
+    pending: reports.truncate?.pending ?? [],
   };
 }
