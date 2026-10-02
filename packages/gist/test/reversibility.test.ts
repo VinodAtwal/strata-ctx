@@ -5,9 +5,22 @@ import {
   reconstructContextSegment,
   verifyGovernanceRoundTrip,
 } from '../src/reversibility.js';
-import type { Gist, Message, ContentBlock } from '@strata-ctx/core-types';
+import type { RecoveredSegment, RecoveryArtifactStore } from '../src/reversibility.js';
+import type { ArtifactRef, BlockSubject, Gist, Message, ContentBlock } from '@strata-ctx/core-types';
 import type { ReadResult } from '@strata-ctx/security';
+import { bucketForKind } from '@strata-ctx/security';
 import { createHash } from 'node:crypto';
+
+const digestOf = (text: string): string =>
+  createHash('sha256').update(text, 'utf8').digest('hex');
+
+/**
+ * The address `put(rawTranscript, 'raw_transcript')` mints, byte for byte
+ * (security/src/store.ts:157-161). Recovery fixtures that used
+ * `artifact://log/abc123` described an object the store would refuse to parse,
+ * so nothing exercised the URI handling they were nominally about.
+ */
+const RAW_URI = `artifact://transcript/${'a'.repeat(64)}`;
 
 function makeBlock(text: string, overrides: Partial<ContentBlock> = {}): ContentBlock {
   const { meta: overrideMeta, ...restOverrides } = overrides;
@@ -16,7 +29,7 @@ function makeBlock(text: string, overrides: Partial<ContentBlock> = {}): Content
     text,
     meta: {
       origin: 'assistant',
-      sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
+      sha256: digestOf(text),
       tier: overrideMeta?.tier ?? 'episodic',
       bytes: text.length,
       cacheable: false,
@@ -27,7 +40,7 @@ function makeBlock(text: string, overrides: Partial<ContentBlock> = {}): Content
 }
 
 function makeGovernanceMessage(text = 'governance rule: no secrets'): Message {
-  const sha = createHash('sha256').update(text, 'utf8').digest('hex');
+  const sha = digestOf(text);
   const content: ContentBlock = makeBlock(text, {
     meta: {
       origin: 'system',
@@ -46,7 +59,7 @@ function makeToolResult(text: string, overrides: Partial<ContentBlock> = {}): Co
     text,
     meta: {
       origin: 'tool',
-      sha256: createHash('sha256').update(text, 'utf8').digest('hex'),
+      sha256: digestOf(text),
       tier: 'tool_state',
       bytes: text.length,
       cacheable: false,
@@ -62,6 +75,33 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
     content: [makeBlock('test message')],
     ts: Date.now(),
     ...overrides,
+  };
+}
+
+/**
+ * A block that is standing in for content held elsewhere.
+ *
+ * `representedSha` is the digest of the content the block represents, which is
+ * what B-3 and H-6 promise `meta.sha256` stays (pointer.ts:22-28) -- not the
+ * digest of the stub now in `text`.
+ */
+function pointerBlock(
+  type: ContentBlock['type'],
+  stubText: string,
+  representedSha: string,
+  subject?: BlockSubject,
+): ContentBlock {
+  return {
+    type,
+    text: stubText,
+    meta: {
+      origin: 'tool',
+      sha256: representedSha,
+      tier: 'artifact_ref',
+      bytes: stubText.length,
+      cacheable: false,
+      ...(subject === undefined ? {} : { subject }),
+    },
   };
 }
 
@@ -82,7 +122,7 @@ function makeGist(overrides: Partial<Gist> = {}): Gist {
       salient_errors: [],
       salient_warnings: [],
       dropped_count: 0,
-      raw_uri: 'artifact://log/abc123',
+      raw_uri: RAW_URI,
     },
     artifacts: [],
     next: { question: '', next_command: '', blockers: [] },
@@ -93,79 +133,82 @@ function makeGist(overrides: Partial<Gist> = {}): Gist {
     ...overrides,
   };
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function makeArtifactStore(messages: readonly Message[]): any {
-  const transcriptText = messages.map((m) => JSON.stringify(m)).join('\n');
+
+interface StubArtifactStore extends RecoveryArtifactStore {
+  readonly exists: (uri: string) => Promise<boolean>;
+  readonly put: (
+    content: string | Uint8Array,
+    kind: ArtifactRef['kind'],
+    options?: { readonly at?: number },
+  ) => Promise<ArtifactRef>;
+}
+
+/**
+ * A store with a working writer.
+ *
+ * `put` used to throw 'not implemented' and `exists` used to answer `true` to
+ * everything, so no test in this package could have caught a URI that resolves
+ * to nothing. Both now describe the same map.
+ */
+function makeArtifactStore(messages: readonly Message[]): StubArtifactStore {
+  const objects = new Map<string, { text: string; kind: ArtifactRef['kind']; at: number }>();
+  objects.set(RAW_URI, {
+    text: messages.map((m) => JSON.stringify(m)).join('\n'),
+    kind: 'raw_transcript',
+    at: Date.now(),
+  });
 
   return {
     async read(uri: string): Promise<ReadResult> {
       await Promise.resolve();
-      if (uri === 'artifact://log/abc123') {
-        return {
-          text: transcriptText,
-          stat: {
-            uri,
-            digest: 'abc123',
-            bytes: transcriptText.length,
-            kind: 'tool_log',
-            writtenAt: Date.now(),
-            redacted: false,
-            redactionKinds: [],
-            sourceDigest: '',
-            integrity: 'exact',
-            path: '/fake/path',
-          },
+      const object = objects.get(uri);
+      if (!object) throw new Error(`artifact not found: ${uri}`);
+      return {
+        text: object.text,
+        stat: {
+          uri,
+          digest: digestOf(object.text),
+          bytes: object.text.length,
+          kind: object.kind,
+          writtenAt: object.at,
+          redacted: false,
+          redactionKinds: [],
+          sourceDigest: '',
           integrity: 'exact',
-        };
-      }
-      throw new Error(`artifact not found: ${uri}`);
+          path: uri,
+        },
+        integrity: 'exact',
+      };
     },
-    async exists(): Promise<boolean> {
+    async exists(uri: string): Promise<boolean> {
       await Promise.resolve();
-      return true;
+      return objects.has(uri);
     },
-    async put(): Promise<never> {
+    async put(
+      content: string | Uint8Array,
+      kind: ArtifactRef['kind'],
+      options?: { readonly at?: number },
+    ): Promise<ArtifactRef> {
       await Promise.resolve();
-      throw new Error('not implemented');
+      const text = typeof content === 'string' ? content : Buffer.from(content).toString('utf8');
+      const digest = digestOf(text);
+      const uri = `artifact://${bucketForKind(kind)}/${digest}`;
+      objects.set(uri, { text, kind, at: options?.at ?? Date.now() });
+      return { uri, sha256: digest, bytes: text.length, kind };
     },
-    async putNamed(): Promise<never> {
-      await Promise.resolve();
-      throw new Error('not implemented');
-    },
-    async resolve(): Promise<never> {
-      await Promise.resolve();
-      throw new Error('not implemented');
-    },
-    async verify(): Promise<never> {
-      await Promise.resolve();
-      throw new Error('not implemented');
-    },
-    async stat(): Promise<never> {
-      await Promise.resolve();
-      throw new Error('not implemented');
-    },
-    async list(): Promise<readonly unknown[]> {
-      await Promise.resolve();
-      return [];
-    },
-    async remove(): Promise<boolean> {
-      await Promise.resolve();
-      return false;
-    },
-    async pruneAliases(): Promise<number> {
-      await Promise.resolve();
-      return 0;
-    },
-    acl: {},
-    audit: {},
-    root: '/fake',
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any;
+  };
 }
 
+const makeSegment = (messages: readonly Message[], overrides: Partial<RecoveredSegment> = {}): RecoveredSegment => ({
+  messages,
+  resolvedArtifacts: [],
+  missingArtifacts: [],
+  governanceIntact: true,
+  ...overrides,
+});
+
 describe('recoverTurns', () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let store: any;
+  let store: StubArtifactStore;
   let messages: Message[];
 
   beforeEach(() => {
@@ -243,41 +286,33 @@ let store: any;
     assert.equal(result.governanceIntact, false);
   });
 
-  test('handles missing raw transcript gracefully in non-strict mode', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const failingStore: any = {
-      async put() { await Promise.resolve(); return { uri: '', sha256: '', bytes: 0, kind: 'other', writtenAt: Date.now(), redacted: false, redactionKinds: [], sourceDigest: '', deduped: false }; },
-      async exists() { await Promise.resolve(); return false; },
-      async read(): Promise<ReadResult> { await Promise.resolve(); throw new Error('not found'); },
-      async delete() { await Promise.resolve(); return false; },
-      async gc() { await Promise.resolve(); return 0; },
-      async addRef() { await Promise.resolve(); },
-      async removeRef() { await Promise.resolve(); return false; },
+  test('does not claim governance intact when the raw transcript is gone', async () => {
+    const emptyStore: RecoveryArtifactStore = {
+      async read(uri: string): Promise<ReadResult> {
+        await Promise.resolve();
+        throw new Error(`artifact not found: ${uri}`);
+      },
     };
 
-    const gist = makeGist();
-    const result = await recoverTurns(gist, failingStore, { strict: false });
+    const result = await recoverTurns(makeGist(), emptyStore, { strict: false });
 
     assert.equal(result.messages.length, 0);
-    assert.ok(result.missingArtifacts.includes('artifact://log/abc123'), 'should include raw transcript URI');
-    assert.equal(result.governanceIntact, true);
+    assert.ok(result.missingArtifacts.includes(RAW_URI), 'should include raw transcript URI');
+    // Nothing round-tripped, so nothing was verified. `true` here was a false
+    // green that reported total loss of the transcript as a clean recovery.
+    assert.equal(result.governanceIntact, false);
   });
 
   test('throws on missing raw transcript in strict mode', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const failingStore: any = {
-      async put() { await Promise.resolve(); return { uri: '', sha256: '', bytes: 0, kind: 'other', writtenAt: Date.now(), redacted: false, redactionKinds: [], sourceDigest: '', deduped: false }; },
-      async exists() { await Promise.resolve(); return false; },
-      async read(): Promise<ReadResult> { await Promise.resolve(); throw new Error('not found'); },
-      async delete() { await Promise.resolve(); return false; },
-      async gc() { await Promise.resolve(); return 0; },
-      async addRef() { await Promise.resolve(); },
-      async removeRef() { await Promise.resolve(); return false; },
+    const emptyStore: RecoveryArtifactStore = {
+      async read(uri: string): Promise<ReadResult> {
+        await Promise.resolve();
+        throw new Error(`artifact not found: ${uri}`);
+      },
     };
 
-    const gist = makeGist();
     await assert.rejects(
-      recoverTurns(gist, failingStore, { strict: true }),
+      recoverTurns(makeGist(), emptyStore, { strict: true }),
       /raw transcript not found/,
     );
   });
@@ -290,7 +325,7 @@ const failingStore: any = {
     );
   });
 
-  test('resolves artifact references in tool results', async () => {
+  test('substitutes resolved artifact content back into a tool result', async () => {
     const artifactUri = 'artifact://file/' + 'd'.repeat(64);
     const messagesWithArtifact = [
       makeGovernanceMessage(),
@@ -316,6 +351,73 @@ const failingStore: any = {
     const result = await recoverTurns(gist, artifactStore, { artifactResolver });
 
     assert.ok(result.resolvedArtifacts.some((a) => a.uri === artifactUri));
+    // The bytes were resolved, so they must be in the messages. Reporting the
+    // URI as resolved while handing back the stub that says the content was
+    // elided is the shape this test used to accept.
+    const restored = result.messages[1]?.content[0];
+    assert.ok(restored !== undefined);
+    assert.equal(restored.text, 'File content at actual file content');
+    assert.equal(restored.meta.bytes, 'File content at actual file content'.length);
+  });
+
+  test('restores a pointerized block from the store it points at', async () => {
+    const fileContent = 'const answer = 42;\n'.repeat(50);
+    const artifactUri = 'artifact://file/' + digestOf(fileContent);
+    const pointerStub = [
+      '[strata:pointer]',
+      'path: src/answer.ts',
+      `uri: ${artifactUri}`,
+      `sha256: ${digestOf(fileContent)}`,
+      `chars: ${fileContent.length}`,
+      'content elided; recoverable verbatim at the uri above (artifact store)',
+    ].join('\n');
+
+    const pointerized = [
+      makeGovernanceMessage(),
+      // `meta.sha256` stays the digest of the content the block represents, not
+      // of the stub (pipeline/src/pointer.ts:22-28), which is what lets recovery
+      // tell "this stub stands for that artifact" from "this text mentions it".
+      makeMessage({ content: [pointerBlock('tool_result', pointerStub, digestOf(fileContent))] }),
+    ];
+    const artifactStore = makeArtifactStore(pointerized);
+    await artifactStore.put(fileContent, 'file_snapshot');
+
+    const result = await recoverTurns(makeGist({ source_turn_range: [0, 1] }), artifactStore);
+
+    const restored = result.messages[1]?.content[0];
+    assert.ok(restored !== undefined);
+    assert.equal(
+      restored.text,
+      fileContent,
+      'meta.sha256 is the digest of the content the block represents, so the whole stub is replaced',
+    );
+    assert.equal(restored.meta.bytes, fileContent.length);
+    assert.equal(result.missingArtifacts.length, 0);
+  });
+
+  test('resolves a reference carried by a block that is not a tool result', async () => {
+    // H-6 references anything with a subject or tool_state tier, which includes
+    // plain `text` blocks (output-compress/src/reference.ts:105-106). Reading
+    // only `tool_result` blocks made those references invisible to recovery.
+    const payload = '{"rows":[1,2,3]}';
+    const artifactUri = 'artifact://other/' + digestOf(payload);
+    const referenceStub = `[strata:reference]\nkind: text\nuri: ${artifactUri}\nsha256: ${digestOf(payload)}\nbytes: ${payload.length}`;
+
+    const referenced = [
+      makeGovernanceMessage(),
+      makeMessage({
+        content: [
+          pointerBlock('text', referenceStub, digestOf(payload), { kind: 'other', ref: 'src/report.json' }),
+        ],
+      }),
+    ];
+    const artifactStore = makeArtifactStore(referenced);
+    await artifactStore.put(payload, 'other');
+
+    const result = await recoverTurns(makeGist({ source_turn_range: [0, 1] }), artifactStore);
+
+    assert.deepEqual(result.resolvedArtifacts.map((a) => a.uri), [artifactUri]);
+    assert.equal(result.messages[1]?.content[0]?.text, payload);
   });
 
   test('records missing artifacts in non-strict mode', async () => {
@@ -332,6 +434,7 @@ const failingStore: any = {
     const result = await recoverTurns(gist, artifactStore, { strict: false });
 
     assert.ok(result.missingArtifacts.includes(artifactUri));
+    assert.equal(result.messages[1]?.content[0]?.text, `File at ${artifactUri}`);
   });
 });
 
@@ -343,14 +446,12 @@ describe('JSONL transcript parsing', () => {
     ];
     const transcriptText = messages.map((m) => JSON.stringify(m)).join('\n');
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const store: any = {
-      ...makeArtifactStore(messages),
+    const store: RecoveryArtifactStore = {
       async read(): Promise<ReadResult> {
         await Promise.resolve();
         return {
           text: transcriptText,
-          stat: { uri: 'artifact://log/x', digest: 'x', bytes: transcriptText.length, kind: 'tool_log', writtenAt: Date.now(), redacted: false, redactionKinds: [], sourceDigest: '', integrity: 'exact', path: '/fake' },
+          stat: { uri: RAW_URI, digest: digestOf(transcriptText), bytes: transcriptText.length, kind: 'tool_log', writtenAt: Date.now(), redacted: false, redactionKinds: [], sourceDigest: '', integrity: 'exact', path: '/fake' },
           integrity: 'exact',
         };
       },
@@ -366,14 +467,12 @@ const store: any = {
     const messages = [makeGovernanceMessage(), makeMessage()];
     const transcriptText = JSON.stringify(messages);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const store: any = {
-      ...makeArtifactStore(messages),
+    const store: RecoveryArtifactStore = {
       async read(): Promise<ReadResult> {
         await Promise.resolve();
         return {
           text: transcriptText,
-          stat: { uri: 'artifact://log/x', digest: 'x', bytes: transcriptText.length, kind: 'tool_log', writtenAt: Date.now(), redacted: false, redactionKinds: [], sourceDigest: '', integrity: 'exact', path: '/fake' },
+          stat: { uri: RAW_URI, digest: digestOf(transcriptText), bytes: transcriptText.length, kind: 'tool_log', writtenAt: Date.now(), redacted: false, redactionKinds: [], sourceDigest: '', integrity: 'exact', path: '/fake' },
           integrity: 'exact',
         };
       },
@@ -392,8 +491,7 @@ describe('reconstructContextSegment', () => {
       makeGovernanceMessage(),
       makeMessage(),
     ];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
+    const segment = makeSegment(messages);
     const result = reconstructContextSegment(segment, { runId: 'r', turn: 1, policyHash: 'h' });
 
     assert.equal(result.messages.length, 2);
@@ -405,11 +503,45 @@ const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], go
       makeMessage({ content: [makeBlock('b'.repeat(200))] }),
     ];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
+    const segment = makeSegment(messages);
     const result = reconstructContextSegment(segment, { runId: 'r', turn: 1, policyHash: 'h' });
 
     assert.equal(result.tokenEstimate, 300);
+  });
+
+  test('carries the identity of the context the segment is grafted into', () => {
+    const segment = makeSegment([makeMessage()]);
+    const result = reconstructContextSegment(segment, {
+      runId: 'run-7',
+      turn: 12,
+      taskId: 'task-3',
+      policyHash: 'ph',
+    });
+
+    assert.equal(result.runId, 'run-7');
+    assert.equal(result.turn, 12);
+    assert.equal(result.taskId, 'task-3');
+    assert.equal(result.policyHash, 'ph');
+  });
+
+  test('returns the restored messages rather than the recovered array itself', async () => {
+    const payload = 'the original file body';
+    const artifactUri = 'artifact://file/' + digestOf(payload);
+    const pointerized = [
+      makeMessage({ content: [makeToolResult(`see ${artifactUri} for details`)] }),
+    ];
+    const artifactStore = makeArtifactStore(pointerized);
+    await artifactStore.put(payload, 'file_snapshot');
+
+    const recovered = await recoverTurns(
+      makeGist({ source_turn_range: [0, 0] }),
+      artifactStore,
+    );
+    const result = reconstructContextSegment(recovered, { runId: 'r', turn: 1, policyHash: 'h' });
+
+    assert.notEqual(result.messages, recovered.messages);
+    assert.equal(result.messages[0]?.content[0]?.text, `see ${payload} for details`);
+    assert.equal(result.tokenEstimate, `see ${payload} for details`.length);
   });
 });
 
@@ -420,19 +552,14 @@ describe('verifyGovernanceRoundTrip', () => {
       makeGovernanceMessage('rule 2'),
     ];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
-
-    const result = verifyGovernanceRoundTrip(segment, ['rule 1', 'rule 2']);
+    const result = verifyGovernanceRoundTrip(makeSegment(messages), ['rule 1', 'rule 2']);
     assert.equal(result.ok, true);
   });
 
   test('detects missing constraints', () => {
     const messages = [makeGovernanceMessage('rule 1')];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
 
-    const result = verifyGovernanceRoundTrip(segment, ['rule 1', 'rule 2']);
+    const result = verifyGovernanceRoundTrip(makeSegment(messages), ['rule 1', 'rule 2']);
     assert.equal(result.ok, false);
     assert.equal(result.missing.length, 1);
     assert.equal(result.missing[0], 'rule 2');
@@ -443,10 +570,8 @@ const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], go
       makeGovernanceMessage('rule 1'),
       makeGovernanceMessage('rule 2'),
     ];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
 
-    const result = verifyGovernanceRoundTrip(segment, ['rule 1']);
+    const result = verifyGovernanceRoundTrip(makeSegment(messages), ['rule 1']);
     assert.equal(result.ok, false);
     assert.equal(result.extra.length, 1);
     assert.equal(result.extra[0], 'rule 2');
@@ -458,37 +583,7 @@ const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], go
       makeGovernanceMessage('rule 1'),
     ];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
-
-    const result = verifyGovernanceRoundTrip(segment, ['rule 1', 'rule 2']);
+    const result = verifyGovernanceRoundTrip(makeSegment(messages), ['rule 1', 'rule 2']);
     assert.equal(result.ok, true);
-  });
-});
-
-describe('reconstructContextSegment', () => {
-  test('builds a context segment from recovered messages', () => {
-    const messages = [
-      makeGovernanceMessage(),
-      makeMessage(),
-    ];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
-    const result = reconstructContextSegment(segment, { runId: 'r', turn: 1, policyHash: 'h' });
-
-    assert.equal(result.messages.length, 2);
-  });
-
-  test('calculates token estimate from block bytes', () => {
-    const messages = [
-      makeMessage({ content: [makeBlock('a'.repeat(100))] }),
-      makeMessage({ content: [makeBlock('b'.repeat(200))] }),
-    ];
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const segment: any = { messages, resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true };
-    const result = reconstructContextSegment(segment, { runId: 'r', turn: 1, policyHash: 'h' });
-
-    assert.equal(result.tokenEstimate, 300);
   });
 });

@@ -1,5 +1,19 @@
 import type { Gist, Message, ArtifactRef } from '@strata-ctx/core-types';
-import type { ArtifactStore, ReadResult } from '@strata-ctx/security';
+import { sha256 } from '@strata-ctx/core-types';
+import type { ReadResult } from '@strata-ctx/security';
+import { artifactUrisOfMessages, extractArtifactUris } from './artifact-uri.js';
+
+/**
+ * The only store surface recovery needs.
+ *
+ * Recovery never writes, so depending on the concrete `ArtifactStore` class
+ * forced every caller to hold the full store -- including the ones that already
+ * keep a deliberately narrower view of it (see ./transaction.ts:19). The class
+ * has private fields, so no structural object can satisfy it.
+ */
+export interface RecoveryArtifactStore {
+  read(uri: string): Promise<ReadResult>;
+}
 
 /**
  * Reconstructed context segment from a gist's source turn range.
@@ -32,8 +46,15 @@ export interface RecoverTurnsOptions {
  * fetch the raw transcript artifact (referenced by gist.log_gist.raw_uri) and
  * extract the messages for the turn range specified in gist.source_turn_range.
  *
- * Governance blocks MUST round-trip bit-identically — this is verified by
- * comparing sha256 hashes before and after recovery.
+ * Messages that carry `artifact://` pointers come back with the pointed-at
+ * content substituted in. Returning the stub and a metadata `ArtifactRef` was
+ * the shape this used to have: `resolvedArtifacts[].uri` said the bytes existed
+ * while the message a caller actually re-injects still said `content elided`,
+ * so the segment looked recovered and was not.
+ *
+ * Governance blocks MUST round-trip bit-identically -- this is verified by
+ * comparing sha256 hashes before and after recovery, and the comparison runs on
+ * the transcript as stored, before any pointer substitution.
  *
  * @param gist - The gist containing source_turn_range and raw_uri
  * @param store - Artifact store to resolve raw_uri and artifact_refs
@@ -42,7 +63,7 @@ export interface RecoverTurnsOptions {
  */
 export async function recoverTurns(
   gist: Gist,
-  store: ArtifactStore,
+  store: RecoveryArtifactStore,
   options: RecoverTurnsOptions = {},
 ): Promise<RecoveredSegment> {
   const { strict = false, artifactResolver } = options;
@@ -62,7 +83,12 @@ export async function recoverTurns(
       messages: [],
       resolvedArtifacts: [],
       missingArtifacts: [rawUri],
-      governanceIntact: true,
+      // Nothing was recovered, so nothing was verified. Reporting `true` here
+      // turned total loss of the transcript into a green result, which is the
+      // one answer this function must never give: a caller that checks only
+      // `governanceIntact` was told the pinned buffer round-tripped when it had
+      // not been consulted at all.
+      governanceIntact: false,
     };
   }
 
@@ -73,18 +99,19 @@ export async function recoverTurns(
   const segmentMessages = rawMessages.slice(fromTurn, toTurn + 1);
 
   // Resolve artifact references in the segment using custom resolver if provided
-  const { resolvedArtifacts, missingArtifacts } = await resolveArtifactRefs(
+  const { resolvedArtifacts, missingArtifacts, contents } = await resolveArtifactRefs(
     segmentMessages,
     store,
     artifactResolver,
     strict,
   );
 
-  // Verify governance blocks are bit-identical
+  // Verified against the stored bytes, before substitution: the question is
+  // whether the transcript round-tripped, not whether the restored segment does.
   const governanceIntact = verifyGovernanceIntegrity(segmentMessages);
 
   return {
-    messages: segmentMessages,
+    messages: substituteArtifactContent(segmentMessages, contents),
     resolvedArtifacts,
     missingArtifacts,
     governanceIntact,
@@ -132,46 +159,33 @@ export function isMessage(value: unknown): value is Message {
 
 /**
  * Resolve all artifact_refs found in message content blocks.
+ *
+ * The resolved *content* is returned alongside the metadata because the metadata
+ * is not the answer. A caller holding `resolvedArtifacts` has been told the
+ * bytes exist; the only thing they can do with that is put the bytes back.
  */
 async function resolveArtifactRefs(
   messages: readonly Message[],
-  store: ArtifactStore,
+  store: RecoveryArtifactStore,
   customResolver: ((uri: string) => Promise<ReadResult | null>) | undefined,
   strict: boolean,
-): Promise<{ resolvedArtifacts: ArtifactRef[]; missingArtifacts: string[] }> {
-  const artifactUris = new Set<string>();
-
-  // Collect all artifact URIs from blocks
-  for (const msg of messages) {
-    for (const block of msg.content) {
-      if (block.type === 'tool_result' && block.text) {
-        // Tool results may contain artifact URIs in their text
-        const uris = extractArtifactUris(block.text);
-        for (const uri of uris) artifactUris.add(uri);
-      }
-      // Also check meta.subject for file references that might be artifacts
-      if (block.meta.subject?.kind === 'file') {
-        // File subjects might have artifact URIs as refs
-        if (block.meta.subject.ref.startsWith('artifact://')) {
-          artifactUris.add(block.meta.subject.ref);
-        }
-      }
-    }
-  }
-
-  // Also check gist artifacts if present in context
-  // (This would be handled by the caller passing the full context)
-
+): Promise<{
+  resolvedArtifacts: ArtifactRef[];
+  missingArtifacts: string[];
+  contents: ReadonlyMap<string, string>;
+}> {
+  const contents = new Map<string, string>();
   const resolved: ArtifactRef[] = [];
   const missing: string[] = [];
 
-  for (const uri of artifactUris) {
+  for (const uri of artifactUrisOfMessages(messages)) {
     try {
       const result = customResolver
         ? await customResolver(uri)
         : await store.read(uri).catch(() => null);
 
       if (result) {
+        contents.set(uri, result.text);
         resolved.push({
           uri,
           sha256: result.stat.digest,
@@ -189,16 +203,52 @@ async function resolveArtifactRefs(
     }
   }
 
-  return { resolvedArtifacts: resolved, missingArtifacts: missing };
+  return { resolvedArtifacts: resolved, missingArtifacts: missing, contents };
 }
 
 /**
- * Extract artifact:// URIs from text content.
+ * Put the resolved bytes back where the pointers were.
+ *
+ * Two shapes, decided by digest rather than by sniffing stub markers. B-3 and
+ * H-6 both promise that a block's `meta.sha256` stays the digest of the content
+ * the block *represents* rather than of the stub standing in for it
+ * (pipeline/src/pointer.ts:22-28), so when the stored bytes hash to it the
+ * whole block text is the placeholder and is replaced outright -- otherwise a
+ * 40kB file comes back wrapped in six lines of pointer bookkeeping.
+ *
+ * A URI merely *mentioned* in a tool result is different: the surrounding log
+ * line is real content that must survive, so there the URI is replaced in
+ * place.
+ *
+ * `meta.bytes` is `text.length` everywhere in this codebase (see the note in
+ * pipeline/src/pointer.ts:93), so it is recomputed here rather than left
+ * describing the stub the caller no longer has.
  */
-function extractArtifactUris(text: string): string[] {
-  const regex = /artifact:\/\/[a-z]+\/[0-9a-f]{64}/g;
-  const matches = text.match(regex);
-  return matches ?? [];
+function substituteArtifactContent(
+  messages: readonly Message[],
+  contents: ReadonlyMap<string, string>,
+): readonly Message[] {
+  if (contents.size === 0) return messages;
+
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.map((block) => {
+      const text = block.text;
+      if (text === undefined) return block;
+
+      let restored: string | null = null;
+      for (const uri of extractArtifactUris(text)) {
+        const content = contents.get(uri);
+        if (content === undefined) continue;
+        restored =
+          sha256(content) === block.meta.sha256
+            ? content
+            : (restored ?? text).split(uri).join(content);
+      }
+      if (restored === null || restored === text) return block;
+      return { ...block, text: restored, meta: { ...block.meta, bytes: restored.length } };
+    }),
+  }));
 }
 
 /**
@@ -212,7 +262,7 @@ function verifyGovernanceIntegrity(messages: readonly Message[]): boolean {
         // Recompute hash and compare
         const content = block.text ?? '';
         const expectedHash = block.meta.sha256;
-        const actualHash = computeSha256(content);
+        const actualHash = sha256(content);
         if (expectedHash !== actualHash) {
           return false;
         }
@@ -222,42 +272,60 @@ function verifyGovernanceIntegrity(messages: readonly Message[]): boolean {
   return true;
 }
 
-import { createHash } from 'node:crypto';
-
 /**
- * Compute SHA-256 hash of a string (matches core-types/hash.ts implementation).
+ * A recovered segment prepared for re-injection into a live context.
+ *
+ * `runId`/`turn`/`policyHash` are echoed from the context the segment is being
+ * grafted into because nothing inside `messages` carries that identity, and a
+ * segment recovered from a different run under a different pinned buffer is
+ * indistinguishable from the right one once it has been flattened to a message
+ * list.
  */
-function computeSha256(input: string): string {
-  return createHash('sha256').update(input, 'utf8').digest('hex');
+export interface ReconstructedSegment {
+  readonly messages: readonly Message[];
+  readonly artifacts: readonly ArtifactRef[];
+  readonly tokenEstimate: number;
+  readonly runId: string;
+  readonly turn: number;
+  readonly taskId?: string;
+  readonly policyHash: string;
 }
 
 /**
  * Reconstruct a ContextState segment from a recovered segment.
- * This is a convenience function that builds a minimal ContextState
- * containing only the recovered messages and their artifacts.
+ *
+ * The messages are re-derived from `segment.messages`, not handed back by
+ * reference: those already carry the restored artifact content (see
+ * `recoverTurns` above), and `tokenEstimate` has to be recomputed against it or
+ * the caller budgets for stub bytes it is no longer being sent.
+ *
+ * Stays synchronous because the I/O it would need was already done during
+ * recovery -- the point of carrying the content on `RecoveredSegment` is that
+ * nothing here has to read the store again.
  */
 export function reconstructContextSegment(
   segment: RecoveredSegment,
-  _baseContext: {
+  baseContext: {
     readonly runId: string;
     readonly turn: number;
     readonly taskId?: string;
     readonly policyHash: string;
   },
-): {
-  readonly messages: readonly Message[];
-  readonly artifacts: readonly ArtifactRef[];
-  readonly tokenEstimate: number;
-} {
-  const tokenEstimate = segment.messages.reduce(
+): ReconstructedSegment {
+  const messages = [...segment.messages];
+  const tokenEstimate = messages.reduce(
     (acc, msg) => acc + msg.content.reduce((sum, block) => sum + block.meta.bytes, 0),
     0,
   );
 
   return {
-    messages: segment.messages,
+    messages,
     artifacts: segment.resolvedArtifacts,
     tokenEstimate,
+    runId: baseContext.runId,
+    turn: baseContext.turn,
+    ...(baseContext.taskId === undefined ? {} : { taskId: baseContext.taskId }),
+    policyHash: baseContext.policyHash,
   };
 }
 

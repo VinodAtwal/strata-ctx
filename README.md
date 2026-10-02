@@ -121,7 +121,7 @@ rather than a prose summary. Deterministic fields (`changed[]`, `artifacts[]`, `
 compaction transaction is ordered `flush → write → gist → validate → commit → repin → evict → log`,
 with `fsync`-before-evict and a hard rule: **if validation fails, abort and keep the transcript.**
 
-- Files: `packages/gist/src/{assembly,transaction,artifact-store,tiers,reversibility,dreaming}.ts`,
+- Files: `packages/gist/src/{assembly,transaction,artifact-uri,tiers,reversibility,dreaming}.ts`,
   `packages/pipeline/src/self-gist.ts`
 - Reversibility: every gist records `source_turn_range`; `ctx_get_task` re-injects the raw range.
 

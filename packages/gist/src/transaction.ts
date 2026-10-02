@@ -9,6 +9,7 @@ import type {
 } from '@strata-ctx/core-types';
 import { enforcePins, verifyPinIntegrity, validateGist, pinSetText } from '@strata-ctx/core-types';
 import type { ReadResult } from '@strata-ctx/security';
+import { artifactUrisOfMessages, isResolvableArtifactUri } from './artifact-uri.js';
 import { parseRawTranscript } from './reversibility.js';
 import type { StrataTelemetryEvent, GistEvent } from '@strata-ctx/telemetry';
 
@@ -112,6 +113,15 @@ function collectPriorUnresolved(gists: readonly Gist[]): string[] {
  * but the transcript is kept, because holding a larger context is recoverable
  * and losing the only copy is not.
  *
+ * Two things are checked, and the second is the one that used to be missing.
+ * The transcript artifact has to hold the dropped messages, *and* every
+ * `artifact://` URI those messages publish has to resolve. A pointerized tool
+ * result is a message whose payload lives in a second artifact: the transcript
+ * faithfully preserves the stub and the stub says "recoverable verbatim at the
+ * uri above". Verifying only the transcript certifies a message as recoverable
+ * on the strength of an artifact that contains nothing but the pointer to the
+ * content.
+ *
  * The check is content-based, not index-based, and deliberately so. Step 5
  * repin rewrites the message list -- it collapses governance blocks into a
  * single system message -- so the same numeric offset addresses a different
@@ -140,11 +150,18 @@ async function assessEvictable(
   }
 
   const rawUri = gist.log_gist.raw_uri;
-  if (!/^artifact:\/\//.test(rawUri)) {
+  // `/^artifact:\/\//` used to stand in for this and asserted nothing: the
+  // bucket can be one the ACL refuses and the tail can be anything, so a URI
+  // no store would ever answer to passed. `isResolvableArtifactUri` defers to
+  // packages/security/src/acl.ts for both the bucket vocabulary and the digest
+  // form.
+  if (!isResolvableArtifactUri(rawUri)) {
     return {
       evicted,
       verified: false,
-      reason: `raw_uri "${rawUri}" is not an artifact reference, so the transcript is unresolvable`,
+      reason:
+        `raw_uri "${rawUri}" is not a content-addressed artifact reference ` +
+        `(expected artifact://<bucket>/<64-hex digest>), so the transcript is unresolvable`,
     };
   }
 
@@ -185,11 +202,49 @@ async function assessEvictable(
     };
   }
 
+  const dangling = await firstUnresolvableReference(dropping, artifactStore, rawUri);
+  if (dangling !== null) {
+    return {
+      evicted,
+      verified: false,
+      reason:
+        `the dropped message(s) publish ${dangling}, which is not in the store, so restoring ` +
+        `them from ${rawUri} would re-inject a pointer stub rather than the content it stands for`,
+    };
+  }
+
   return {
     evicted,
     verified: true,
     reason: `round-trip verified: the ${evicted} dropped message(s) were found at offset ${found} of ${rawUri}`,
   };
+}
+
+/**
+ * The first `artifact://` URI the dropped messages reference that the store
+ * cannot serve, or null when every one of them resolves.
+ *
+ * Existence rather than a read: a pointer the store refuses has no readable
+ * form, and a store that answers `exists` for one it cannot read has already
+ * broken its own contract. The raw transcript's own URI is skipped because
+ * `assessEvictable` has already proved that one.
+ */
+async function firstUnresolvableReference(
+  dropping: readonly Message[],
+  artifactStore: TransactionArtifactStore,
+  rawUri: string,
+): Promise<string | null> {
+  for (const uri of artifactUrisOfMessages(dropping)) {
+    if (uri === rawUri) continue;
+    let present: boolean;
+    try {
+      present = await artifactStore.exists(uri);
+    } catch {
+      return uri;
+    }
+    if (!present) return uri;
+  }
+  return null;
 }
 
 /**

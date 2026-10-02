@@ -334,6 +334,7 @@ export interface MockArtifactStoreState {
 }
 
 import type { ReadResult, ArtifactStat } from '@strata-ctx/security';
+import { bucketForKind } from '@strata-ctx/security';
 
 export function createMockArtifactStore(initialState: MockArtifactStoreState = { artifacts: new Map() }) {
   const store: MockArtifactStoreState = { artifacts: new Map(initialState.artifacts) };
@@ -344,7 +345,12 @@ export function createMockArtifactStore(initialState: MockArtifactStoreState = {
       await Promise.resolve();
       const text = typeof content === 'string' ? content : Buffer.from(content).toString('utf8');
       const digest = sha256(text);
-      const uri = `artifact://${kind}/${digest}`;
+      // `bucketForKind` rather than the kind itself: the real store derives the
+      // bucket from the kind (security/src/store.ts:140-146), and a stub that
+      // minted `artifact://raw_transcript/<digest>` produced a URI the ACL
+      // refuses, which is precisely what let the eviction gate pass on a URI
+      // nothing in the product could resolve.
+      const uri = `artifact://${bucketForKind(kind)}/${digest}`;
       const at = options?.at ?? Date.now();
       store.artifacts.set(uri, { content: text, kind, at });
       return { uri, sha256: digest, bytes: text.length, kind };

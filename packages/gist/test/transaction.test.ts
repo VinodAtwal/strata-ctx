@@ -1,7 +1,8 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ArtifactRef, ContextState, Gist, StrataPolicy } from '@strata-ctx/core-types';
-import type { GistEvent } from '@strata-ctx/telemetry';
+import { sha256 } from '@strata-ctx/core-types';
+import type { GistEvent, StrataTelemetryEvent } from '@strata-ctx/telemetry';
 import { runCompactionTransaction } from '../src/transaction.js';
 import type { TransactionArtifactStore } from '../src/transaction.js';
 import {
@@ -10,6 +11,8 @@ import {
   createTestContextState,
   createMockArtifactStore,
   createSystemMessage,
+  createUserMessage,
+  createToolResultMessage,
   createTelemetryCapture,
   createGistMissingConstraint,
   createGistExtraConstraint,
@@ -20,6 +23,16 @@ import {
   createGistArtifactMissing,
   TEST_TASK_ID,
 } from './fixtures.js';
+
+/**
+ * Every error message emitted, joined.
+ *
+ * A refusal whose reason does not name the offending uri is not actionable:
+ * the operator is left to guess which of N pointers went missing.
+ */
+function errorMessages(events: readonly StrataTelemetryEvent[]): string {
+  return events.map((e) => (e.type === 'error' ? e.message : '')).join('\n');
+}
 
 describe('runCompactionTransaction', () => {
   let baseState: ContextState;
@@ -537,6 +550,150 @@ describe('runCompactionTransaction', () => {
       assert.ok(result.state.messages.length > 2, 'unverifiable transcript must be kept');
       const gistEvent = telemetry.events.find((e) => e.type === 'gist');
       assert.equal(gistEvent?.rawRecoverable, false);
+    });
+
+    it('keeps the transcript when a pointer inside a dropped message is not in the store', async () => {
+      // A pointerized file read is a message whose payload lives in a *second*
+      // artifact. The transcript holds the stub faithfully and the stub says
+      // "recoverable verbatim at the uri above", so verifying only the
+      // transcript certifies the message as recoverable on the strength of an
+      // artifact containing nothing but the pointer to the content. Nothing was
+      // ever written under this URI, which is what makes it the regression.
+      const fileContent = 'export const answer = 42;\n'.repeat(40);
+      const pointerUri = `artifact://file/${sha256(fileContent)}`;
+      const stub = [
+        '[strata:pointer]',
+        'path: src/answer.ts',
+        `uri: ${pointerUri}`,
+        `sha256: ${sha256(fileContent)}`,
+        `chars: ${fileContent.length}`,
+      ].join('\n');
+
+      const stateWithPointer = createTestContextState({
+        messages: [
+          createSystemMessage('Never delete user data'),
+          createSystemMessage('Always validate input'),
+          createUserMessage('Please add a test function'),
+          createToolResultMessage('read', stub, { kind: 'file', ref: 'src/answer.ts' }),
+        ],
+      });
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      // Deliberately *not* mockStore.addArtifact(pointerUri, fileContent, ...).
+
+      const result = await runCompactionTransaction({
+        state: stateWithPointer,
+        gist: baseGist,
+        policy: basePolicy,
+        artifactStore: mockStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript: JSON.stringify(stateWithPointer.messages),
+        toolLog,
+      });
+
+      assert.ok(result.ok, 'the commit itself is sound, only eviction is deferred');
+      assert.ok(
+        result.state.messages.length > 2,
+        'a dropped message whose payload cannot be re-read must not be discarded',
+      );
+      const gistEvent = telemetry.events.find((e) => e.type === 'gist');
+      assert.equal(gistEvent?.rawRecoverable, false, 'rawRecoverable must not be claimed');
+      assert.ok(
+        telemetry.events.some(
+          (e) => e.type === 'error' && e.code === 'EVICTION_SKIPPED_UNVERIFIED',
+        ),
+        'the refusal must be visible in telemetry',
+      );
+      assert.match(
+        errorMessages(telemetry.events),
+        new RegExp(pointerUri),
+        'the refusal must name the unresolvable uri',
+      );
+    });
+
+    it('evicts when every pointer inside the dropped messages resolves', async () => {
+      // The positive half of the test above: the same shape, with the payload
+      // actually written, must still compact. Otherwise the gate above is
+      // satisfied by refusing everything.
+      const fileContent = 'export const answer = 42;\n'.repeat(40);
+      const pointerUri = `artifact://file/${sha256(fileContent)}`;
+      const stub = [
+        '[strata:pointer]',
+        'path: src/answer.ts',
+        `uri: ${pointerUri}`,
+        `sha256: ${sha256(fileContent)}`,
+        `chars: ${fileContent.length}`,
+      ].join('\n');
+
+      const stateWithPointer = createTestContextState({
+        messages: [
+          createSystemMessage('Never delete user data'),
+          createSystemMessage('Always validate input'),
+          createUserMessage('Please add a test function'),
+          createToolResultMessage('read', stub, { kind: 'file', ref: 'src/answer.ts' }),
+        ],
+      });
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(pointerUri, fileContent, 'file_snapshot');
+
+      const result = await runCompactionTransaction({
+        state: stateWithPointer,
+        gist: baseGist,
+        policy: basePolicy,
+        artifactStore: mockStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript: JSON.stringify(stateWithPointer.messages),
+        toolLog,
+      });
+
+      assert.ok(result.ok);
+      assert.equal(result.state.messages.length, 2, 'transcript dropped, governance and gist kept');
+      const gistEvent = telemetry.events.find((e) => e.type === 'gist');
+      assert.equal(gistEvent?.rawRecoverable, true);
+      assert.deepEqual(gistEvent?.failed, []);
+    });
+
+    it('refuses eviction when the store mints a uri the ACL cannot resolve', async () => {
+      // The deleted ./artifact-store.ts minted exactly this: a bare
+      // `artifact://<digest>` with no bucket, which `parseArtifactUri` refuses
+      // because it has no bucket to check the digest against. The old
+      // `/^artifact:\/\//` accepted it and then asked a store that speaks
+      // `artifact://file/<digest>` whether it existed.
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      const bareUriStore = {
+        put: async (content: string | Uint8Array, kind: ArtifactRef['kind']) => {
+          await Promise.resolve();
+          const text = typeof content === 'string' ? content : Buffer.from(content).toString('utf8');
+          return { uri: `artifact://${sha256(text)}`, sha256: sha256(text), bytes: text.length, kind };
+        },
+        read: mockStore.read.bind(mockStore),
+        exists: () => Promise.resolve(true),
+      };
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: baseGist,
+        policy: basePolicy,
+        artifactStore: bareUriStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(result.ok, 'the commit stands; only eviction is deferred');
+      assert.ok(result.state.messages.length > 2, 'an unresolvable raw_uri must block eviction');
+      const gistEvent = telemetry.events.find((e) => e.type === 'gist');
+      assert.equal(gistEvent?.rawRecoverable, false);
+      assert.match(
+        errorMessages(telemetry.events),
+        /content-addressed/,
+        'the refusal must say why the uri is unusable',
+      );
     });
   });
 });

@@ -37,7 +37,20 @@ import { isHighSeverity } from '@strata-ctx/core-types';
  */
 
 export const REFERENCE_MARKER = '[strata:reference]';
-export const REFERENCE_SCHEME = 'artifact://output/';
+
+/**
+ * The bucket H-6 references into.
+ *
+ * `other`, not a bucket named after this stage, because `parseArtifactUri`
+ * rejects any bucket outside the closed vocabulary in
+ * packages/security/src/acl.ts:56-67 -- and a URI the ACL refuses is a URI no
+ * store will ever answer to, so an `artifact://output/...` reference published a
+ * pointer that recovery could only ever report as missing. The bucket is a
+ * label for an operator and never a path component (acl.ts:60-65), so naming
+ * the stage after itself bought nothing that `ArtifactRef.kind: 'other'`, which
+ * this operator already publishes, does not.
+ */
+export const REFERENCE_SCHEME = 'artifact://other/';
 
 export const referenceUriFor = (sha256: string): string => `${REFERENCE_SCHEME}${sha256}`;
 
