@@ -100,3 +100,4 @@ E-12,E,Integrations,Verify a real OpenCode session loads the plugin and a pre_to
 E-13,E,Integrations,strata-ctx CLI binary: mcp serve + hook entrypoints (deferred; unblocks the MCP profile),seq,2.0,E-11,3,none,done
 E-14,B,Integrity,Deterministic tool-argument floor (I-9): refuse destructive tool calls,ext,1d,E-9,wave-1,G4,done
 F2-0,F,Evals,"Local-machine real-mode E2E: OpenCode -> gateway -> real upstream, with a governed refusal assertion",seq,1.5,E-12,3,none,done
+E-15,E,Integrations,Operator adoption path: publishable packages (drop private/file: deps) + quickstart + per-request what-happened-to-my-context in strata status,seq,2.0,"E-13,G-5",3,none,todo
