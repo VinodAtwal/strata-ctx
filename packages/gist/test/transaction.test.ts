@@ -5,6 +5,8 @@ import { sha256 } from '@strata-ctx/core-types';
 import type { GistEvent, StrataTelemetryEvent } from '@strata-ctx/telemetry';
 import { runCompactionTransaction } from '../src/transaction.js';
 import type { TransactionArtifactStore } from '../src/transaction.js';
+import { isResolvableArtifactUri } from '../src/artifact-uri.js';
+import { RAW_URI_UNSTORED } from '../src/draft.js';
 import {
   createTestGist,
   createTestPolicy,
@@ -459,6 +461,42 @@ describe('runCompactionTransaction', () => {
     // Eviction is the only irreversible step. These tests pin the gate: the
     // transcript may only be discarded when the artifact can serve it back,
     // and otherwise the commit stands with the transcript intact.
+    it('stamps the recoverability claim a builder without a store could not make', async () => {
+      // `GistAssembler.assemble` has no artifact store, so it emits a draft
+      // whose `raw_uri` is a marker and which makes no recovery claim at all.
+      // This is that draft's only remaining path to a committed gist, and the
+      // step-1 flush is what earns the claim: the bytes are on disk and the URI
+      // names them.
+      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      const { raw_recoverable: _unstamped, ...draft } = baseGist;
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: { ...draft, log_gist: { ...draft.log_gist, raw_uri: RAW_URI_UNSTORED } },
+        policy: basePolicy,
+        artifactStore: mockStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(result.ok, `a draft must be completable by the store, not refused: ${JSON.stringify(result.defects)}`);
+      assert.equal(
+        result.gist?.raw_recoverable,
+        true,
+        'the claim comes from the transcript put, which is the only put that happened',
+      );
+      assert.notEqual(
+        result.gist?.log_gist.raw_uri,
+        RAW_URI_UNSTORED,
+        'the placeholder must be replaced by the uri the store returned',
+      );
+      assert.ok(isResolvableArtifactUri(result.gist?.log_gist.raw_uri ?? ''));
+      assert.equal(result.state.messages.length, 2, 'the transcript was provably recoverable, so it goes');
+    });
+
     it('evicts when the raw artifact verifiably holds the dropped run', async () => {
       mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
 

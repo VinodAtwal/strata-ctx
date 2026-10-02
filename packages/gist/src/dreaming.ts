@@ -2,6 +2,7 @@ import type { Gist, GistArtifact, GistChanged, StrataPolicy } from '@strata-ctx/
 import { validateGist, pinSetText } from '@strata-ctx/core-types';
 import type { ArtifactStore } from '@strata-ctx/security';
 import type { StrataTelemetryEvent } from '@strata-ctx/telemetry';
+import { RAW_URI_UNSTORED } from './draft.js';
 
 /**
  * C-6: Offline consolidation / dreaming.
@@ -38,7 +39,26 @@ export interface GistCluster {
   readonly topic: string;
 }
 
-export interface MetaGist extends Gist {
+/**
+ * A consolidation of other gists, and deliberately not a `Gist`.
+ *
+ * `raw_recoverable` is the whole difference, and it is not a formality.
+ * `GistSchema` types it as `z.literal(true)` (core-types/src/gist.ts:102)
+ * because for a compaction the raw turns behind `source_turn_range` are
+ * re-injectable from `log_gist.raw_uri`. A meta gist consolidates N gists whose
+ * turn ranges are unioned (dreaming.ts:212-214) and whose transcripts are N
+ * separate objects; there is no single artifact that holds the range, and
+ * `assessEvictable` requires the dropped messages to appear in the transcript
+ * as one contiguous run (transaction.ts:207). So the claim is false, and a type
+ * that would let it be asserted is the defect.
+ *
+ * What a consumer does instead: read `subsumedGistIds` and follow each
+ * constituent gist's own `log_gist.raw_uri`, which is a real content address
+ * into that gist's own transcript. The union is not recoverable as a
+ * transcript, and nothing here claims it is.
+ */
+export interface MetaGist extends Omit<Gist, 'raw_recoverable'> {
+  readonly raw_recoverable: false;
   readonly meta: true;
   readonly subsumedGistIds: readonly string[];
 }
@@ -47,7 +67,13 @@ export interface DreamingDeps {
   readonly store: ArtifactStore;
   readonly policy: StrataPolicy;
   readonly getGists: () => Promise<readonly Gist[]>;
-  readonly putGist: (gist: Gist) => Promise<void>;
+  /**
+   * Only meta gists are ever written here, but the parameter is the union
+   * rather than `MetaGist`: a store holding both kinds keeps one signature,
+   * and contravariance means narrowing it to `MetaGist` would reject every
+   * implementation written against `Gist`.
+   */
+  readonly putGist: (gist: Gist | MetaGist) => Promise<void>;
   readonly removeGist: (taskId: string) => Promise<void>;
   readonly emitTelemetry: (event: StrataTelemetryEvent) => void;
   readonly clock: () => number;
@@ -188,9 +214,8 @@ function createMetaGist(cluster: GistCluster, policy: StrataPolicy, _clock: () =
     if (to > latestTurn) latestTurn = to;
   }
 
-const metaTaskId = `meta_${cluster.topic}_${Date.now().toString(36)}`;
-// eslint-disable-next-line @typescript-eslint/consistent-type-assertions
-const meta: MetaGist = {
+  const metaTaskId = `meta_${cluster.topic}_${Date.now().toString(36)}`;
+  const meta: MetaGist = {
     v: 1,
     task_id: metaTaskId,
     status: 'complete',
@@ -211,16 +236,21 @@ const meta: MetaGist = {
       salient_errors: [...allSalientErrors].sort(),
       salient_warnings: [...allSalientWarnings].sort(),
       dropped_count: totalDropped,
-      raw_uri: `artifact://log/meta_${metaTaskId}`,
+      // Nothing was written here. This used to be
+      // `artifact://log/meta_${metaTaskId}`, whose tail is a task id and a
+      // timestamp rather than a digest, so `parseArtifactUri` refused it as
+      // `malformed_digest` (acl.ts:246) -- a synthetic label wearing the
+      // costume of a content address, pointing at no object anywhere.
+      raw_uri: RAW_URI_UNSTORED,
     },
     verification: { status: 'untested', tests_run: [] },
     constraints: [...pinSetText(policy)],
     source_turn_range: [earliestTurn, latestTurn],
-    raw_recoverable: true,
+    raw_recoverable: false,
     compressed_by: 'none',
     meta: true,
     subsumedGistIds: subsumedIds,
-  } as MetaGist;
+  };
 
   return meta;
 }
@@ -299,9 +329,21 @@ export class DreamingJob {
     for (const cluster of clusters) {
       const meta = createMetaGist(cluster, this.#deps.policy, this.#deps.clock);
 
-      const validation = validateGist(meta);
+      // `raw_recoverable: false` is the fact this interface encodes rather than
+      // a defect to refuse on, so the meta gist is checked against the shape it
+      // would have if it could claim recovery -- which is every other
+      // invariant, unchanged. Refusing on the claim instead would stop
+      // consolidation outright, the opposite of what the check is for.
+      const validation = validateGist({ ...meta, raw_recoverable: true });
       if (!validation.ok) {
-        errors.push(`meta-gist ${meta.task_id} validation failed: ${validation.defects.map((d) => d.kind).join(', ')}`);
+        // A schema failure is reported as *no* defects
+        // (core-types/src/gist.ts:127), which would otherwise reach the report
+        // as an empty reason.
+        const reason =
+          validation.defects.length === 0
+            ? 'does not satisfy the v1 schema'
+            : validation.defects.map((d) => d.kind).join(', ');
+        errors.push(`meta-gist ${meta.task_id} validation failed: ${reason}`);
         constraintsPreserved = false;
         continue;
       }

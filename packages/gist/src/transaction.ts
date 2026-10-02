@@ -10,6 +10,7 @@ import type {
 import { enforcePins, verifyPinIntegrity, validateGist, pinSetText } from '@strata-ctx/core-types';
 import type { ReadResult } from '@strata-ctx/security';
 import { artifactUrisOfMessages, isResolvableArtifactUri } from './artifact-uri.js';
+import type { GistDraft } from './draft.js';
 import { parseRawTranscript } from './reversibility.js';
 import type { StrataTelemetryEvent, GistEvent } from '@strata-ctx/telemetry';
 
@@ -37,8 +38,14 @@ export type TelemetryEmitter = (event: StrataTelemetryEvent) => void;
 export interface CompactionTransactionOptions {
   /** The current context state. */
   readonly state: ContextState;
-  /** The gist to compact into the context. */
-  readonly gist: Gist;
+  /**
+   * The gist to compact into the context.
+   *
+   * A `GistDraft` is accepted because `GistAssembler.assemble` has no store and
+   * so cannot assert `raw_recoverable` (assembly.ts:353-360); a committed `Gist`
+   * is still accepted unchanged.
+   */
+  readonly gist: GistDraft;
   /** The policy containing the pinned constraints. */
   readonly policy: StrataPolicy;
   /** Artifact store for writing the raw transcript and reading artifacts. */
@@ -364,12 +371,20 @@ export async function runCompactionTransaction(
 
   // Step 2: WRITE GIST - write gist to artifact store, get URI
   // The gist's log_gist.raw_uri should point to the raw transcript we just stored
+  //
+  // `raw_recoverable` is stamped here for the same reason, and only here: this
+  // is the only place in the transaction where the bytes exist, because step 1
+  // put them there. A builder without a store leaves the claim off rather than
+  // making it (see ./draft.ts), and a caller that already made it loses nothing.
+  // What still gates discarding anything is `assessEvictable` below, which
+  // re-reads the artifact and proves the dropped messages are in it.
   const gistWithRawUri: Gist = {
     ...gist,
     log_gist: {
       ...gist.log_gist,
       raw_uri: rawTranscriptUri ?? gist.log_gist.raw_uri,
     },
+    raw_recoverable: true,
   };
 
   try {

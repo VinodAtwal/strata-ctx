@@ -1,14 +1,33 @@
 import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { GistAssembler, createGistAssembler } from '../src/assembly.js';
+import { isResolvableArtifactUri } from '../src/artifact-uri.js';
+import { RAW_URI_UNSTORED } from '../src/draft.js';
+import type { GistDraft } from '../src/draft.js';
 import { validateGist } from '@strata-ctx/core-types';
-import type { ContentBlock, BlockMeta } from '@strata-ctx/core-types';
+import type { ContentBlock, BlockMeta, Gist } from '@strata-ctx/core-types';
 import { sha256 } from '@strata-ctx/core-types';
 import {
   createTestContextState,
   createTestPolicy,
   createBudgetView,
 } from './fixtures.js';
+
+/**
+ * The draft as the transaction will store it.
+ *
+ * `assemble` has no artifact store, so it cannot assert `raw_recoverable` and
+ * leaves the field off (assembly.ts:353-360). Every other field is final, and
+ * this is the shape `runCompactionTransaction` validates (transaction.ts:420),
+ * so the schema invariants are checked against it rather than against a draft
+ * that could not parse.
+ */
+function asCommitted(draft: GistDraft): Gist {
+  return { ...draft, raw_recoverable: true };
+}
+
+/** A resolvable content address, which is what a store would have returned. */
+const transcriptUri = (text: string): string => `artifact://transcript/${sha256(text)}`;
 
 function createBlockMeta(overrides: Partial<BlockMeta> = {}): BlockMeta {
   return {
@@ -110,7 +129,10 @@ describe('GistAssembler', () => {
     assert.ok(Array.isArray(gist.constraints));
     assert.ok(Array.isArray(gist.source_turn_range));
     assert.equal(gist.source_turn_range.length, 2);
-    assert.equal(gist.raw_recoverable, true);
+    // `baseState` carries no artifact, so there is no transcript to point at
+    // and nothing to restore from one. The full assertion is the regression
+    // test further down; this one only says the field is not asserted flatly.
+    assert.notEqual(gist.raw_recoverable, true, 'a context with no artifact backs no recovery claim');
     assert.ok(['self-gist', 'local-model', 'none'].includes(gist.compressed_by));
   });
 
@@ -125,7 +147,7 @@ describe('GistAssembler', () => {
     };
 
     const gist = assembler.assemble(input);
-    const validation = validateGist(gist, gist.log_gist.salient_errors.length);
+    const validation = validateGist(asCommitted(gist), gist.log_gist.salient_errors.length);
 
     assert.equal(validation.ok, true);
     assert.equal(validation.defects.length, 0);
@@ -328,7 +350,7 @@ describe('GistAssembler', () => {
     };
 
     const gist = assembler.assemble(input);
-    const json = JSON.stringify(gist);
+    const json = JSON.stringify(asCommitted(gist));
     const parsed = JSON.parse(json);
     const validation = validateGist(parsed, gist.log_gist.salient_errors.length);
 
@@ -350,7 +372,7 @@ describe('GistAssembler', () => {
 
       const gist = assembler.assemble(input);
       assert.equal(gist.status, status);
-      const validation = validateGist(gist, gist.log_gist.salient_errors.length);
+      const validation = validateGist(asCommitted(gist), gist.log_gist.salient_errors.length);
       assert.equal(validation.ok, true);
     }
   });
@@ -433,5 +455,78 @@ describe('GistAssembler', () => {
     const gist = assembler.assemble(input);
 
     assert.equal(gist.current_values.TEST_KEY, 'test_value');
+  });
+
+  describe('raw_uri and raw_recoverable (the claim has to point somewhere real)', () => {
+    // `log_gist.raw_uri` is the pointer to the untruncated log and
+    // `raw_recoverable` says the log can be re-injected from it
+    // (core-types/src/gist.ts:60-61,102). So the pair is one claim: if the URI
+    // names nothing, the flag is asserting recovery from nothing. Eviction is
+    // gated on exactly this pair (transaction.ts:151,165), which is why a
+    // builder that fabricates one permanently refuses to compact.
+
+    const input = {
+      policy: createTestPolicy(),
+      budget: createBudgetView(),
+      taskId: 'task-456',
+      status: 'complete' as const,
+      goal: 'Create a test file',
+    };
+
+    test('a context with no artifacts gets no uri and no recoverability claim', () => {
+      const state = createTestContextState({ artifacts: [] });
+
+      const gist = assembler.assemble({ ...input, state });
+
+      // The regression: this used to be the literal `artifact://empty`, a
+      // bucket the ACL does not have, on a gist that still claimed `true`.
+      assert.equal(gist.log_gist.raw_uri, RAW_URI_UNSTORED);
+      assert.ok(
+        !gist.log_gist.raw_uri.startsWith('artifact://'),
+        'a uri nothing stored must not wear the artifact scheme',
+      );
+      assert.equal(isResolvableArtifactUri(gist.log_gist.raw_uri), false);
+      assert.notEqual(gist.raw_recoverable, true, 'nothing was stored, so nothing is recoverable');
+    });
+
+    test('a context carrying a resolvable raw transcript keeps both halves of the claim', () => {
+      // The positive half, so the fix cannot be satisfied by refusing to build
+      // a gist whenever the context is empty.
+      const uri = transcriptUri('the untruncated transcript');
+      const state = createTestContextState({
+        artifacts: [{ uri, sha256: sha256('the untruncated transcript'), bytes: 25, kind: 'raw_transcript' }],
+      });
+
+      const gist = assembler.assemble({ ...input, state });
+
+      assert.equal(gist.log_gist.raw_uri, uri);
+      assert.equal(isResolvableArtifactUri(gist.log_gist.raw_uri), true);
+      assert.equal(gist.raw_recoverable, true);
+      assert.deepEqual(gist.artifacts, [
+        { uri, sha256: sha256('the untruncated transcript'), bytes: 25 },
+      ]);
+    });
+
+    test('a file snapshot is not a transcript and cannot carry the claim', () => {
+      // `state.artifacts[0]` used to fill `raw_uri` whatever it was, so a
+      // context whose first artifact was a file snapshot published the
+      // transcript claim against the snapshot's bytes. The eviction gate reads
+      // `raw_uri` as the object holding the dropped turns; a snapshot holds
+      // neither them nor a message list to recover from.
+      const uri = transcriptUri('a file snapshot');
+      const state = createTestContextState({
+        artifacts: [{ uri, sha256: sha256('a file snapshot'), bytes: 15, kind: 'file_snapshot' }],
+      });
+
+      const gist = assembler.assemble({ ...input, state });
+
+      assert.equal(gist.log_gist.raw_uri, RAW_URI_UNSTORED);
+      assert.notEqual(gist.raw_recoverable, true);
+      assert.deepEqual(
+        gist.artifacts.map((a) => a.uri),
+        [uri],
+        'the artifact is still referenced; only the transcript claim moved',
+      );
+    });
   });
 });

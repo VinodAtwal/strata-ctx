@@ -2,7 +2,6 @@ import type {
   ArtifactRef,
   ContextState,
   ContentBlock,
-  Gist,
   GistArtifact,
   GistChanged,
   GistDecision,
@@ -16,7 +15,9 @@ import type { StrataPolicy } from '@strata-ctx/core-types';
 import { pinSetText, collectGovernanceText } from '@strata-ctx/core-types';
 import type { BudgetView } from '@strata-ctx/core-types';
 import { estimateTokens } from '@strata-ctx/core-types';
-import { sha256 } from '@strata-ctx/core-types';
+import { isResolvableArtifactUri } from './artifact-uri.js';
+import { RAW_URI_UNSTORED } from './draft.js';
+import type { GistDraft } from './draft.js';
 
 export interface ToolCallSummary {
   readonly name: string;
@@ -254,7 +255,7 @@ function parseSelfGist(block: ContentBlock): {
 
 function buildLogGist(
   messages: readonly Message[],
-  artifactRef: ArtifactRef,
+  rawUri: string,
 ): GistLog {
   const { ran, failed } = extractRanAndFailed(messages);
   const salientErrors = extractSalientErrors(messages);
@@ -266,7 +267,7 @@ function buildLogGist(
     salient_errors: salientErrors,
     salient_warnings: [],
     dropped_count: droppedCount,
-    raw_uri: artifactRef.uri,
+    raw_uri: rawUri,
   };
 }
 
@@ -293,7 +294,7 @@ function buildNext(
 }
 
 export class GistAssembler {
-  assemble(input: GistAssemblyInput): Gist {
+  assemble(input: GistAssemblyInput): GistDraft {
     const { state, policy, budget: _budget, taskId, status, goal, selfGistBlock } = input;
 
     const sourceTurnRange = extractTurnRange(state);
@@ -302,9 +303,19 @@ export class GistAssembler {
     const parsed = selfGistBlock ? parseSelfGist(selfGistBlock) : {};
 
     const artifacts = buildArtifacts(state.artifacts);
-    const artifactRef = state.artifacts[0] ?? { uri: 'artifact://empty', sha256: sha256(''), bytes: 0, kind: 'other' as const };
+    // `log_gist.raw_uri` is documented as the pointer to the *untruncated log*
+    // (core-types/src/gist.ts:60-61), so only a raw-transcript artifact can fill
+    // it, and only when the ACL can resolve what it names. This used to be
+    // `state.artifacts[0]`, which pointed the transcript claim at a file
+    // snapshot whenever the context carried one first, and at the literal
+    // `artifact://empty` when it carried none -- a bucket the ACL refuses, so a
+    // URI that resolved to nothing, on a gist that still claimed to be
+    // recoverable.
+    const transcriptUri = state.artifacts.find(
+      (artifact) => artifact.kind === 'raw_transcript' && isResolvableArtifactUri(artifact.uri),
+    )?.uri;
 
-    const logGist = buildLogGist(state.messages, artifactRef);
+    const logGist = buildLogGist(state.messages, transcriptUri ?? RAW_URI_UNSTORED);
 
     const constraints = pinSetText(policy);
     const inboundConstraints = collectGovernanceText(state);
@@ -324,7 +335,7 @@ export class GistAssembler {
     const verification: GistVerification = { tests_run: [], status: 'untested' };
     const compressedBy = selfGistBlock ? 'self-gist' : 'local-model';
 
-    const gist: Gist = {
+    const gist: GistDraft = {
       v: 1,
       task_id: taskId,
       status,
@@ -339,11 +350,23 @@ export class GistAssembler {
       verification,
       constraints,
       source_turn_range: sourceTurnRange,
-      raw_recoverable: true,
+      // Conditional spread, not `raw_recoverable: false`: `false` is not a
+      // `Gist` (core-types/src/gist.ts:102 is `z.literal(true)`), so writing it
+      // would hand back an object that fails its own schema. Absent is the only
+      // honest encoding -- nothing was stored, so there is nothing to restore,
+      // and the field is not this function's to assert. Absent is also what
+      // makes the draft safe to pass on: `runCompactionTransaction` stamps the
+      // claim it earns by putting the transcript (transaction.ts:387).
+      ...(transcriptUri === undefined ? {} : { raw_recoverable: true as const }),
       compressed_by: compressedBy,
     };
 
-    const validation = validateGist(gist, logGist.salient_errors.length);
+    // Validated as the gist this becomes, because that is the object the
+    // transaction will validate and the only difference is the one field the
+    // store fills. A draft therefore cannot smuggle a defect past this gate by
+    // being incomplete: everything it does own -- digests, turn range, retained
+    // errors -- is checked here exactly as it will be checked again downstream.
+    const validation = validateGist({ ...gist, raw_recoverable: true }, logGist.salient_errors.length);
     if (!validation.ok) {
       const defectMsgs = validation.defects.map((d) => d.kind).join(', ');
       throw new Error(`Gist validation failed: ${defectMsgs}`);
