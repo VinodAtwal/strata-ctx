@@ -12,8 +12,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "tsc --build",
-    "typecheck": "tsc --build && tsc -p tsconfig.check.json",
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/build.mjs && tsc -p tsconfig.check.json",
     "clean": "tsc --build --clean",
     "lint": "eslint .",
     "test": "node scripts/run-tests.mjs",
