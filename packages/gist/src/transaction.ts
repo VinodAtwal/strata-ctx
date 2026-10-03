@@ -9,7 +9,7 @@ import type {
 } from '@strata-ctx/core-types';
 import { enforcePins, verifyPinIntegrity, validateGist, pinSetText } from '@strata-ctx/core-types';
 import type { ReadResult } from '@strata-ctx/security';
-import { artifactUrisOfMessages, isResolvableArtifactUri } from './artifact-uri.js';
+import { artifactUrisOfMessages, artifactUriRefusal, isResolvableArtifactUri } from './artifact-uri.js';
 import type { GistDraft } from './draft.js';
 import { parseRawTranscript } from './reversibility.js';
 import type { StrataTelemetryEvent, GistEvent } from '@strata-ctx/telemetry';
@@ -506,9 +506,42 @@ export async function runCompactionTransaction(
   }
 
   // 4d: artifact_resolves - every artifact_refs[].uri resolves in store
+  //
+  // Parse before asking, for the same reason `assessEvictable` does above:
+  // `ArtifactStore.exists` hands the string to `parseArtifactUri` (acl.ts:194)
+  // and lets a refusal propagate, so asking it about a string that is not a URI
+  // throws out of the transaction instead of describing the artifact. A gist's
+  // `artifacts[]` is attacker-controlled (acl.ts:16-19), so "that is not a
+  // pointer" is an answer this step has to be able to give -- it is the whole
+  // reason 4d exists.
+  //
+  // Parseability rather than resolvability, because `putNamed` mints named URIs
+  // that `exists` answers for: requiring a digest here would report artifacts
+  // the store can serve.
   for (const artifact of gistWithRawUri.artifacts) {
-    const exists = await artifactStore.exists(artifact.uri);
-    if (!exists) {
+    const refusal = artifactUriRefusal(artifact.uri);
+    if (refusal !== null) {
+      validationDefects.push({
+        step: '4d_artifacts',
+        detail: `artifact "${artifact.uri}" is not a reference the artifact store can parse (${refusal}), so it cannot resolve`,
+        constraintIds: [],
+      });
+      continue;
+    }
+    let present: boolean;
+    try {
+      present = await artifactStore.exists(artifact.uri);
+    } catch (e) {
+      // A store that cannot be asked is not a store that holds nothing, and
+      // the two defects mean different things to whoever has to fix them.
+      validationDefects.push({
+        step: '4d_artifacts',
+        detail: `the artifact store threw while resolving "${artifact.uri}": ${e instanceof Error ? e.message : 'unknown'}`,
+        constraintIds: [],
+      });
+      continue;
+    }
+    if (!present) {
       validationDefects.push({
         step: '4d_artifacts',
         detail: `artifact ${artifact.uri} does not resolve in the store`,

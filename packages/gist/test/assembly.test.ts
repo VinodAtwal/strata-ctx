@@ -172,7 +172,12 @@ describe('GistAssembler', () => {
 
   test('artifact refs resolve from context', () => {
     const stateWithArtifacts = createTestContextState({
-      artifacts: [{ uri: 'artifact://test/abc123', sha256: sha256('test'), bytes: 100, kind: 'raw_transcript' }],
+      // The uri agrees with the two fields beside it: the bucket is the one
+      // `raw_transcript` maps to (store.ts:140-146) and the digest is the
+      // content the `sha256` field names. `artifact://test/abc123` was neither
+      // -- `test` is not a bucket and `abc123` is not a digest -- so this
+      // asserted only that a string starts with a scheme.
+      artifacts: [{ uri: transcriptUri('test'), sha256: sha256('test'), bytes: 100, kind: 'raw_transcript' }],
     });
 
     const input = {

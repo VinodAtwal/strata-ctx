@@ -1,7 +1,11 @@
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ArtifactRef, ContextState, Gist, StrataPolicy } from '@strata-ctx/core-types';
 import { sha256 } from '@strata-ctx/core-types';
+import { ArtifactStore } from '@strata-ctx/security';
 import type { GistEvent, StrataTelemetryEvent } from '@strata-ctx/telemetry';
 import { runCompactionTransaction } from '../src/transaction.js';
 import type { TransactionArtifactStore } from '../src/transaction.js';
@@ -23,6 +27,8 @@ import {
   createGistDroppedUnresolved,
   createGistMissingErrors,
   createGistArtifactMissing,
+  FIXTURE_ARTIFACT_CONTENT,
+  FIXTURE_ARTIFACT_URI,
   TEST_TASK_ID,
 } from './fixtures.js';
 
@@ -35,6 +41,27 @@ import {
 function errorMessages(events: readonly StrataTelemetryEvent[]): string {
   return events.map((e) => (e.type === 'error' ? e.message : '')).join('\n');
 }
+
+/** Temp store roots, removed when the file finishes. */
+const storeRoots: string[] = [];
+
+after(async () => {
+  await Promise.all(storeRoots.map((root) => rm(root, { recursive: true, force: true })));
+});
+
+/**
+ * A real store, because a stub would decide for itself what a URI is.
+ *
+ * `fixtures.ts`'s mock answers `exists` with a map lookup: it returns `false`
+ * for anything it was not handed and throws for nothing, so the behaviour this
+ * defect lives in cannot appear through it. The real `ArtifactStore` hands the
+ * string to `parseArtifactUri` (acl.ts:194) and throws when it is not a URI.
+ */
+const openStore = async (): Promise<ArtifactStore> => {
+  const root = await mkdtemp(join(tmpdir(), 'strata-gist-transaction-'));
+  storeRoots.push(root);
+  return ArtifactStore.open({ root });
+};
 
 describe('runCompactionTransaction', () => {
   let baseState: ContextState;
@@ -58,7 +85,7 @@ describe('runCompactionTransaction', () => {
   describe('validation passes', () => {
     it('returns new state with gist appended, transcript evicted, pins intact', async () => {
       // Pre-populate store with the artifact the gist references
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -131,7 +158,7 @@ describe('runCompactionTransaction', () => {
   describe('validation fails - constraint mismatch (4c)', () => {
     it('preserves original state, emits violation, telemetry shows validationPassed: false', async () => {
       const gistMissingConstraint = createGistMissingConstraint();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -184,7 +211,7 @@ describe('runCompactionTransaction', () => {
 
     it('detects extra constraint in gist', async () => {
       const gistExtraConstraint = createGistExtraConstraint();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -205,7 +232,7 @@ describe('runCompactionTransaction', () => {
 
     it('detects reordered constraints', async () => {
       const gistReordered = createGistReorderedConstraints();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -227,7 +254,7 @@ describe('runCompactionTransaction', () => {
   describe('validation fails - missing sha (4a)', () => {
     it('aborts and preserves original state', async () => {
       const gistMissingSha = createGistMissingSha();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -255,7 +282,7 @@ describe('runCompactionTransaction', () => {
       const priorGist = createTestGist({ unresolved: ['How to handle edge case X'] });
       const stateWithOpenThread = createTestContextState({ gists: [priorGist] });
       const gistDroppedUnresolved = createGistDroppedUnresolved();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: stateWithOpenThread,
@@ -280,7 +307,7 @@ describe('runCompactionTransaction', () => {
     });
 
     it('commits when the source had no open threads and none are invented', async () => {
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -305,7 +332,7 @@ describe('runCompactionTransaction', () => {
   describe('validation fails - missing errors (4b)', () => {
     it('aborts when salient_errors count is less than expected', async () => {
       const gistMissingErrors = createGistMissingErrors();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -348,9 +375,134 @@ describe('runCompactionTransaction', () => {
     });
   });
 
+  describe('validation fails - artifact uri that is not a reference (4d)', () => {
+    // 4d exists to *report* an unresolvable artifact. A malformed
+    // `artifacts[].uri` used to escape the transaction instead, because the
+    // check asked the store about a string the store's ACL refuses to parse --
+    // and an exception out of here bypasses every abort path below: no
+    // `defects`, no `validationPassed: false` compaction event, no violation
+    // record for a gist that carried a pointer to nothing.
+
+    // The only malformed uri in this file, and the only one there should be: the
+    // fixtures name their artifacts by digest (see ./fixtures.ts), so here an
+    // unparseable reference can only mean the one thing being tested.
+    const malformedUri = 'artifact://file/abc123';
+
+    it('reports a 4d defect naming the uri, rather than throwing out of the transaction', async () => {
+      const store = await openStore();
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: createTestGist({
+          artifacts: [
+            { uri: malformedUri, sha256: sha256(FIXTURE_ARTIFACT_CONTENT), bytes: 16 },
+          ],
+        }),
+        policy: basePolicy,
+        artifactStore: store,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(!result.ok, 'an unresolvable artifact must abort the transaction');
+      assert.equal(result.state, baseState, 'the original state must be preserved');
+
+      const defect = result.defects.find((d) => d.step === '4d_artifacts');
+      assert.ok(defect !== undefined, `expected a 4d defect, got: ${JSON.stringify(result.defects)}`);
+      assert.ok(
+        defect.detail.includes(malformedUri),
+        `the defect must name the offending uri, got: ${defect.detail}`,
+      );
+      assert.ok(
+        telemetry.events.some((e) => e.type === 'compaction' && !e.validationPassed),
+        'the abort must be reported through telemetry, not by escaping the transaction',
+      );
+      assert.ok(
+        !telemetry.events.some((e) => e.type === 'error'),
+        'a malformed uri is a finding about the gist, not a store failure',
+      );
+    });
+
+    it('reports a 4d defect when the store itself throws on a resolvable uri', async () => {
+      // The other way out of the same loop: an unreadable store volume. The
+      // transaction reports that it could not check rather than propagating,
+      // because its only job at this step is to say which artifact it could
+      // not confirm.
+      const store = await openStore();
+      const resolvableUri = FIXTURE_ARTIFACT_URI;
+      await store.put(FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
+      const failingStore: TransactionArtifactStore = {
+        put: store.put.bind(store),
+        read: store.read.bind(store),
+        exists: (uri: string) =>
+          uri === resolvableUri
+            ? Promise.reject(new Error('EIO: store volume is unreadable'))
+            : store.exists(uri),
+      };
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: createTestGist({
+          artifacts: [
+            { uri: resolvableUri, sha256: sha256(FIXTURE_ARTIFACT_CONTENT), bytes: 16 },
+          ],
+        }),
+        policy: basePolicy,
+        artifactStore: failingStore,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(!result.ok);
+      const defect = result.defects.find((d) => d.step === '4d_artifacts');
+      assert.ok(defect !== undefined, `expected a 4d defect, got: ${JSON.stringify(result.defects)}`);
+      assert.ok(
+        defect.detail.includes(resolvableUri),
+        `the defect must name the uri it could not check, got: ${defect.detail}`,
+      );
+    });
+
+    it('still accepts a named artifact, which is a reference the store can serve', async () => {
+      // The negative control for the guard above. `putNamed` mints named URIs
+      // (store.ts:390-397), `parseArtifactUri` accepts them, and `exists`
+      // answers for them -- so a guard demanding a *digest* would report an
+      // artifact the store can resolve, which is a finding that is not true.
+      const store = await openStore();
+      const summaryText = 'the session so far';
+      const namedUri = 'artifact://other/named/summary.txt';
+      await store.putNamed(namedUri, summaryText, 'other');
+
+      const result = await runCompactionTransaction({
+        state: baseState,
+        gist: createTestGist({
+          artifacts: [{ uri: namedUri, sha256: sha256(summaryText), bytes: summaryText.length }],
+        }),
+        policy: basePolicy,
+        artifactStore: store,
+        emit: telemetry.emit,
+        expectedErrorCount: 1,
+        trigger: 'task_boundary',
+        rawTranscript,
+        toolLog,
+      });
+
+      assert.ok(
+        !result.defects.some((d) => d.step === '4d_artifacts'),
+        `a named artifact the store holds is not a 4d defect: ${JSON.stringify(result.defects)}`,
+      );
+      assert.ok(result.ok, 'the transaction must commit when every artifact resolves');
+    });
+  });
+
   describe('telemetry event order', () => {
     it('emits gist event before compaction event on success', async () => {
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       await runCompactionTransaction({
         state: baseState,
@@ -375,7 +527,7 @@ describe('runCompactionTransaction', () => {
 
     it('emits gist event before compaction event on validation failure', async () => {
       const gistMissingConstraint = createGistMissingConstraint();
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       await runCompactionTransaction({
         state: baseState,
@@ -467,7 +619,7 @@ describe('runCompactionTransaction', () => {
       // This is that draft's only remaining path to a committed gist, and the
       // step-1 flush is what earns the claim: the bytes are on disk and the URI
       // names them.
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
       const { raw_recoverable: _unstamped, ...draft } = baseGist;
 
       const result = await runCompactionTransaction({
@@ -498,7 +650,7 @@ describe('runCompactionTransaction', () => {
     });
 
     it('evicts when the raw artifact verifiably holds the dropped run', async () => {
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -520,7 +672,7 @@ describe('runCompactionTransaction', () => {
     });
 
     it('keeps the transcript and reports it when the raw artifact is absent', async () => {
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       // A store that has lost the transcript: writes succeed, but the artifact
       // is not there to be read back. This is what an evicted or rotated
@@ -530,7 +682,7 @@ describe('runCompactionTransaction', () => {
         read: mockStore.read.bind(mockStore),
         // The gist's own file artifact resolves (4d passes); the raw
         // transcript does not, which is exactly the eviction precondition.
-        exists: (uri: string) => Promise.resolve(uri === 'artifact://file/abc123'),
+        exists: (uri: string) => Promise.resolve(uri === FIXTURE_ARTIFACT_URI),
       };
 
       const result = await runCompactionTransaction({
@@ -570,7 +722,7 @@ describe('runCompactionTransaction', () => {
       const foreign = createTestContextState({
         messages: [createSystemMessage('an entirely different session')],
       });
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
 
       const result = await runCompactionTransaction({
         state: baseState,
@@ -615,7 +767,7 @@ describe('runCompactionTransaction', () => {
           createToolResultMessage('read', stub, { kind: 'file', ref: 'src/answer.ts' }),
         ],
       });
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
       // Deliberately *not* mockStore.addArtifact(pointerUri, fileContent, ...).
 
       const result = await runCompactionTransaction({
@@ -672,7 +824,7 @@ describe('runCompactionTransaction', () => {
           createToolResultMessage('read', stub, { kind: 'file', ref: 'src/answer.ts' }),
         ],
       });
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
       mockStore.addArtifact(pointerUri, fileContent, 'file_snapshot');
 
       const result = await runCompactionTransaction({
@@ -700,7 +852,7 @@ describe('runCompactionTransaction', () => {
       // because it has no bucket to check the digest against. The old
       // `/^artifact:\/\//` accepted it and then asked a store that speaks
       // `artifact://file/<digest>` whether it existed.
-      mockStore.addArtifact('artifact://file/abc123', 'artifact content', 'file_snapshot');
+      mockStore.addArtifact(FIXTURE_ARTIFACT_URI, FIXTURE_ARTIFACT_CONTENT, 'file_snapshot');
       const bareUriStore = {
         put: async (content: string | Uint8Array, kind: ArtifactRef['kind']) => {
           await Promise.resolve();

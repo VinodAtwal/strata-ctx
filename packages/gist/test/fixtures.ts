@@ -132,8 +132,8 @@ export function createTestGist(overrides: Partial<Gist> = {}): Gist {
     current_values: { NODE_ENV: 'test' },
     artifacts: [
       {
-        uri: 'artifact://file/abc123',
-        sha256: sha256('artifact content'),
+        uri: FIXTURE_ARTIFACT_URI,
+        sha256: sha256(FIXTURE_ARTIFACT_CONTENT),
         bytes: 100,
       },
     ],
@@ -148,7 +148,7 @@ export function createTestGist(overrides: Partial<Gist> = {}): Gist {
       salient_errors: ['Error: test failed'],
       salient_warnings: [],
       dropped_count: 5,
-      raw_uri: 'artifact://transcript/raw123',
+      raw_uri: FIXTURE_TRANSCRIPT_URI,
     },
     verification: {
       tests_run: ['npm test'],
@@ -203,7 +203,7 @@ export function createGistMissingErrors(): Gist {
       salient_errors: [], // Missing the expected error
       salient_warnings: [],
       dropped_count: 5,
-      raw_uri: 'artifact://transcript/raw123',
+      raw_uri: FIXTURE_TRANSCRIPT_URI,
     },
   });
 }
@@ -212,8 +212,8 @@ export function createGistArtifactMissing(): Gist {
   return createTestGist({
     artifacts: [
       {
-        uri: 'artifact://file/missing123',
-        sha256: sha256('missing content'),
+        uri: MISSING_ARTIFACT_URI,
+        sha256: sha256(MISSING_ARTIFACT_CONTENT),
         bytes: 100,
       },
     ],
@@ -334,7 +334,48 @@ export interface MockArtifactStoreState {
 }
 
 import type { ReadResult, ArtifactStat } from '@strata-ctx/security';
-import { bucketForKind } from '@strata-ctx/security';
+import { bucketForKind, uriFor } from '@strata-ctx/security';
+
+// ---- The artifacts the gists above stand for ----
+
+/**
+ * The bytes behind `FIXTURE_ARTIFACT_URI`.
+ *
+ * Named as content so the uri is a digest of something rather than a shape that
+ * only looks like one. `artifact://file/abc123` was neither: the ACL refuses it
+ * (`malformed_digest`, acl.ts:246), so every test that asked a real store about
+ * it was asking about a uri the product could never resolve.
+ */
+export const FIXTURE_ARTIFACT_CONTENT = 'artifact content';
+
+/** The key `createTestGist`'s `artifacts[0]` carries, and the key a test store must hold. */
+export const FIXTURE_ARTIFACT_URI = uriFor('file_snapshot', sha256(FIXTURE_ARTIFACT_CONTENT));
+
+/**
+ * The bytes behind `createGistArtifactMissing`'s artifact.
+ *
+ * Named so the missing artifact is a digest of content that was never written
+ * rather than a typo: "the store does not hold this" is only a finding about a
+ * reference the store could have held.
+ */
+const MISSING_ARTIFACT_CONTENT = 'missing content';
+
+/** Deliberately never added to any store: `createGistArtifactMissing` is the 4d case. */
+const MISSING_ARTIFACT_URI = uriFor('file_snapshot', sha256(MISSING_ARTIFACT_CONTENT));
+
+/**
+ * The transcript `createTestGist` names in `log_gist.raw_uri`.
+ *
+ * The transaction replaces that field with the uri its own step-1 `put` returns
+ * (transaction.ts:385), so it stands for a transcript this fixture does not
+ * write and no digest of one exists to be had. It is spelled as a real digest
+ * anyway: `defendGist` and the eviction gate read the field before the store
+ * does, and a reference nothing can parse is a finding about the fixture rather
+ * than about the code under test.
+ */
+const FIXTURE_TRANSCRIPT_CONTENT = 'fixture transcript: the messages the transaction evicts';
+
+const FIXTURE_TRANSCRIPT_URI = uriFor('raw_transcript', sha256(FIXTURE_TRANSCRIPT_CONTENT));
 
 export function createMockArtifactStore(initialState: MockArtifactStoreState = { artifacts: new Map() }) {
   const store: MockArtifactStoreState = { artifacts: new Map(initialState.artifacts) };

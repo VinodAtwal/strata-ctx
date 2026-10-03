@@ -294,6 +294,24 @@ describe('the ACL is the only authority', () => {
       await assert.rejects(() => store.read('artifact://secrets/x'), ArtifactAclError);
     });
   });
+
+  it('refuses a malformed uri from `exists` rather than answering false', async () => {
+    // `exists` is the same question `resolve` answers, so it refuses the same
+    // things: "this is not a URI" and "I do not have it" are different answers,
+    // and a caller gating an integrity check on the difference needs both.
+    // Returning `false` here would report a truncated pointer as a missing
+    // artifact, which is a defect report about the wrong thing.
+    await withTempDir(async (dir) => {
+      const store = await tempStore(dir, { now: clock(T0).now });
+      await assert.rejects(
+        () => store.exists('artifact://file/abc123'),
+        (e: unknown) => e instanceof ArtifactAclError && e.violation === 'malformed_digest',
+      );
+      // The digest form still answers, so a caller that resolved its own
+      // reference first is unaffected.
+      assert.equal(await store.exists(sha256('never written')), false);
+    });
+  });
 });
 
 describe('verify', () => {

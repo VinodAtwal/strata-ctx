@@ -63,6 +63,36 @@ export function isResolvableArtifactUri(uri: string): boolean {
 }
 
 /**
+ * Why the store's ACL refuses `uri`, or null when it accepts it.
+ *
+ * The weaker question than `isResolvableArtifactUri`, and deliberately so: that
+ * one asks whether the store could serve *content* at this address, which is
+ * what eviction needs, while this one asks only whether the string is a
+ * reference the store can look at. `putNamed` mints named URIs
+ * (store.ts:390-397) and `exists` answers for them (store.ts:578-591), so a
+ * check that required a digest would report an artifact the store can resolve.
+ *
+ * Why the reason and not a boolean: the violation name is the actionable part.
+ * `malformed_digest` says a pointer was truncated and `traversal_segment` says
+ * something tried to leave the store, and an operator reading a defect has to
+ * tell those apart -- the same reason `defendGist` reports the parse error's
+ * name rather than "invalid" (gist-safety.ts:350-356).
+ *
+ * Needed because `ArtifactStore.exists` does not do this itself: it hands the
+ * string straight to `parseArtifactUri` and lets the refusal propagate, which is
+ * right for a store that is asked "may I resolve this" and wrong for a caller
+ * that has to describe the answer.
+ */
+export function artifactUriRefusal(uri: string): string | null {
+  try {
+    parseArtifactUri(uri);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : 'the uri could not be parsed';
+  }
+}
+
+/**
  * Every `artifact://` URI a set of messages depends on.
  *
  * Every block type is scanned, not just `tool_result`. H-6 references blocks
