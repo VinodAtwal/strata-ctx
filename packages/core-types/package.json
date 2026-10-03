@@ -1,7 +1,7 @@
 {
   "name": "@strata-ctx/core-types",
   "version": "1.0.0",
-  "private": false,
+  "private": true,
   "type": "module",
   "description": "The canonical, provider-neutral model every strata-ctx package compiles against. Frozen: the public surface is hash-locked in contract.lock.json and CI fails on drift.",
   "license": "Apache-2.0",
@@ -20,10 +20,6 @@
     "zod": "^3.24.0"
   },
   "author": "The strata-ctx Authors",
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "keywords": [
     "context",
     "compaction",
