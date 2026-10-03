@@ -31,6 +31,17 @@
  * The declarations live with the test (`../test/wiring-ledger.test.ts`), which
  * is where a gate belongs.
  *
+ * ## The ruling: a self-reference is not wiring
+ *
+ * A symbol referenced only inside its own declaring file is called by nothing.
+ * Before this was ruled, the ledger counted a single same-file `value`
+ * reference as a caller and reported 432 of 1089 exports wired; with the ruling
+ * it reports 152. The gap was almost entirely *transitive* liveness -- code
+ * that does run, through a sibling function nothing outside the file names --
+ * which is exactly the kind of finding a caller-count cannot make on its own.
+ * The rules are enumerated on `isCallingSite`, which is where the decision is
+ * made, and each one is asserted individually in the test.
+ *
  * ## The three reachability questions, answered separately
  *
  * 1. **Is the module reachable?** From `packages/cli/src/index.ts` (the only
@@ -38,8 +49,8 @@
  *    names, following `import`/`export ... from` edges transitively. `dist/` is
  *    not an edge: a compiled copy of the same source is not a second caller.
  * 2. **Is the symbol referenced?** An identifier occurrence in a reachable
- *    source file that is not its own declaration, not a barrel re-export, not a
- *    property key, not a member access, and not inside a comment or string.
+ *    source file that is not in the declaring file, not a barrel re-export, not
+ *    a property key, not a member access, and not inside a comment or string.
  * 3. **Does the reference run?** Not answerable from source, and this module
  *    does not pretend otherwise -- see `WiringLedger.deadGates` in the test for
  *    the one case that *is* checkable, and docs/wiring-ledger.md for the rest.
@@ -764,6 +775,60 @@ const RANK: Record<ReferenceKind, number> = {
   call: 6, new: 5, value: 4, import: 3, typeonly: 2, reexport: 1, propertykey: 0, declaration: 0, member: 0,
 };
 
+/**
+ * Whether one reference is evidence that something calls the symbol.
+ *
+ * This is the whole "is it wired" decision, and it is stated rather than left to
+ * fall out of a filter chain, because every clause below was a way for the
+ * ledger to report an operator as wired when nothing runs it.
+ *
+ * The rules, in the order they apply:
+ *
+ * 1. **The reference must be in a caller-shaped position** -- `call`, `new`,
+ *    `value` or `import`. A declaration, a re-export, a member access, a
+ *    property key and a type position are not callers. Comments, strings and
+ *    regex bodies never reach this function at all: `blankNonCode` erased them
+ *    before the identifier search, so there is no site to judge.
+ * 2. **A reference inside the module that declares the symbol is not a
+ *    caller.** This is the ruling, and it is the clause that used to be
+ *    missing. A symbol named only in its own declaring file is called by
+ *    nothing, and the ledger's entire purpose is finding operators nobody
+ *    calls. It applies to every kind, so a `value` in a table next to the
+ *    declaration does not rescue it and neither does a `call` from a helper
+ *    three functions below: a recursive operator that reaches itself, directly
+ *    or through a same-file helper, stays unwired until a *different* file
+ *    names it.
+ * 3. **A reference in a module no entry root reaches is not a caller**, because
+ *    nothing can get there. `packages/eval/src/*` referencing
+ *    `packages/eval/src/*` is the case that made the first cut of this ledger
+ *    useless.
+ *
+ * What rule 2 deliberately does *not* do is decide whether the operator
+ * executes. A symbol read only by a sibling function in the same file, which
+ * some other file then calls, does run -- and is still reported unwired,
+ * because the ledger counts direct references and a grep-derived "wired" is not
+ * proof in either direction. 109 of the 264 rows the ruling exposed are in
+ * exactly that class -- each one's citing file imports the reader it names, or
+ * the claim would not have been written down -- and every one of them says so
+ * in its reason; see docs/wiring-ledger.md §6.
+ *
+ * The rule that is *not* here, and was asked for: a reference inside a sibling
+ * file of the same package counts, and a reference inside the package's own
+ * barrel counts when it is a real use rather than a re-export. Package
+ * boundaries are not the test -- file boundaries are. `pointerizeBlocks` is
+ * declared in `pointer.ts` and called from `truncate.ts:326`, and it stays
+ * wired.
+ */
+export function isCallingSite(
+  site: ReferenceSite,
+  declaredIn: string,
+  reachableFiles: ReadonlySet<string>,
+): boolean {
+  if (!CALLERS.has(site.kind)) return false;
+  if (site.file === declaredIn) return false;
+  return reachableFiles.has(site.file);
+}
+
 /* ------------------------------------------------------------------ *
  * 7. The ledger
  * ------------------------------------------------------------------ */
@@ -780,16 +845,14 @@ export function buildLedger(root: string): WiringLedger {
     if (!declaredFiles.has(sym.name)) declaredFiles.set(sym.name, new Set());
     declaredFiles.get(sym.name)!.add(sym.file);
   }
+  const reachableRel = new Set([...reachable].map((p) => byPath.get(p)?.rel ?? ''));
 
   const entries: LedgerEntry[] = exports.map((sym) => {
     const info = byPath.get(sym.file);
     const fileReachable = reachable.has(sym.file);
     const all = referenceSites(files, sym.name, declaredFiles.get(sym.name) ?? new Set());
-    // A reference in an unreachable module is not a caller: nothing can get
-    // there. `packages/eval/src/*` referencing `packages/eval/src/*` is the case
-    // that matters, and it is the one that made the original ledger useless.
     const sites = all
-      .filter((s) => CALLERS.has(s.kind) && reachable.has(byPath.get(join(root, s.file))?.path ?? ''))
+      .filter((s) => isCallingSite(s, info?.rel ?? sym.file, reachableRel))
       .sort((a, b) => RANK[b.kind] - RANK[a.kind]);
     const strongest = sites[0]?.kind;
     const confidence: Confidence =
