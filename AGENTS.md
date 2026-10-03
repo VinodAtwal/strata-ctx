@@ -194,7 +194,7 @@ Running N agents in one tree fails in three specific, repeatable ways. Each has 
 | # | Failure | Rule |
 |---|---------|------|
 | **I1** | Agent A runs `npm test` or `packages/*/test/*.test.ts`, sees agent B's half-written suite fail, and "fixes" B's file or reports a false failure | **Run only your own test file(s)**, by exact path. Never a glob, never `npm test`, never `npm run check`. A failure in a file you do not own is *not yours* — report it, don't touch it. |
-| **I2** | Agent leaves `tmp-*.test.ts`, `scratch-*.ts`, or probe scripts in a `test/` dir; they get picked up by the suite enumeration and break CI permanently | **No scratch files in the repo.** Use `/tmp`. The gate enumerates `packages/*/test/*.test.ts` — anything you leave there ships. |
+| **I2** | Agent leaves `tmp-*.test.ts`, `scratch-*.ts`, or probe scripts in a `test/` dir; they get picked up by the suite enumeration and break CI permanently | **No scratch files in the repo.** Use `/tmp`. The gate enumerates `packages/*/test/*.test.ts` and `scripts/test/*.test.ts` — anything you leave there ships. |
 | **I3** | Agent edits a shared file (`runner.ts`, `types.ts`, a barrel, `docs/tasks.csv`) to unblock itself, creating a merge conflict or a silent behaviour change | **Touch only the files you were given.** If you need a shared file changed, report the required change precisely and let the integrator do it. |
 
 Two more that are not about interference but about wasted work:

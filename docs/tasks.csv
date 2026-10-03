@@ -101,3 +101,9 @@ E-13,E,Integrations,strata-ctx CLI binary: mcp serve + hook entrypoints (deferre
 E-14,B,Integrity,Deterministic tool-argument floor (I-9): refuse destructive tool calls,ext,1d,E-9,wave-1,G4,done
 F2-0,F,Evals,"Local-machine real-mode E2E: OpenCode -> gateway -> real upstream, with a governed refusal assertion",seq,1.5,E-12,3,none,done
 E-15,E,Integrations,Operator adoption path: publishable packages (drop private/file: deps) + quickstart + per-request what-happened-to-my-context in strata status,seq,2.0,"E-13,G-5",3,none,todo
+J-8,J,Dev infra,Wiring ledger: gate wired exports (f277c2d),seq,0.5,J-3,2,-,done
+C-5,C,Gist engine,Malformed URI handling: 4d defect reporting (07d710c),seq,0.5,C-3,2,-,done
+J-9,J,Dev infra,"Test gate verdict: bound hangs, enumerate suite (d82f650)",seq,0.5,J-2,0,-,done
+A-17,A,Core gateway,"GistDraft consolidation into core-types (610b817,71ded21,98e06c4)",seq,0.5,A-4,2,-,done
+J-10,J,Dev infra,Test gate process-group kill: prevent orphan leaks (fix-1),seq,0.25,J-9,0,-,done
+J-11,J,Dev infra,Gate enumeration + AGENTS update (fix-2),seq,0.25,J-10,0,-,done
