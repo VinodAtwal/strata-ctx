@@ -13,6 +13,7 @@ import type { ReadResult } from '@strata-ctx/security';
 import { artifactUrisOfMessages, artifactUriRefusal, isResolvableArtifactUri } from './artifact-uri.js';
 import { parseRawTranscript } from './reversibility.js';
 import type { StrataTelemetryEvent, GistEvent } from '@strata-ctx/telemetry';
+import { EVICTION_SKIPPED_CODE, EVICTION_SKIPPED_PREFIX } from '@strata-ctx/telemetry';
 
 /**
  * Minimal interface for the artifact store operations needed by the transaction.
@@ -683,7 +684,7 @@ export async function runCompactionTransaction(
       type: 'error',
       runId: originalState.runId,
       stage: 'compact',
-      code: 'EVICTION_SKIPPED_UNVERIFIED',
+      code: EVICTION_SKIPPED_CODE,
       message: `${evictable.reason}; kept ${newState.messages.length} message(s) instead of evicting ${evictable.evicted}`,
       failedOpen: false,
     };
@@ -702,7 +703,7 @@ export async function runCompactionTransaction(
     compressionBy: gistWithRawUri.compressed_by,
     // A skipped eviction is not a validation failure, so it is reported here
     // rather than aborting: the commit stands, only the size win is deferred.
-    failed: evictable.verified ? [] : [`eviction_skipped: ${evictable.reason}`],
+    failed: evictable.verified ? [] : [`${EVICTION_SKIPPED_PREFIX} ${evictable.reason}`],
   };
   emit(gistEvent);
   telemetry.push(gistEvent);
