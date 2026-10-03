@@ -1,7 +1,7 @@
 {
   "package": "@strata-ctx/core-types",
   "frozenVersion": "1.0.0",
-  "digest": "0a3c0fea6360e6d968bdf662626d791d299bb7e2dc5bc3cb29acd11b9997c591",
+  "digest": "4dda325007f5f2e33beccde215f9d650bff106933a04e9bc8dad63e4c8d8819d",
   "exports": [
     {
       "name": "ArtifactId",
@@ -137,6 +137,26 @@
       "name": "GistDefect",
       "kind": "TypeAliasDeclaration",
       "signature": "export type GistDefect = | { readonly kind: 'turn_range_inverted'; readonly range: [number, number] } | { readonly kind: 'errors_not_retained'; readonly missing: number } | { readonly kind: 'unresolved_dropped' } | { readonly kind: 'raw_not_recoverable' };"
+    },
+    {
+      "name": "GistDraft",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistDraft = z.infer<typeof GistDraftSchema>;"
+    },
+    {
+      "name": "GistDraftDefect",
+      "kind": "TypeAliasDeclaration",
+      "signature": "export type GistDraftDefect = { readonly kind: 'raw_uri_unstored' };"
+    },
+    {
+      "name": "GistDraftSchema",
+      "kind": "VariableDeclaration",
+      "signature": "GistDraftSchema = GistSchema.extend({ raw_recoverable: z.literal(true).optional(), })"
+    },
+    {
+      "name": "GistDraftValidation",
+      "kind": "InterfaceDeclaration",
+      "signature": "export interface GistDraftValidation { readonly ok: boolean; readonly draft?: GistDraft; readonly defects: readonly GistDraftDefect[]; }"
     },
     {
       "name": "GistId",
@@ -297,6 +317,11 @@
       "name": "ProbeId",
       "kind": "TypeAliasDeclaration",
       "signature": "export type ProbeId = Brand<string, 'ProbeId'>;"
+    },
+    {
+      "name": "RAW_URI_UNSTORED",
+      "kind": "VariableDeclaration",
+      "signature": "RAW_URI_UNSTORED = 'unstored:raw-transcript'"
     },
     {
       "name": "RedactionPolicy",
@@ -567,6 +592,11 @@
       "name": "validateGist",
       "kind": "FunctionDeclaration",
       "signature": "export function validateGist(input: unknown, expectedErrorCount?: number): GistValidation { const parsed = GistSchema.safeParse(input); if (!parsed.success) return { ok: false, defects: [] }; const g = parsed.data; const defects: GistDefect[] = []; const [from, to] = g.source_turn_range; if (to < from) defects.push({ kind: 'turn_range_inverted', range: g.source_turn_range }); if ( expectedErrorCount !== undefined && g.log_gist.salient_errors.length < expectedErrorCount ) { defects.push({ kind: 'errors_not_retained', missing: expectedErrorCount - g.log_gist.salient_errors.length, }); } if (g.raw_recoverable !== true) defects.push({ kind: 'raw_not_recoverable' }); return defects.length === 0 ? { ok: true, gist: g, defects: [] } : { ok: false, defects }; }"
+    },
+    {
+      "name": "validateGistDraft",
+      "kind": "FunctionDeclaration",
+      "signature": "export function validateGistDraft(input: unknown): GistDraftValidation { const parsed = GistDraftSchema.safeParse(input); if (!parsed.success) return { ok: false, defects: [] }; const draft = parsed.data; const defects: GistDraftDefect[] = []; if (draft.raw_recoverable === true && draft.log_gist.raw_uri === RAW_URI_UNSTORED) { defects.push({ kind: 'raw_uri_unstored' }); } return defects.length === 0 ? { ok: true, draft, defects: [] } : { ok: false, defects }; }"
     },
     {
       "name": "verifyPinIntegrity",
