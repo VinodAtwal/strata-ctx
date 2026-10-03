@@ -66,6 +66,7 @@ const run = async (cmd: string, args: string[], env: NodeJS.ProcessEnv = {}): Pr
     cwd: root,
     env: childEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true,
   });
 
   let out = '';
@@ -88,7 +89,16 @@ const run = async (cmd: string, args: string[], env: NodeJS.ProcessEnv = {}): Pr
   const overdue = new Promise<void>((resolve) => {
     deadline = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+      }
       resolve();
     }, RUN_CEILING_MS);
   });
@@ -101,9 +111,9 @@ const run = async (cmd: string, args: string[], env: NodeJS.ProcessEnv = {}): Pr
   // Same leak as the runner has: a killed child's orphaned grandchildren keep
   // these pipes open, and an open stdio handle would keep this test process
   // alive after its last test -- a hung gate, reproduced in miniature.
-  child.stdout.destroy();
-  child.stderr.destroy();
-  child.unref();
+  try { child.stdout.destroy(); } catch { /* ignore */ }
+  try { child.stderr.destroy(); } catch { /* ignore */ }
+  try { child.unref(); } catch { /* ignore */ }
 
   return { code, signal, timedOut, out, err };
 };

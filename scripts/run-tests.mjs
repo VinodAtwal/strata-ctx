@@ -121,7 +121,7 @@ const suiteFiles = () => {
   // readdirSync order is filesystem-dependent; the gate's file order is not.
   files.sort();
   if (files.length === 0) {
-    throw new Error('no test files found under packages/*/test/*.test.ts -- refusing to report a pass');
+    throw new Error('no test files found under packages/*/test/*.test.ts or scripts/test/*.test.ts -- refusing to report a pass');
   }
   return files;
 };
@@ -190,7 +190,7 @@ const main = async () => {
   const child = spawn(
     process.execPath,
     ['--import', 'tsx', '--test', `--test-reporter=${reporter}`, ...files],
-    { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] },
+    { cwd: root, stdio: ['ignore', 'pipe', 'inherit'], detached: true },
   );
 
   let tap = '';
@@ -218,7 +218,16 @@ const main = async () => {
   const overdue = new Promise((resolve) => {
     deadline = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // ignore
+        }
+      }
       resolve(undefined);
     }, budgetMs);
   });
@@ -228,7 +237,18 @@ const main = async () => {
 
   // Bounded even so: SIGKILL is not supposed to be refusable, and a gate whose
   // timeout handler can itself wait forever is not a timeout.
-  const grace = setTimeout(() => child.kill('SIGKILL'), GRACE_MS);
+  const grace = setTimeout(() => {
+    try {
+      if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+    }
+  }, GRACE_MS);
   const [code, signal] = await exited;
   clearTimeout(grace);
 
@@ -238,7 +258,8 @@ const main = async () => {
   // back into the hang it removes. Dropping the stream is safe either way:
   // `close` already delivered the whole stream on the normal path, and the
   // timeout path reports out of `tap` regardless.
-  child.stdout.destroy();
+  try { child.stdout.destroy(); } catch { /* ignore */ }
+  try { if (child.stderr) child.stderr.destroy(); } catch { /* ignore */ }
 
   if (timedOut) {
     reportHang(tap, budgetMs);
