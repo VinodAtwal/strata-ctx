@@ -24,12 +24,12 @@
 # local state — NEVER commit: raw transcripts, artifacts, gists, telemetry
 # secrets
 # test / eval output
-artifacts/
+/artifacts/
 coverage/
 dist/
 fixtures/recorded/*.body          # large provider payloads, see J-4
-gists/
+/gists/
 node_modules/
 packages/*/.eslintcache
 secrets.yaml
-telemetry/
+/telemetry/
