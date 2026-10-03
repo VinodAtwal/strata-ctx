@@ -15,7 +15,7 @@ blocked — see §7 before picking anything up.
 
 ## 1. Prime Directive
 
-**The contract is frozen.** `packages/core-types@1.0.0` (digest `0a3c0fea6360e6d9`) is immutable. No agent may add, remove, or change its public exports. If you need a new type, propose it in your task report — the contract owner will decide whether to unfreeze.
+**The contract is frozen.** `packages/core-types@1.0.0` (digest `4dda325007f5f2e3`, 120 exports) is frozen. No agent may add, remove, or change its public exports. If you need a new type, propose it in your task report — the contract owner will decide whether to unfreeze.
 
 ---
 
@@ -284,7 +284,7 @@ Externally blocked right now, so nobody burns a day rediscovering this:
 | `SELF_GIST_DIRECTIVE` | **two different exports, not one shared constant** | `pipeline/src/self-gist.ts` exports a `SelfGistMarkers` object (`open`/`close`/`fenceOpen`/`fenceClose`/`instruction`) — the sentinels the *parser* looks for. `integrations/src/templates.ts` exports a *prompt string*. They are not byte-identical and must not be made so. The invariant is narrower and real: the fence and the sentinel must agree, or the parser never fires |
 | `FENCE` / `SELF_GIST_LANGUAGE` / `SELF_GIST_SENTINEL` | `integrations/src/templates.ts` | ` ``` `, `ctx-gist`, `<<<STRATA-SELF-GIST>>>`. The E-9 hook guard *rejects* any text containing the sentinel outside a gist block — do not loosen that to "be helpful" |
 | `PROVIDERS` | `gateway/src/config.ts` **and** `gateway/src/credentials.ts` | Two different sets that share a name: config = routable upstreams (`anthropic`, `openai-compat`, `gemini`, `mock`); credentials = key-holding providers (`anthropic`, `openai`, `gemini`). `index.ts` re-exports the config one as `CONFIG_PROVIDERS` for exactly this reason. Do not star-export both |
-| `contract.lock.json` digest | `packages/core-types/contract.lock.json` | `0a3c0fea6360e6d9`, 114 exports. Change it only via `npm run contract:update`, deliberately |
+| `contract.lock.json` digest | `packages/core-types/contract.lock.json` | `4dda325007f5f2e3`, 120 exports. Change it only via `npm run contract:update`, deliberately, in its own commit — it has moved once, to consolidate `GistDraft` |
 
 ### Two traps this repo has already paid for
 
@@ -327,7 +327,7 @@ The **canonical model** (`packages/core-types/src/context.ts`) is the single sou
 
 ```mermaid
 graph TD
-  CT["core-types — FROZEN 1.0.0<br/>114 exports · zero deps"]
+  CT["core-types — FROZEN 1.0.0<br/>120 exports · zero deps"]
 
   GW["gateway<br/>server · adapters · sse · config · credentials"]
   PL["pipeline<br/>Tiers 0-2 operators"]

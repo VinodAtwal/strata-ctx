@@ -205,18 +205,22 @@ counted anywhere:
 | `canary_fail` | `violation` | a probe failed |
 | `stage_failed_open` | `error` | the context went upstream uncompressed |
 | `artifact_write_refused` | `error` | a pointer was not published; the read was left inline |
-| `eviction_skipped` | not an event | the transcript was not evicted; it is still growing |
+| `eviction_skipped` | `error` (`EVICTION_SKIPPED_UNVERIFIED`) | the transcript was not evicted; it is still growing |
 
-`eviction_skipped` is the one to watch, and it is the odd one out: it is not an
-event at all. `gist/src/transaction.ts:656` puts it in a `failed:` string on the
-transaction result, so it never reaches the telemetry log and `strata status`
-cannot see it by construction. It is also now the *expected* path for every real
-Claude Code session, because
+`eviction_skipped` is the one to watch. It *is* emitted —
+`gist/src/transaction.ts:679-685` pushes a real `error` event through both
+`emit()` and `telemetry.push()`, and `transaction.ts:705` repeats it as a
+`failed:` string on the transaction result. What was missing was a reader:
+`status.ts` had `case 'error': break;` alongside `case 'stage': break;`, so
+every error was dropped on the way to a report. The event existed and was
+wired; nothing consumed it.
+
+It is also the *expected* path for every real Claude Code session, because
 `integrations/src/claude-code-observers.ts` mints
 `artifact://strata/raw/<session>/<turn>`, a URI the artifact ACL cannot parse.
 Eviction is refused rather than corrupted, so there is no data loss — but
 transcript growth stops being bounded, which is the problem the product exists
-to solve, and the only trace is a field nothing reads.
+to solve.
 
 Acceptance: **no telemetry code is emitted that `strata status` cannot surface.**
 That is checkable by enumerating the event union and asserting each variant

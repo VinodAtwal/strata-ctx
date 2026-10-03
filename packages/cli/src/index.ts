@@ -250,7 +250,7 @@ const cmdHook = (p: Parsed): never => {
     process.stdout.write(
       found.mechanism === 'plugin'
         ? `  action:  generate the plugin with buildOpenCodeProfile() from @strata-ctx/integrations\n`
-        : `  action:  put this package's bin on PATH (npm i -g @strata-ctx/cli)\n`,
+        : `  action:  put this package's bin on PATH (npm run build && node packages/cli/dist/index.js)\n`,
     );
   }
   process.exit(0);
