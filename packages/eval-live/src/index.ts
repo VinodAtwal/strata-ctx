@@ -42,5 +42,5 @@ export type {
 } from './gates.js';
 export { DEFAULT_RETENTION_THRESHOLD, LIVE_ARMS, LIVE_CAVEATS, runCampaign, statsOf } from './campaign.js';
 export type { CampaignMetadata, CampaignOptions, LiveRunReport, RunCampaignOptions } from './campaign.js';
-export { auditClaims, renderClaimsAudit } from './claims.js';
-export type { AuditedClaim, AuditedStatus, ClaimsAudit } from './claims.js';
+export { auditClaims, auditUnrunCampaign, renderClaimsAudit, renderUnrunAudit } from './claims.js';
+export type { AuditedClaim, AuditedStatus, ClaimsAudit, UnrunCampaign } from './claims.js';

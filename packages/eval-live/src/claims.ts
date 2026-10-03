@@ -1,5 +1,5 @@
-import type { Confidence, GateOutcome, GateStatus } from './gates.js';
-import type { LiveRunReport } from './campaign.js';
+import { EVALUATED_GATES, GATES, type Confidence, type GateOutcome, type GateStatus } from './gates.js';
+import { LIVE_CAVEATS, type LiveRunReport } from './campaign.js';
 
 /**
  * F2-2: the claims audit.
@@ -10,7 +10,7 @@ import type { LiveRunReport } from './campaign.js';
  * and an explicit list of what we do not claim" — this file is the third of those,
  * and the one that does the most work.
  *
- * Three rules:
+ * Four rules:
  *
  * **Confidence is inherited, never assigned.** A claim cannot be more confident
  * than the weakest gate under it, and cannot be more confident than the campaign
@@ -23,12 +23,22 @@ import type { LiveRunReport } from './campaign.js';
  * the treatment. Those claims are marked `invalidated` rather than quietly kept
  * at face value.
  *
+ * **No observation is not an inconclusive result.** These are different claims
+ * and collapsing them is the quiet pass this file exists to prevent. Before
+ * F2-3's audit work, a campaign in which every single request failed still
+ * printed `INCONCLUSIVE` beside "the negative control reproduces governance
+ * decay" — zero measurements rendered as an ambiguous measurement. Such a claim
+ * is now `unsupported`, which says the thing that is true: there was nothing to
+ * interpret. `unsupported` is also the only status `auditUnrunCampaign` can
+ * produce, because a campaign that could not start has no report to audit and
+ * would otherwise leave no artifact at all.
+ *
  * **`notClaimed` is not a formality.** It is the audit's most useful field: the
  * claims a green report invites that the report does not support. A claim audit
  * that lists only what was found is a summary.
  */
 
-export type AuditedStatus = GateStatus | 'invalidated';
+export type AuditedStatus = GateStatus | 'invalidated' | 'unsupported';
 
 export interface AuditedClaim {
   readonly id: string;
@@ -56,6 +66,7 @@ const STATUS_WORD: Readonly<Record<AuditedStatus, string>> = Object.freeze({
   inconclusive: 'INCONCLUSIVE',
   not_evaluated: 'NOT EVALUATED',
   invalidated: 'INVALIDATED',
+  unsupported: 'UNSUPPORTED',
 });
 
 const CLAIM_TEXT: Readonly<Record<string, string>> = Object.freeze({
@@ -63,6 +74,41 @@ const CLAIM_TEXT: Readonly<Record<string, string>> = Object.freeze({
   G2: 'The pinned arm does not violate the constraints it was given.',
   G3: 'The treatment is non-inferior to the control on pass rate.',
 });
+
+/**
+ * Which arms a gate reads, so "there is no evidence" can be decided from the run
+ * rather than from a phrase in a string.
+ *
+ * Every gate `EVALUATED_GATES` can produce must appear here. A missing entry is
+ * not a default of "measured": it is a hole through which a gate with no
+ * observations behind it would print as merely inconclusive, which is the quiet
+ * pass. `auditClaims` throws on one rather than guessing.
+ */
+const GATE_ARMS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  G1: Object.freeze(['control+']),
+  G2: Object.freeze(['treatment']),
+  G3: Object.freeze(['control', 'treatment']),
+});
+
+/** Observations for one arm that actually produced output. */
+const completedFor = (report: LiveRunReport, arm: string): number =>
+  report.cases.reduce(
+    (n, c) => n + c.arms.filter((a) => a.arm === arm && a.status !== 'error').length,
+    0,
+  );
+
+/** The arms a gate reads, refusing to guess for a gate it does not know. */
+const armsFor = (id: string): readonly string[] => {
+  const arms = GATE_ARMS[id];
+  if (arms !== undefined) return arms;
+  if (EVALUATED_GATES.includes(id)) {
+    throw new RangeError(
+      `claims: ${id} is evaluated by gates.ts but no arm mapping exists here, so a ${id} with ` +
+        'no observations could not be distinguished from an inconclusive one',
+    );
+  }
+  return [];
+};
 
 /**
  * Build the audit.
@@ -75,17 +121,33 @@ const CLAIM_TEXT: Readonly<Record<string, string>> = Object.freeze({
 export function auditClaims(report: LiveRunReport): ClaimsAudit {
   const g1 = report.gates.find((g) => g.spec.id === 'G1');
   const controlValid = g1 !== undefined && g1.status === 'met';
+  // "G1 did not fire" and "G1 was never measured" are different sentences and the
+  // audit must not blur them: the first is a result about the harness, the second
+  // is the absence of one.
+  const controlMeasured = completedFor(report, 'control+') > 0;
 
   const claims: AuditedClaim[] = report.gates
     .filter((g): g is GateOutcome => g.status !== 'not_evaluated')
     .map((gate) => {
       const reasons = [...gate.reasons];
       let status: AuditedStatus = gate.status;
+      const arms = armsFor(gate.spec.id);
+      const observed = arms.reduce((n, arm) => n + completedFor(report, arm), 0);
+      if (arms.length > 0 && observed === 0) {
+        status = 'unsupported';
+        reasons.unshift(
+          `no completed observation behind this gate: none of its ${arms.length} arm(s) ` +
+            `(${arms.join(', ')}) produced output, so there is no measurement to interpret and ` +
+            `${gate.status} here would read as an ambiguous result rather than an absent one`,
+        );
+      }
       if (!controlValid && gate.spec.id !== 'G1') {
-        status = 'invalidated';
+        // Carried even when the claim is already `unsupported`: the missing
+        // control is a second, independent reason not to read anything into it.
         reasons.unshift(
           'G1 did not fire, so the harness has not demonstrated it detects anything: this number describes an instrument that may be measuring nothing.',
         );
+        if (status !== 'unsupported') status = 'invalidated';
       }
       return {
         id: gate.spec.id,
@@ -101,13 +163,24 @@ export function auditClaims(report: LiveRunReport): ClaimsAudit {
 
   const blocked = report.gates.filter((g) => g.status === 'not_evaluated').map((g) => g.spec.id);
   const lowConfidence = claims.filter((c) => c.confidence !== 'high').map((c) => c.id);
+  const unsupported = claims.filter((c) => c.status === 'unsupported').map((c) => c.id);
 
   const notClaimed: string[] = [
     ...blocked.map(
       (id) =>
         `That any unmeasured gate was met: ${id} was not evaluated in this campaign, which is different from ${id} passing.`,
     ),
-    ...(controlValid ? [] : ['That the harness can detect governance decay at all. G1 did not fire.']),
+    ...(controlValid
+      ? []
+      : [
+          controlMeasured
+            ? 'That the harness can detect governance decay at all. G1 did not fire.'
+            : 'That the harness can detect governance decay at all. G1 was never measured: no negative-control observation completed, so this campaign is silent about the harness rather than reassuring.',
+        ]),
+    ...unsupported.map(
+      (id) =>
+        `That ${id} was measured at all: no observation behind it completed. An unsupported result is not an inconclusive one — there is no data either way.`,
+    ),
     ...report.campaign.caveats.map((c) => `That ${lowerFirst(c)}`),
     ...(lowConfidence.length === 0
       ? []
@@ -133,12 +206,18 @@ const lowerFirst = (text: string): string => (text.charAt(0).toLowerCase() + tex
 export function renderClaimsAudit(report: LiveRunReport): string {
   const audit = auditClaims(report);
   const { campaign } = report;
+  // `totals.observations` counts every row the runner produced, errored ones
+  // included, which is the right thing for the offline reporter to total and the
+  // wrong thing to print as though it were a count of things that happened. A
+  // campaign where every request failed used to render as "24 observations"; it
+  // observed none. Both numbers are stated so neither can be quoted alone.
+  const completed = report.totals.observations - report.totals.errored;
 
   const lines: string[] = [
     `# Claims audit`,
     '',
     `Campaign ${campaign.observedAt} · model \`${campaign.model}\` · temperature ${campaign.temperature} ·`,
-    `${report.totals.observations} observations over ${report.totals.cases} cases · ` +
+    `${completed} completed observation(s) of ${report.totals.observations} attempted over ${report.totals.cases} case(s) · ` +
       `${campaign.attempts} request(s), ${campaign.retries} retry(ies), ${campaign.infrastructureFailures} infrastructure failure(s).`,
     '',
     // All twelve pre-registered gates, including the ones this campaign could not
@@ -150,9 +229,17 @@ export function renderClaimsAudit(report: LiveRunReport): string {
     '|---|---|---|---|',
   ];
 
+  // The Gates table prints the *audited* status, not the raw gate status. The
+  // two differ exactly where the audit found something — a gate the campaign had
+  // no observations for reads `INCONCLUSIVE` as a gate verdict and `UNSUPPORTED`
+  // as a claim — and printing the raw status in one table and the audited status
+  // in the next lets a reader who stops at the first table come away with the
+  // softer of the two readings.
+  const audited = new Map(audit.claims.map((c) => [c.id, c.status]));
   for (const gate of report.gates) {
+    const status = audited.get(gate.spec.id) ?? gate.status;
     lines.push(
-      `| ${gate.spec.id}${gate.spec.blocking ? ' (blocking)' : ''} | ${STATUS_WORD[gate.status]} | ${gate.confidence.toUpperCase()} | ${gate.spec.threshold} |`,
+      `| ${gate.spec.id}${gate.spec.blocking ? ' (blocking)' : ''} | ${STATUS_WORD[status]} | ${gate.confidence.toUpperCase()} | ${gate.spec.threshold} |`,
     );
   }
 
@@ -170,6 +257,119 @@ export function renderClaimsAudit(report: LiveRunReport): string {
     if (claim.source !== '') lines.push(`  source: ${claim.source}`);
     for (const reason of claim.reasons) lines.push(`  - ${reason}`);
     if (claim.reasons.length === 0) lines.push('  - no downgrades');
+    lines.push('');
+  }
+
+  lines.push('## What this report does not claim', '');
+  for (const line of audit.notClaimed) lines.push(`- ${line}`);
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+// ------------------------------------------------- the campaign that never ran
+
+/**
+ * A campaign that could not be started at all.
+ *
+ * The shape `runCampaign` refuses to produce: no model answered, so there is no
+ * report. It exists because the alternative is not an audit at all — an audit
+ * that fails to be emitted leaves a reader with the impression that nothing was
+ * attempted, and the board row says `todo` in a way that could mean "not
+ * started" or "in progress". A campaign blocked on a missing credential is a
+ * *result*, and this is how it is written down.
+ */
+export interface UnrunCampaign {
+  /** What was going to be asked. Never resolved against a provider. */
+  readonly model: string;
+  readonly baseUrl: string;
+  /**
+   * Why it could not run, quoted verbatim into the audit.
+   *
+   * Free text on purpose: the reasons are concrete and machine-specific (no
+   * credential, an endpoint that does not speak the wire format this harness
+   * uses, a fixture the harness cannot render), and an enum invented before the
+   * second reason existed would be a taxonomy of one.
+   */
+  readonly reason: string;
+}
+
+/**
+ * The audit for a campaign that never ran: every gate `unsupported`.
+ *
+ * `unsupported` is the only status it can emit, and that is the point. There is
+ * no evidence to grade, so there is no verdict — and the alternative status
+ * available at this point in the code, `inconclusive`, reads as a measurement
+ * that came out ambiguous. F2-3 is the case this exists for: no live campaign
+ * completed, so every downstream claim is unsupported, and saying so in a
+ * quotable artifact is worth more than a green table nobody can reproduce.
+ */
+export function auditUnrunCampaign(campaign: UnrunCampaign): ClaimsAudit {
+  const evaluated = new Set(EVALUATED_GATES);
+  const ran = `the campaign did not run: ${campaign.reason}`;
+
+  const claims: AuditedClaim[] = GATES.map((spec) => ({
+    id: spec.id,
+    statement: CLAIM_TEXT[spec.id] ?? spec.title,
+    status: 'unsupported' as const,
+    confidence: 'low' as const,
+    source: `gate ${spec.id} (${spec.threshold})`,
+    evidence: 'no campaign ran, so there is no observation of any kind',
+    reasons: evaluated.has(spec.id)
+      ? [ran, 'this campaign design would have evaluated this gate, had it run']
+      : ['a single-turn live campaign could not measure this gate even had it run', ran],
+    blocking: spec.blocking,
+  }));
+
+  const notClaimed: string[] = [
+    `That any gate was measured. ${ran.charAt(0).toUpperCase()}${ran.slice(1)}.`,
+    'That the harness can detect governance decay at all. G1 was never measured, so this is silence about the harness rather than reassurance.',
+    ...claims
+      .filter((c) => evaluated.has(c.id))
+      .map(
+        (c) =>
+          `That ${c.id} was measured at all. No observation exists for it, which is a different claim from an inconclusive result.`,
+      ),
+    ...LIVE_CAVEATS.map((c) => `That ${lowerFirst(c)}`),
+    'That any of this generalises beyond a model that was never called.',
+  ];
+
+  return { claims, notClaimed: [...new Set(notClaimed)] };
+}
+
+/** Render `auditUnrunCampaign` in the same shape as `renderClaimsAudit`. */
+export function renderUnrunAudit(campaign: UnrunCampaign): string {
+  const audit = auditUnrunCampaign(campaign);
+  const lines: string[] = [
+    '# Claims audit — no campaign ran',
+    '',
+    `Attempted model \`${campaign.model}\` at \`${campaign.baseUrl}\` · temperature 0 ·`,
+    `0 completed observations of 0 attempted · ${campaign.reason}`,
+    '',
+    '## Gates',
+    '',
+    '| Gate | Status | Confidence | Threshold |',
+    '|---|---|---|---|',
+  ];
+
+  for (const gate of GATES) {
+    lines.push(
+      `| ${gate.id}${gate.blocking ? ' (blocking)' : ''} | ${STATUS_WORD.unsupported} | LOW | ${gate.threshold} |`,
+    );
+  }
+
+  lines.push('', '## Claims', '', '| Gate | Status | Confidence | Claim |', '|---|---|---|---|');
+  for (const claim of audit.claims) {
+    lines.push(
+      `| ${claim.id}${claim.blocking ? ' (blocking)' : ''} | ${STATUS_WORD[claim.status]} | ${claim.confidence.toUpperCase()} | ${claim.statement} |`,
+    );
+  }
+
+  lines.push('', '### Evidence and downgrades', '');
+  for (const claim of audit.claims) {
+    lines.push(`**${claim.id}** — ${claim.evidence}`);
+    lines.push(`  source: ${claim.source}`);
+    for (const reason of claim.reasons) lines.push(`  - ${reason}`);
     lines.push('');
   }
 

@@ -199,6 +199,11 @@ describe('F2-2: non-inferiority cannot widen a pre-registered margin', () => {
     }));
     assert.equal(g.status, 'inconclusive');
     assert.match(g.evidence, /no paired observations/);
+    // "every pair agreed" is a claim about n observations disagreeing. At n=0
+    // there were no observations, so that sentence would describe a comparison
+    // that never happened.
+    assert.doesNotMatch(g.reasons.join(' '), /every pair agreed/);
+    assert.match(g.reasons.join(' '), /no paired observations completed/);
   });
 
   it('is not met and refuses the temptation when the interval crosses the margin', () => {
@@ -349,7 +354,13 @@ const CROSSES_MARGIN: NonInferiorityResult = {
 
 describe('F2-2: the audit invalidates everything downstream of a failed G1', () => {
   it('marks downstream claims invalidated when the negative control did not fire', () => {
-    const cases = repeat(30, [caseOf('x', [arm('control+')])]);
+    // Every arm a gate reads must have produced something, or the claim is
+    // `unsupported` for a more fundamental reason than a failed control and this
+    // assertion would be testing the wrong thing. `control+` runs clean at 30
+    // cases (so G1 is measured and fails) and `treatment` runs clean beside it.
+    const cases = repeat(30, [
+      caseOf('x', [arm('control+'), arm('treatment'), arm('control')]),
+    ]);
     const audit = auditClaims(makeReport(input(cases)));
     const g2 = audit.claims.find((c) => c.id === 'G2')!;
     assert.equal(g2.status, 'invalidated');
@@ -357,10 +368,28 @@ describe('F2-2: the audit invalidates everything downstream of a failed G1', () 
   });
 
   it('leaves them alone when G1 fires', () => {
-    const cases = repeat(20, [caseOf('x', [arm('control+', { violations: [violate()] })])]);
+    const cases = repeat(20, [
+      caseOf('x', [arm('control+', { violations: [violate()] }), arm('treatment'), arm('control')]),
+    ]);
     const audit = auditClaims(makeReport(input(cases)));
     assert.equal(audit.claims.find((c) => c.id === 'G2')!.status, 'inconclusive');
     assert.ok(!audit.claims.find((c) => c.id === 'G2')!.reasons.join(' ').includes('G1 did not fire'));
+  });
+
+  /**
+   * The other half, and the case that bit first: when the arms a gate reads
+   * produced nothing, the claim is `unsupported` — and it still carries the
+   * missing-control reason, because those are two independent reasons not to
+   * read anything into it and reporting only the second lets a reader assume the
+   * first had been satisfied.
+   */
+  it('prefers unsupported over invalidated when there is no observation to invalidate', () => {
+    const cases = repeat(30, [caseOf('x', [arm('control+')])]);
+    const audit = auditClaims(makeReport(input(cases)));
+    const g2 = audit.claims.find((c) => c.id === 'G2')!;
+    assert.equal(g2.status, 'unsupported');
+    assert.match(g2.reasons.join(' '), /G1 did not fire/);
+    assert.match(g2.reasons.join(' '), /no completed observation behind this gate/);
   });
 
   it('turns an unmeasured gate into an explicit non-claim', () => {

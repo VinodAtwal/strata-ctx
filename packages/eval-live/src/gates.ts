@@ -289,7 +289,15 @@ export function evaluateNonInferiority(
   reasons.push(...confReasons);
 
   let status: GateStatus;
-  if (result.state === 'no_pairs' || result.state === 'no_discordant_pairs') {
+  if (result.state === 'no_pairs') {
+    status = 'inconclusive';
+    // Distinct from `no_discordant_pairs` because "every pair agreed" is false
+    // when there were no pairs: it describes an absence of disagreement among
+    // observations, and n=0 is the absence of observations. An audit that quotes
+    // the wrong one of those two is quoting a claim about the harness that was
+    // never made.
+    reasons.push('no paired observations completed: there is no comparison to report, which is different from a comparison that found no difference');
+  } else if (result.state === 'no_discordant_pairs') {
     status = 'inconclusive';
     reasons.push('every pair agreed: there is no evidence either way, which is not the same as no difference');
   } else if (result.state === 'insufficient_discordance') {

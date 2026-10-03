@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { EvalFixture } from '@strata-ctx/eval';
-import { auditClaims, renderClaimsAudit, runCampaign, EVALUATED_GATES, GATES } from '../src/index.js';
+import { auditClaims, auditUnrunCampaign, renderClaimsAudit, renderUnrunAudit, runCampaign, EVALUATED_GATES, GATES } from '../src/index.js';
 
 /**
  * F2-2 end-to-end: a campaign driven by a fake transport.
@@ -274,5 +274,162 @@ describe('F2-2: the rendered audit reads like something you can quote', () => {
       await runCampaign(base({ fetchImpl: fakeFetch({ controlPlusViolates: false }) })),
     );
     assert.notEqual(firing, quiet);
+  });
+});
+
+/**
+ * F2-3: the failure mode that is not a failure.
+ *
+ * A campaign in which every request fails still produces a report, twelve gate
+ * rows and a Claims table. Before the `unsupported` status existed, all three
+ * read `INCONCLUSIVE` — next to sentences like "the negative control reproduces
+ * governance decay", on a run that observed nothing. Zero measurements printed as
+ * an ambiguous measurement is the quiet pass, and it is the one this block exists
+ * to keep closed.
+ */
+describe('F2-3: no observation is not an inconclusive result', () => {
+  const allFailing = (): Promise<Response> => Promise.resolve(new Response('upstream down', { status: 503 }));
+  const dead = (): typeof fetch => allFailing as unknown as typeof fetch;
+
+  it('marks every evaluated gate unsupported when nothing completed', async () => {
+    const report = await runCampaign(base({ fetchImpl: dead(), maxRetries: 0 }));
+    const audit = auditClaims(report);
+    assert.equal(audit.claims.length, EVALUATED_GATES.length);
+    for (const claim of audit.claims) {
+      assert.equal(claim.status, 'unsupported', `${claim.id} had no observations and must not read as inconclusive`);
+    }
+  });
+
+  it('does not let a total infrastructure failure print as INCONCLUSIVE', async () => {
+    const md = renderClaimsAudit(await runCampaign(base({ fetchImpl: dead(), maxRetries: 0 })));
+    assert.match(md, /\| G1 \(blocking\) \| UNSUPPORTED \|/);
+    assert.match(md, /\| G2 \| UNSUPPORTED \|/);
+    assert.match(md, /\| G3 \| UNSUPPORTED \|/);
+    assert.doesNotMatch(md, /\| G1 \(blocking\) \| INCONCLUSIVE \|/);
+  });
+
+  it('counts only observations that completed in the header', async () => {
+    const report = await runCampaign(base({ fetchImpl: dead(), maxRetries: 0 }));
+    const md = renderClaimsAudit(report);
+    // The runner's `totals.observations` counts rows, errored ones included.
+    // That is right for the offline reporter and wrong to print as a count of
+    // things that happened, so both numbers are stated.
+    assert.equal(report.totals.observations, FIXTURE.cases.length * 3);
+    assert.match(md, /0 completed observation\(s\) of 24 attempted over 8 case\(s\)/);
+    assert.doesNotMatch(md, /24 observations over 8 cases/);
+  });
+
+  it('separates "G1 did not fire" from "G1 was never measured"', async () => {
+    const neverMeasured = renderClaimsAudit(await runCampaign(base({ fetchImpl: dead(), maxRetries: 0 })));
+    assert.match(neverMeasured, /G1 was never measured/);
+    assert.doesNotMatch(neverMeasured, /G1 did not fire\.?$/m);
+
+    // The measured-but-clean case keeps the existing sentence: that one really
+    // was measured, and the harness really did not detect decay.
+    const measured = renderClaimsAudit(
+      await runCampaign(base({ fetchImpl: fakeFetch({ controlPlusViolates: false }) })),
+    );
+    assert.match(measured, /That the harness can detect governance decay at all\. G1 did not fire\./);
+    assert.doesNotMatch(measured, /G1 was never measured/);
+  });
+
+  it('says outright that an unsupported gate was not measured at all', async () => {
+    const audit = auditClaims(await runCampaign(base({ fetchImpl: dead(), maxRetries: 0 })));
+    for (const id of EVALUATED_GATES) {
+      assert.ok(
+        audit.notClaimed.some((line) => line.includes(`That ${id} was measured at all`)),
+        `${id} must appear in the non-claims`,
+      );
+    }
+  });
+
+  it('leaves a campaign that did observe alone', async () => {
+    const audit = auditClaims(await runCampaign(base()));
+    // Guard against the new status spreading past its cause. Nothing here is
+    // unsupported: eight control+ observations completed and G1 fired on them.
+    assert.deepEqual(audit.claims.map((c) => c.status).filter((s) => s === 'unsupported'), []);
+    assert.equal(audit.claims[0]!.status, 'met');
+    assert.ok(!audit.notClaimed.some((line) => line.includes('was measured at all')));
+    // G2 is merely inconclusive here, because eight scenarios is not 200.
+    assert.equal(audit.claims.find((c) => c.id === 'G2')!.status, 'inconclusive');
+  });
+
+  it('keeps the missing-control reason even when the claim is already unsupported', async () => {
+    const audit = auditClaims(await runCampaign(base({ fetchImpl: dead(), maxRetries: 0 })));
+    const g2 = audit.claims.find((c) => c.id === 'G2')!;
+    // Two independent reasons not to read anything into G2. Reporting only the
+    // second would let a reader assume the first had been satisfied.
+    assert.match(g2.reasons.join(' '), /no completed observation behind this gate/);
+    assert.match(g2.reasons.join(' '), /G1 did not fire/);
+  });
+});
+
+/**
+ * F2-3: the campaign that could not start.
+ *
+ * `runCampaign` throws before it can produce a report when the transport cannot
+ * be configured — no credential, or an endpoint that does not speak the wire
+ * format the harness uses. Without this, that outcome leaves no artifact at all
+ * and a board row stays `todo`, which reads as "not started" when it should read
+ * as "blocked, with the reason".
+ */
+describe('F2-3: a campaign that never ran is an audit, not an absence', () => {
+  const BLOCKED = {
+    model: 'openrouter/nvidia/nemotron-3-ultra-550b-a55b:free',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    reason: 'no provider credential is available to this harness',
+  };
+
+  it('marks all twelve gates unsupported, and nothing else', () => {
+    const audit = auditUnrunCampaign(BLOCKED);
+    assert.equal(audit.claims.length, GATES.length);
+    for (const claim of audit.claims) {
+      assert.equal(claim.status, 'unsupported');
+      assert.equal(claim.confidence, 'low');
+      assert.match(claim.reasons.join(' '), /the campaign did not run/);
+    }
+  });
+
+  it('keeps the pre-registered blocking flag on G1', () => {
+    const audit = auditUnrunCampaign(BLOCKED);
+    assert.equal(audit.claims.find((c) => c.id === 'G1')!.blocking, true);
+  });
+
+  it('distinguishes the gates it would have measured from the ones it never could', () => {
+    const audit = auditUnrunCampaign(BLOCKED);
+    const g1 = audit.claims.find((c) => c.id === 'G1')!.reasons.join(' ');
+    const g4 = audit.claims.find((c) => c.id === 'G4')!.reasons.join(' ');
+    assert.match(g1, /would have evaluated this gate/);
+    // G4 is unmeasurable by a single-turn campaign regardless of credentials, and
+    // saying only "the campaign did not run" would blame the wrong thing.
+    assert.match(g4, /could not measure this gate even had it run/);
+  });
+
+  it('states that G1 was never measured rather than that it did not fire', () => {
+    const audit = auditUnrunCampaign(BLOCKED);
+    assert.ok(audit.notClaimed.some((l) => /G1 was never measured/.test(l)));
+    assert.ok(!audit.notClaimed.some((l) => /G1 did not fire/.test(l)));
+  });
+
+  it('carries the live caveats, so it cannot be read as a clean pass', () => {
+    const audit = auditUnrunCampaign(BLOCKED);
+    assert.ok(audit.notClaimed.some((l) => l.includes('measures a prompt prefix, not a pin')));
+    assert.ok(audit.notClaimed.some((l) => l.includes('no provider credential')));
+  });
+
+  it('renders byte-stably and reports zero completed observations', () => {
+    const md = renderUnrunAudit(BLOCKED);
+    assert.equal(md, renderUnrunAudit(BLOCKED));
+    assert.match(md, /# Claims audit — no campaign ran/);
+    assert.match(md, /0 completed observations of 0 attempted/);
+    assert.match(md, /\| G1 \(blocking\) \| UNSUPPORTED \| LOW \|/);
+    assert.doesNotMatch(md, /OBSERVED \| HIGH/);
+    assert.match(md, /## What this report does not claim/);
+  });
+
+  it('differs when the reason differs, so the reason is load-bearing', () => {
+    const a = auditUnrunCampaign(BLOCKED);
+    const b = auditUnrunCampaign({ ...BLOCKED, reason: 'the endpoint does not speak OpenAI chat completions' });
+    assert.notDeepEqual(a.notClaimed, b.notClaimed);
   });
 });
