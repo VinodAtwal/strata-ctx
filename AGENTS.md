@@ -67,7 +67,7 @@ filesystem over the table; fix the table in a docs commit, not silently.
 | Lane | Command | Proves |
 |---|---|---|
 | `typecheck` | `npm run typecheck` | `tsc --build` + `tsc -p tsconfig.check.json` |
-| `tests` | `npm run test` | `node --import tsx --test packages/*/test/*.test.ts` |
+| `tests` | `npm run test` | `node scripts/run-tests.mjs` — enumerates suite, fails if empty, pins `--test-reporter=tap`, enforces a deadline, refuses to run under `NODE_TEST_CONTEXT`, and reports failures seen before any hang |
 | `contract` | `npm run contract:check` | The `core-types` surface still matches `contract.lock.json` |
 | `selfcheck` | mutates `tokens.ts`, expects non-zero | The contract gate **can fail** — a gate that cannot fail is not a gate |
 
@@ -101,7 +101,7 @@ Two rules that carry design weight, not style:
 
 | Requirement | Detail |
 |-------------|--------|
-| **Runner** | `node --import tsx --test` (native Node test runner) |
+| **Runner** | `node scripts/run-tests.mjs` (custom gate over native `node --test` with `tsx`) |
 | **Assertion** | `node:assert/strict` |
 | **Parallelism** | Run independent package suites in parallel; `tsc --build` / root `npm run check` are serial |
 | **Coverage target** | Every operator: ≥1 negative test (a "should not do this" case) |
@@ -109,6 +109,8 @@ Two rules that carry design weight, not style:
 | **Fail-open test** | Throwing error ⇒ unmodified passthrough |
 | **Telemetry emission** | Every stage must emit its events |
 | **Unrepresentability test** (WS-D) | Governance blocks cannot reach lossy stages — type-level proof |
+
+**Why the repo owns the test gate (not a flag).** A bare `node --test` over a shell glob has four failure modes the gate explicitly addresses: (1) a leaked handle (unclosed server/socket/timer) keeps the event loop open so the runner never prints `# fail` or exits (output is buffered per file until it drains); (2) zero shell matches produce a silent green run (`# tests 0 / # fail 0`); (3) inheriting `NODE_TEST_CONTEXT` (e.g. nested runner) discovers nothing and exits 0; (4) TAP/spec reporter differs by TTY. The custom gate enumerates the suite itself (fails on empty), pins `--test-reporter=tap`, rejects `NODE_TEST_CONTEXT`, enforces a wall-clock deadline, names failures seen before any hang, and otherwise propagates exit codes. The non-obvious blocker is **version incoherence**: `package.json` `engines.node` promises `>= 20.11` and `ci.yml` pins `20.19`, but upstream's hang fix (`--test-force-exit`) is not present on Node 20.12.1 (`node: bad option`, exit 9). A flag-only fix would be green on one supported version and a hard error on another, so the bound must live in this repo's runner. |
 
 ---
 
@@ -192,7 +194,7 @@ Running N agents in one tree fails in three specific, repeatable ways. Each has 
 | # | Failure | Rule |
 |---|---------|------|
 | **I1** | Agent A runs `npm test` or `packages/*/test/*.test.ts`, sees agent B's half-written suite fail, and "fixes" B's file or reports a false failure | **Run only your own test file(s)**, by exact path. Never a glob, never `npm test`, never `npm run check`. A failure in a file you do not own is *not yours* — report it, don't touch it. |
-| **I2** | Agent leaves `tmp-*.test.ts`, `scratch-*.ts`, or probe scripts in a `test/` dir; they get picked up by the root glob and break CI permanently | **No scratch files in the repo.** Use `/tmp`. The root glob is `packages/*/test/*.test.ts` — anything you leave there ships. |
+| **I2** | Agent leaves `tmp-*.test.ts`, `scratch-*.ts`, or probe scripts in a `test/` dir; they get picked up by the suite enumeration and break CI permanently | **No scratch files in the repo.** Use `/tmp`. The gate enumerates `packages/*/test/*.test.ts` — anything you leave there ships. |
 | **I3** | Agent edits a shared file (`runner.ts`, `types.ts`, a barrel, `docs/tasks.csv`) to unblock itself, creating a merge conflict or a silent behaviour change | **Touch only the files you were given.** If you need a shared file changed, report the required change precisely and let the integrator do it. |
 
 Two more that are not about interference but about wasted work:
@@ -218,7 +220,10 @@ After every agent in a batch reports:
 4. Run the whole-repo checks the agents were forbidden from running: `tsc --build`,
    `tsc -p tsconfig.check.json --noEmit`, `eslint .`, `npm run check`.
 5. **Exercise the negative gates.** A green suite that cannot fail is worth nothing. Drive each
-   gate to its failing state and confirm it reports the failure.
+   gate to its failing state and confirm it reports the failure. The test gate must be able to
+   report its own failure under adverse conditions — including a hang where a leaked handle never
+   drains (the runner stops before emitting a verdict). A gate with no `ship anyway` edge reopens
+   the task rather than waiving it.
 6. Only then update `docs/tasks.csv`, and ask before committing.
 | **Task execution hints** | `docs/tasks.csv` column `exec` has exactly four values |
 
