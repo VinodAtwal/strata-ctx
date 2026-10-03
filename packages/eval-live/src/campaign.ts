@@ -219,6 +219,42 @@ export async function runCampaign(options: RunCampaignOptions): Promise<LiveRunR
  */
 
 /**
+ * Second attempt, and the one that established where the blocker actually lives.
+ *
+ * 2026-10-13, F2-3. No campaign ran, and there were two independent reasons,
+ * recorded separately because they need different fixes.
+ *
+ * **Nothing on the machine can serve this harness.** The only installed agent is
+ * OpenCode 1.18.30, configured for OpenRouter with a credential in *its own*
+ * store. No provider key exists in the environment, and `opencode serve` — its
+ * headless server — exposes 162 routes of which none is an OpenAI-compatible
+ * `/v1/chat/completions`; the harness's entire transport is `POST
+ * {baseUrl}/chat/completions`, so there is nothing here to point it at. Reaching
+ * OpenRouter means extracting a credential out of another tool's store, which is
+ * the workaround this task forbids and not one a measurement should depend on.
+ *
+ * **And even with a credential, G1 could not have fired.** `renderPrompt` builds
+ * each arm as `case.prompt + <arm block>`, and for E1 `case.prompt` is the whole
+ * rendered session — which `renderPolicyTurn` fills with the constraint text
+ * *verbatim*. So all three arms receive the constraint in full, and `control+`'s
+ * "naive compaction" is a lossy paraphrase **appended next to** the original
+ * rather than substituted for it. A negative control that adds a summary of a
+ * rule that is still in the context cannot produce decay on any model: the
+ * premise of the experiment has been removed before the model is consulted.
+ *
+ * The offline path does not have this problem, and the difference is the point.
+ * `runE1Suite` splits the session into policy turn / benign run / trigger and
+ * hands the injected `E1CompactionStrategy` a choice of `retainedConstraintTexts`
+ * — compaction there is *subtractive*, so `control+` genuinely loses the rule
+ * before the trigger arrives. The E1 fixture is correct for the use it was built
+ * for. What cannot express a subtractive arm is a single-turn prompt prefix, and
+ * that is a property of `live-arm.ts`, not of the corpus.
+ *
+ * Nothing here was weakened to produce a verdict. The audit for this attempt is
+ * `auditUnrunCampaign`: twelve gates, every one `unsupported`.
+ */
+
+/**
  * What a live campaign report is not allowed to be used for.
  *
  * Copied into every report. Each of these is a claim someone could make from a

@@ -94,6 +94,80 @@ Pre-registered. A failed gate blocks the release; it does not trigger a re-roll.
 our scenario design is too easy or our compression differs from what the paper measured — and in
 either case G2's 0% is uninterpretable. **Investigate before celebrating.**
 
+### Live campaign status — F2-3, 2026-10-13: no campaign ran
+
+**F2-3 produced no measurement. Every claim downstream of it is `unsupported`, not inconclusive and
+not passed.** Two independent blockers were found; they need different fixes and are recorded
+separately. Neither was worked around, and no gate was loosened to make a verdict appear.
+
+**1. Nothing installed can serve the harness.** The live runner speaks one wire format:
+`POST {baseUrl}/chat/completions` (`packages/eval-live/src/live-arm.ts`). What is on the machine:
+
+| | Present? | Detail |
+|---|---|---|
+| OpenCode 1.18.30 | ✅ | `/opt/homebrew/bin/opencode`; runs non-interactively (`opencode run` returned a reply) |
+| Claude Code | ❌ | not installed |
+| Gemini CLI | ❌ | not installed |
+| OpenCode's provider | — | OpenRouter, default model `openrouter/nvidia/nemotron-3-ultra-550b-a55b:free` |
+| Provider credential in the environment | ❌ | no `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` |
+| OpenCode's own credential store | ✅ | a key for `openrouter` exists in `~/.local/share/opencode/auth.json`; it is OpenCode's, and was not extracted or reused |
+
+`opencode serve` — the one OpenCode surface that is a server — exposes 162 routes, of which **none**
+is an OpenAI-compatible `/v1/chat/completions`; `/v1/models` falls through to the SPA. There is no
+endpoint on this machine that `liveArm` can address. Reaching OpenRouter directly would mean lifting a
+credential out of another tool's store, which is a workaround this project should not depend on and
+the task forbade.
+
+**2. With a credential in hand, G1 still could not have fired.** This is the finding that matters,
+and it is independent of the transport.
+
+`renderPrompt` builds each arm as `case.prompt + <that arm's governance block>`. For E1, `case.prompt`
+is the entire rendered session, and `renderPolicyTurn` fills it with the constraint text **verbatim**
+("Standing constraints, verbatim"). So:
+
+- **all three arms receive the constraint in full**, including `control`;
+- `control+`'s naive compaction is a lossy paraphrase **appended next to** the original rather than
+  substituted for it;
+- therefore there is nothing for the constraint to decay out of, and the ≥ 25% violation rate G1 asks
+  for is **unreachable on any model** — not because models are well-aligned, but because the premise
+  of the experiment is removed before the model is consulted.
+
+**Which is at fault: the gate implementation, not the corpus.** The E1 fixture is correct for the use
+it was built for. The offline path (`runE1Suite`) splits the session into policy turn / benign run /
+trigger and hands the injected `E1CompactionStrategy` a choice of `retainedConstraintTexts`, so
+compaction there is **subtractive** and `control+` genuinely loses the rule before the trigger
+arrives — which is why the offline tests can put G1 above its floor and below it. What cannot express
+a subtractive arm is a **single-turn prompt prefix**, which is what `live-arm.ts` is. The defect is
+therefore in how `eval-live` translates the three arms, not in the scenarios, not in the markers, and
+not in the model. Two confounds point the same way and are recorded rather than tuned away: the system
+message "Follow every pinned constraint exactly" is sent to all three arms including `control`, which
+receives no constraints at all; and `renderConstraintBlock` discloses the `forbidden` effect literals
+to the treatment arm only, so on the exact dimension G1 measures the negative control is told less
+than the treatment is.
+
+**Status of every claim.** `auditUnrunCampaign` (`packages/eval-live/src/claims.ts`) is the artifact:
+all twelve gates `unsupported`, confidence `low`, G1 still carrying its pre-registered blocking flag.
+G1–G3 are unsupported because the campaign did not run; G4–G12 are additionally unsupported because a
+single-turn live campaign cannot measure them even when it runs, which is a different reason and is
+recorded as one. This is deliberately **not** the same report as E4's n=12 G3/G4 finding below — that
+one is about a corpus that is too small to support a non-inferiority claim, and its arithmetic is
+unaffected by anything here.
+
+**What would unblock it,** in order:
+
+1. **A real E4 agent surface** (Claude Code or Gemini CLI) with a credential the harness holds — this
+   is what F2-3 was written for, and it is the only route that supplies the multi-turn session E1's
+   design assumes.
+2. **Or: a subtractive live arm.** The live arm must be able to *remove* the policy turn from the
+   context it sends, not annotate it. Until one of those exists, a live G1 number would be uninformative
+   whether it came out above or below 25%.
+3. **Not: a baseline that fails G1 by construction.** `renderNegativeControlBlock` already replaced one
+   such version — a control that dropped everything failed at ~100% for every model and proved nothing
+   about detection. Tuning toward 25% would repeat that mistake in the other direction.
+
+A campaign whose expected baseline failure did not occur is a result. A campaign tuned until it passes
+is worse than no campaign.
+
 ## 6. Test pyramid
 
 | Layer | Count | Runtime | Needs network? | Catches |
@@ -166,6 +240,11 @@ hard-only suite measures the priors, not the product.
 **Arms:** Control+ (naive compaction) · Treatment (triage + pin). **Gates:** G1, G2.
 **Source of truth:** the reference implementation and 396,934-config AgentArtifactCorpus released
 with the Compaction Cliff paper (CIKM 2026, arXiv 2608.22752), plus ConstraintRot's own benchmark.
+
+**Note on the live arm (F2-3).** The scenarios above are built for a *compaction* that removes text.
+The live runner cannot express that in a single-turn prompt — its `control+` appends a lossy paraphrase
+of the policy turn rather than replacing it, so all three arms keep the constraint verbatim. G1 is
+therefore unmeasurable through `packages/eval-live` as it stands. See §5, "Live campaign status".
 
 ## E2 — Context Rot Probe
 
