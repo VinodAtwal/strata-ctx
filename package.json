@@ -16,7 +16,7 @@
     "typecheck": "tsc --build && tsc -p tsconfig.check.json",
     "clean": "tsc --build --clean",
     "lint": "eslint .",
-    "test": "node --import tsx --test packages/*/test/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
     "check": "npm run typecheck && npm run lint && npm run test && npm run contract:check",
     "contract:check": "node scripts/check-contract.mjs",
     "dev": "node --import tsx tools/dev.ts",
