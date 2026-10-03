@@ -1,10 +1,10 @@
 import type {
   ContentBlock,
   ContextState,
-  Gist,
   GistArtifact,
   GistChanged,
   GistDecision,
+  GistDraft,
   GistLog,
   GistNext,
   GistStatus,
@@ -14,11 +14,13 @@ import type {
   StrataPolicy,
 } from '@strata-ctx/core-types';
 import {
+  RAW_URI_UNSTORED,
   collectGovernanceText,
   enforcePins,
   estimateTokens,
   pinSetText,
   sha256,
+  validateGistDraft,
   verifyPinIntegrity,
 } from '@strata-ctx/core-types';
 import {
@@ -280,16 +282,21 @@ function emitSafely(
   }
 }
 
-// --- GistDraft (B-8) --------------------------------------------------------
+// --- PreCompactDraft (B-8) --------------------------------------------------
 
 /**
  * What the PreCompact observer writes, before the model has narrated anything.
  *
- * This is deliberately *not* a `Gist`. Tier 2 self-gist means the agent writes
- * its own compression inside its own turn, and PreCompact fires *before* the
- * compaction happens -- at that point the narrative does not exist yet. What
- * exists is the set of facts only we hold: the task identity, the turn range,
- * the raw pointer, and the pins.
+ * This is deliberately *not* a `Gist` and not the contract's `GistDraft`: tier 2
+ * self-gist means the agent writes its own compression inside its own turn, and
+ * PreCompact fires *before* the compaction happens -- at that point the
+ * narrative does not exist yet. What exists is the set of facts only we hold:
+ * the task identity, the turn range, the raw pointer, and the pins.
+ *
+ * Named for what it is because `SelfGistBlockDraft` (templates.ts) and the
+ * compactor's working set (pipeline/src/self-gist.ts) shipped under this same
+ * name while sharing no field with it. One name, three meanings, and no way for
+ * a reader to tell which one an import brought.
  *
  * `constraints` is the load-bearing field. It is copied from the policy buffer
  * with `pinSetText` and never derived from anything the model said, which is
@@ -297,7 +304,7 @@ function emitSafely(
  * The invariant it protects: **a compaction that happens without us is still
  * preceded by a document containing the pins.**
  */
-export interface GistDraft {
+export interface PreCompactDraft {
   readonly v: 1;
   readonly task_id: string;
   readonly run_id: string;
@@ -313,7 +320,15 @@ export interface GistDraft {
   readonly directive: string;
   readonly log: GistLog;
   readonly raw_uri: string;
-  readonly raw_recoverable: true;
+  /**
+   * Present only when `raw_uri` names bytes a store already holds.
+   *
+   * `raw_recoverable` is a governance predicate, not a description: the eviction
+   * gate branches on it (governance/src/byte-equality.ts) to decide whether the
+   * transcript may be discarded. Asserting it here -- before the transaction has
+   * written anything -- let a draft vouch for bytes no store holds.
+   */
+  readonly raw_recoverable?: true;
   readonly before_tokens: number;
 }
 
@@ -333,8 +348,20 @@ export const SELF_GIST_DIRECTIVE = [
   'The gateway writes the constraints field; a constraints key in your block is ignored.',
 ].join('\n');
 
+/**
+ * Where the raw transcript is, or an admission that nothing stored it.
+ *
+ * The minted `artifact://strata/raw/<session>/<turn>` this replaced was a
+ * content-addressed URI naming no object: `strata` is not one of the store's
+ * buckets and the tail is a session id and a turn, not a digest, so
+ * `parseArtifactUri` refuses it (acl.ts, `unknown_bucket`) and every consumer
+ * of a recovery claim treats it as bytes that exist. `RAW_URI_UNSTORED` is the
+ * one address a store cannot be asked for, which is exactly the truth here:
+ * PreCompact fires *before* the transaction has written anything, so unless the
+ * caller says where it flushed the transcript, no bytes exist yet.
+ */
 function draftRawUri(event: PreCompactEvent): string {
-  return event.rawUri ?? `artifact://strata/raw/${event.sessionId}/${event.turn}`;
+  return event.rawUri ?? RAW_URI_UNSTORED;
 }
 
 /** Token count for the pre-compaction snapshot, preferring the caller's own. */
@@ -342,8 +369,16 @@ function tokensOf(state: ContextState): number {
   return state.tokenEstimate > 0 ? state.tokenEstimate : estimateTokens(state);
 }
 
-/** Pure: same event and policy in, byte-identical draft out. */
-export function buildGistDraft(event: PreCompactEvent, policy: StrataPolicy): GistDraft {
+/**
+ * Pure: same event and policy in, byte-identical draft out.
+ *
+ * `raw_recoverable` rides along only with a caller-supplied `rawUri`, by the
+ * same conditional spread `GistAssembler` uses (gist/src/assembly.ts:352-359).
+ * Writing `false` instead would not be a more honest draft -- `false` is not a
+ * `Gist` at all (`z.literal(true)`, core-types/src/gist.ts) -- and writing
+ * `true` unconditionally is the defect this replaces.
+ */
+export function buildPreCompactDraft(event: PreCompactEvent, policy: StrataPolicy): PreCompactDraft {
   const constraints = Object.freeze(pinSetText(policy));
   const rawUri = draftRawUri(event);
   const lastTurn = Number.isFinite(event.turn) && event.turn > 0 ? Math.floor(event.turn) : 0;
@@ -370,7 +405,7 @@ export function buildGistDraft(event: PreCompactEvent, policy: StrataPolicy): Gi
     directive: SELF_GIST_DIRECTIVE,
     log: Object.freeze({ ...emptyLog, ...(event.log ?? {}) }),
     raw_uri: rawUri,
-    raw_recoverable: true as const,
+    ...(event.rawUri === undefined ? {} : { raw_recoverable: true as const }),
     before_tokens: tokensOf(event.state),
   });
 }
@@ -390,20 +425,28 @@ export interface SelfGistNarrative {
 }
 
 /**
- * The seam B-8 leaves: draft in, narrative in, `Gist` out.
+ * The seam B-8 leaves: draft in, narrative in, gist out.
  *
  * `constraints`, `raw_recoverable` and `source_turn_range` come from the draft
  * and are *not* fields of `SelfGistNarrative`, so the narrative has no way to
  * express them. A summariser that wanted to drop a constraint has to forge a
  * field the type does not offer, and the byte-equality check would catch it.
+ *
+ * The return type is the contract's `GistDraft`, not `Gist`, and that is the
+ * point rather than a compromise. This runs at PreCompact, which fires *before*
+ * the compaction, so on the ordinary path the transcript has not been written
+ * and `draft.raw_uri` is still the unstored marker. A `Gist` carries
+ * `raw_recoverable: z.literal(true)` with no way to leave it off, so returning
+ * one here meant asserting the claim on every call -- the same false claim
+ * `GistAssembler` was fixed for, reachable by a second door. A caller holding
+ * stored bytes passes them in on the event and gets the claim back.
  */
-export function assembleGist(draft: GistDraft, narrative: SelfGistNarrative): Gist {
+export function assembleGist(draft: PreCompactDraft, narrative: SelfGistNarrative): GistDraft {
   const [from, to] = draft.source_turn_range;
-  // A `Gist` is a zod-inferred shape, so its arrays are mutable. The freeze here
-  // is on the top level only; `Gist` is handed on to the transaction, which
-  // parses and re-shapes it anyway.
-  return Object.freeze({
-    v: 1 as const,
+  // `GistDraft` is a zod-inferred shape, so its arrays are mutable. The freeze
+  // here is on the top level only; the transaction parses and re-shapes it.
+  const assembled: GistDraft = {
+    v: 1,
     task_id: draft.task_id,
     status: narrative.status,
     goal: narrative.goal,
@@ -416,31 +459,41 @@ export function assembleGist(draft: GistDraft, narrative: SelfGistNarrative): Gi
     log_gist: { ...narrative.log, raw_uri: draft.raw_uri },
     verification: { ...narrative.verification },
     constraints: [...draft.constraints],
-    source_turn_range: [from, to] as [number, number],
-    raw_recoverable: true as const,
+    source_turn_range: [from, to],
+    ...(draft.raw_recoverable === true ? { raw_recoverable: true as const } : {}),
     compressed_by: draft.compression_by,
-  });
+  };
+
+  // Same discipline as `GistAssembler`: validate the object about to be handed
+  // on, rather than trusting that the two fields it owns cannot disagree.
+  const validation = validateGistDraft(assembled);
+  if (!validation.ok) {
+    throw new Error(
+      `Gist draft validation failed: ${validation.defects.map((d) => d.kind).join(', ')}`,
+    );
+  }
+  return Object.freeze(assembled);
 }
 
 /** Step 4c against an assembled gist: the gate, as a reusable function. */
-export function verifyGistGovernance(gist: Gist, policy: StrataPolicy): PinIntegrity {
+export function verifyGistGovernance(gist: GistDraft, policy: StrataPolicy): PinIntegrity {
   return verifyPinIntegrity(pinSetText(policy), gist.constraints);
 }
 
 // --- PreCompactObserver -----------------------------------------------------
 
-export interface GistDraftSink {
+export interface PreCompactDraftSink {
   /**
    * Called on every PreCompact. Contract: the returned draft is the *only*
    * copy of the pins that will exist after the host compacts, so implementations
    * must persist it durably before resolving.
    */
-  write(draft: GistDraft): MaybePromise;
+  write(draft: PreCompactDraft): MaybePromise;
 }
 
 export interface PreCompactObserverOptions {
   readonly policy: StrataPolicy;
-  readonly sink: GistDraftSink;
+  readonly sink: PreCompactDraftSink;
   readonly telemetrySink?: TelemetrySink;
   /**
    * Replace the draft builder. Exists so the byte-equality check below guards
@@ -448,7 +501,7 @@ export interface PreCompactObserverOptions {
    * extra provider-specific fields into the draft gets the same gate, and a
    * lossy builder becomes a reportable violation rather than a silent one.
    */
-  readonly buildDraft?: (event: PreCompactEvent, policy: StrataPolicy) => GistDraft;
+  readonly buildDraft?: (event: PreCompactEvent, policy: StrataPolicy) => PreCompactDraft;
   readonly onError?: HookErrorReporter;
 }
 
@@ -470,7 +523,7 @@ export function createPreCompactObserver(options: PreCompactObserverOptions): Ho
   const { policy, sink } = options;
   const telemetry = options.telemetrySink ?? new MemorySink();
   const onError = options.onError;
-  const build = options.buildDraft ?? buildGistDraft;
+  const build = options.buildDraft ?? buildPreCompactDraft;
 
   return (event) => {
     const draft = build(event, policy);

@@ -158,7 +158,8 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'integrations/SERVER_VERSION': 'mcp-server.ts; as SERVER_NAME',
   'integrations/TOOL_NAMES': 'mcp-server.ts:1096; mcp-server.ts:1105 mentions it in a type, and no reachable module calls it',
   'integrations/appendUserIntent': 'claude-code-observers.ts; the PreCompact observer appends inline',
-  'integrations/assembleGist': 'claude-code-observers.ts:400; buildGistDraft inlines the assembly',
+  'integrations/assembleGist':
+    'claude-code-observers.ts:444; the PreCompact observer writes the PreCompactDraft and never assembles one, so the narrative seam has no reachable caller',
   'integrations/buildOpenCodeProfile':
     'opencode.ts:775; cli/src/index.ts only prints the name in a hint string (index.ts:341) instead of calling it',
   'integrations/compareOpenCodeToCopilot': 'opencode.ts:323; rankGuarantee is compared inline',
@@ -183,6 +184,13 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'pipeline/SEVERITY_ORDER': 'severity.ts:45; ranking is by the numeric severity, not the order table',
   'pipeline/STRATA_MARKER_PREFIX': 'severity.ts:33; marker detection matches the full literal',
   'pipeline/TUNNEL_AFTER_TIER0': 'order.ts:67; runTier0 hardcodes the tunnel stages',
+  // This one was misreported as wired until the name collision was removed. It
+  // was called "wired" only because `integrations` exported a *different*
+  // function under the same name, and the identifier search cannot tell two
+  // packages' symbols apart. Which is the argument for step 3's rename: the
+  // collision hid a genuinely dead operator from the gate that exists to name it.
+  'pipeline/buildSelfGistDraft':
+    'self-gist.ts:851; the only reference outside its own declaration is the doc comment at self-gist.ts:33, and no reachable module builds a self-gist draft -- shouldSelfGist takes one it is handed',
   'pipeline/classifyBlockSeverity': 'severity.ts:192; named in prose at severity.ts:178, never called',
   'pipeline/classifyBlockText': 'severity.ts:180; applySeverityClassification holds the logic inline',
   'pipeline/compactableFrom': 'recency.ts:130; the tunnelling loop computes the window itself',
@@ -301,6 +309,18 @@ test('a declaration that stopped being true fails the build', () => {
   // The other half of the gate. A declared-unwired operator that has acquired a
   // caller is the gap closing, and the reason on its line is now false; leaving
   // it in place is how a ledger starts lying.
+  //
+  // KNOWN VACUOUS, and left that way on purpose. `describe` appends
+  // `(declared <file>)` for the failure message, so `entry in
+  // UNWIRED_OPERATORS` looks for a key no table has and this assertion cannot
+  // fail for any input. Gate 1 avoids the same trap with `stripDeclared`;
+  // applying it here was measured and turns 16 pre-existing rows red, none of
+  // which has a caller outside its own declaring file -- every one is a single
+  // `value` reference, the confidence class docs/wiring-ledger.md §6 already
+  // names as the weakest and the likeliest false positive. Whether a reference
+  // inside the module that declares the symbol counts as a caller re-classifies
+  // most of the surface, so it is the ledger owner's decision and not a
+  // drive-by edit. Until then this gate proves nothing and no row depends on it.
   const stale = ledger.wired.map(describe).filter((entry) => entry in UNWIRED_OPERATORS);
   assert.deepEqual(
     stale,

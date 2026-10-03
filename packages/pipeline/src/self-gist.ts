@@ -30,7 +30,7 @@ import type { TriggerDecision } from './trigger.js';
  *    byte-equality verification target (architecture §6), and a narrative block
  *    that could *carry* a constraint would turn that check into a tautology.
  *    So the summarisable region excludes governance, structurally and at
- *    runtime, and the pin set is copied in verbatim. See `buildGistDraft`.
+ *    runtime, and the pin set is copied in verbatim. See `buildSelfGistDraft`.
  *
  * ## Why the parse is streaming-first
  *
@@ -707,7 +707,20 @@ export function narrativeFrom(directive: SelfGistDirective | null): SelfGistNarr
   };
 }
 
-export interface GistDraft {
+/**
+ * The compactor's working set for one self-gist: what the summariser would be
+ * given, what the pin comparison said, and every defect found on the way.
+ *
+ * Deliberately *not* the contract's `GistDraft`. That is a `Gist` with the
+ * recoverability claim left off -- the document the transaction commits -- and
+ * this is the input to building it: camelCase, a message range rather than a
+ * turn range, the digest of the summable text, and a defect list rather than a
+ * stored-bytes claim. It shipped under the name `GistDraft` anyway, as did the
+ * PreCompact handoff document (integrations/src/claude-code-observers.ts) and
+ * the model-writable block (integrations/src/templates.ts); three shapes, no
+ * shared field, one name.
+ */
+export interface SelfGistDraft {
   /** Mirrors `Gist.v`. A draft is not a gist; it is the input to one. */
   readonly v: 1;
   readonly taskId: string;
@@ -739,7 +752,7 @@ export interface GistDraft {
   readonly defects: readonly SelfGistDefect[];
 }
 
-export interface BuildGistDraftInput {
+export interface BuildSelfGistDraftInput {
   readonly ctx: LossyContext;
   readonly directive?: SelfGistDirective | null;
   /** Defaults to every message in the lossy context. */
@@ -835,7 +848,7 @@ function summableRegion(
  * the transaction's contract is to abort and keep the transcript rather than to
  * fail earlier and lose it.
  */
-export function buildGistDraft(input: BuildGistDraftInput): GistDraft {
+export function buildSelfGistDraft(input: BuildSelfGistDraftInput): SelfGistDraft {
   const { ctx, directive = null } = input;
   const defects: SelfGistDefect[] = [...(directive?.defects ?? [])];
 
@@ -943,7 +956,7 @@ const HELD_REASON: Readonly<Record<string, SelfGistReason>> = Object.freeze({
 });
 
 export interface ShouldSelfGistInput {
-  readonly draft: GistDraft;
+  readonly draft: SelfGistDraft;
   readonly directive: SelfGistDirective | null;
   /** The B-7 decision for this turn. Not recomputed here. */
   readonly trigger: TriggerDecision;

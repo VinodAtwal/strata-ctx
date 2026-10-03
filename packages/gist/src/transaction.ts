@@ -2,6 +2,7 @@ import type {
   ArtifactRef,
   ContextState,
   Gist,
+  GistDraft,
   Message,
   PinIntegrity,
   StrataPolicy,
@@ -10,7 +11,6 @@ import type {
 import { enforcePins, verifyPinIntegrity, validateGist, pinSetText } from '@strata-ctx/core-types';
 import type { ReadResult } from '@strata-ctx/security';
 import { artifactUrisOfMessages, artifactUriRefusal, isResolvableArtifactUri } from './artifact-uri.js';
-import type { GistDraft } from './draft.js';
 import { parseRawTranscript } from './reversibility.js';
 import type { StrataTelemetryEvent, GistEvent } from '@strata-ctx/telemetry';
 
@@ -375,7 +375,8 @@ export async function runCompactionTransaction(
   // `raw_recoverable` is stamped here for the same reason, and only here: this
   // is the only place in the transaction where the bytes exist, because step 1
   // put them there. A builder without a store leaves the claim off rather than
-  // making it (see ./draft.ts), and a caller that already made it loses nothing.
+  // making it (see `GistDraft`, core-types/src/gist.ts), and a caller that
+  // already made it loses nothing.
   // What still gates discarding anything is `assessEvictable` below, which
   // re-reads the artifact and proves the dropped messages are in it.
   const gistWithRawUri: Gist = {

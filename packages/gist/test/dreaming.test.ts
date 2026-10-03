@@ -4,12 +4,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Gist, StrataPolicy } from '@strata-ctx/core-types';
+import { RAW_URI_UNSTORED } from '@strata-ctx/core-types';
 import { ArtifactStore } from '@strata-ctx/security';
 import type { StrataTelemetryEvent } from '@strata-ctx/telemetry';
 import { createDreamingJob } from '../src/dreaming.js';
 import type { MetaGist } from '../src/dreaming.js';
 import { isResolvableArtifactUri } from '../src/artifact-uri.js';
-import { RAW_URI_UNSTORED } from '../src/draft.js';
 import { createTestGist, createTestPolicy } from './fixtures.js';
 
 /**

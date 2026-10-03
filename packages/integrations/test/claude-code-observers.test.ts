@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { sha256, pinSetText, validateGist } from '@strata-ctx/core-types';
+import { RAW_URI_UNSTORED, sha256, pinSetText, validateGist, validateGistDraft } from '@strata-ctx/core-types';
 import type { ContextState, PinnedConstraint, RunId, StrataPolicy } from '@strata-ctx/core-types';
 import { MemorySink } from '@strata-ctx/telemetry';
 import type { ModelPricing, StrataTelemetryEvent, TelemetrySink } from '@strata-ctx/telemetry';
@@ -9,7 +9,7 @@ import {
   SELF_GIST_DIRECTIVE,
   appendUserIntent,
   assembleGist,
-  buildGistDraft,
+  buildPreCompactDraft,
   buildSessionClose,
   buildSessionOpen,
   createClaudeHookRouter,
@@ -21,8 +21,8 @@ import {
   missingPins,
   repin,
   verifyGistGovernance,
-  type GistDraft,
-  type GistDraftSink,
+  type PreCompactDraft,
+  type PreCompactDraftSink,
   type HookFailure,
   type HookHandler,
   type PreCompactEvent,
@@ -92,6 +92,13 @@ const SCRAMBLED_POLICY: StrataPolicy = {
 const RUN_ID = 'run-456';
 const SESSION_ID = 'session-123';
 const FIXED_NOW = 1_760_000_000_000;
+/**
+ * A transcript the caller already flushed, in the form the store answers to:
+ * one bucket from its vocabulary, then a 64-hex content address. The old
+ * minted default was neither, which is why no eviction gate could have resolved
+ * it even while the draft claimed to be recoverable.
+ */
+const STORED_RAW_URI = `artifact://transcript/${'a'.repeat(64)}`;
 
 function makeState(overrides: Partial<ContextState> = {}): ContextState {
   return {
@@ -160,11 +167,11 @@ const NARRATIVE: SelfGistNarrative = {
 };
 
 /** Collects everything a sink is asked to do, in order. */
-class RecordingGistSink implements GistDraftSink {
-  readonly drafts: GistDraft[] = [];
+class RecordingGistSink implements PreCompactDraftSink {
+  readonly drafts: PreCompactDraft[] = [];
   readonly order: string[] = [];
   constructor(private readonly label = 'draft') {}
-  write(draft: GistDraft): void {
+  write(draft: PreCompactDraft): void {
     this.drafts.push(draft);
     this.order.push(this.label);
   }
@@ -272,7 +279,7 @@ describe('PreCompactObserver', () => {
 
   it('is pure: the same event produces a byte-identical draft twice', () => {
     const event = preCompactEvent();
-    assert.deepEqual(buildGistDraft(event, FIXTURE_POLICY), buildGistDraft(event, FIXTURE_POLICY));
+    assert.deepEqual(buildPreCompactDraft(event, FIXTURE_POLICY), buildPreCompactDraft(event, FIXTURE_POLICY));
   });
 
   it('carries the constraint ids in the same order as the pin text', () => {
@@ -283,14 +290,58 @@ describe('PreCompactObserver', () => {
     assert.equal(draft.constraints.length, draft.constraint_ids.length);
   });
 
-  it('records the turn range, the raw pointer and raw recoverability', () => {
+  it('records the turn range and says so when nothing stored the transcript', () => {
     const observer = createPreCompactObserver({ policy: FIXTURE_POLICY, sink, telemetrySink: telemetry });
     observer(preCompactEvent({ turn: 12 }));
     const draft = at(sink.drafts);
     assert.deepEqual([...draft.source_turn_range], [0, 12]);
-    assert.equal(draft.raw_uri, 'artifact://strata/raw/session-123/12');
-    assert.equal(draft.raw_recoverable, true);
     assert.equal(draft.compression_by, 'self-gist');
+    // PreCompact fires before the compaction, so on the ordinary path nothing
+    // has been written and there is nothing to point at. See the regression
+    // cases below for the claim itself.
+    assert.equal(draft.raw_uri, RAW_URI_UNSTORED);
+    assert.equal(draft.raw_recoverable, undefined);
+  });
+
+  it('claims recovery only for a transcript the caller says was flushed', () => {
+    const observer = createPreCompactObserver({ policy: FIXTURE_POLICY, sink, telemetrySink: telemetry });
+    observer(preCompactEvent({ rawUri: STORED_RAW_URI }));
+    const draft = at(sink.drafts);
+    assert.equal(draft.raw_uri, STORED_RAW_URI);
+    assert.equal(draft.raw_recoverable, true);
+  });
+
+  // The regression this whole change exists for. `raw_recoverable` is a
+  // governance predicate: the eviction gate branches on it to decide whether the
+  // transcript may be discarded (governance/src/byte-equality.ts), so a draft
+  // that asserts it before the bytes exist can let eviction destroy the only
+  // copy. The bug shipped twice already -- once in the meta-gist and once in
+  // `GistAssembler` -- because the corrected semantics lived in one package and
+  // this one never imported them.
+  it('does not assert recoverability for a transcript with no stored bytes', () => {
+    for (const draft of [
+      buildPreCompactDraft(preCompactEvent(), FIXTURE_POLICY),
+      // Even the two document shapes: the draft the sink persists, and the gist
+      // assembled from it, are both places the claim could be re-added.
+      assembleGist(buildPreCompactDraft(preCompactEvent(), FIXTURE_POLICY), NARRATIVE),
+    ]) {
+      assert.notEqual(draft.raw_recoverable, true, 'a draft must not claim recovery nothing backs');
+      assert.ok(
+        'raw_recoverable' in draft === false || draft.raw_recoverable === undefined,
+        'the claim must be absent, not false',
+      );
+    }
+  });
+
+  it('the assembled draft fails the contract rather than shipping the false claim', () => {
+    // Belt and braces on the previous case: the object that reaches a sink is
+    // checked through the frozen contract, so a builder that reintroduces the
+    // claim over an unstored URI is reported instead of written.
+    const draft = assembleGist(buildPreCompactDraft(preCompactEvent(), FIXTURE_POLICY), NARRATIVE);
+    const smuggled = { ...draft, raw_recoverable: true as const };
+    assert.equal(validateGistDraft(smuggled).ok, false);
+    assert.deepEqual(validateGistDraft(smuggled).defects, [{ kind: 'raw_uri_unstored' }]);
+    assert.equal(validateGistDraft(draft).ok, true);
   });
 
   it('emits a self-gist compaction event that passed validation', () => {
@@ -329,17 +380,28 @@ describe('PreCompactObserver', () => {
     assert.equal(at(sink.drafts).before_tokens, 0);
   });
 
-  it('assembles a schema-valid Gist whose constraints survive byte-for-byte', () => {
-    const draft = buildGistDraft(preCompactEvent(), FIXTURE_POLICY);
+  it('assembles a gist whose constraints survive byte-for-byte', () => {
+    const draft = buildPreCompactDraft(preCompactEvent(), FIXTURE_POLICY);
     const gist = assembleGist(draft, NARRATIVE);
     assert.deepEqual([...gist.constraints], [...draft.constraints]);
     assert.equal(verifyGistGovernance(gist, FIXTURE_POLICY).ok, true);
-    assert.equal(validateGist(gist).ok, true);
+    assert.equal(validateGistDraft(gist).ok, true);
+  });
+
+  it('assembles a committed Gist once the transcript has been stored', () => {
+    // The other arm of the fix, and the reason the return type is not simply
+    // "a gist without the claim": a caller who flushed the transcript first
+    // hands the URI in on the event, and then the claim is earned and the object
+    // is a schema-valid `Gist` that step 4c and step 7 can both act on.
+    const draft = buildPreCompactDraft(preCompactEvent({ rawUri: STORED_RAW_URI }), FIXTURE_POLICY);
+    const gist = assembleGist(draft, NARRATIVE);
     assert.equal(gist.raw_recoverable, true);
+    assert.equal(gist.log_gist.raw_uri, STORED_RAW_URI);
+    assert.equal(validateGist(gist).ok, true);
   });
 
   it('a narrative cannot drop a constraint: the gateway owns the field', () => {
-    const draft = buildGistDraft(preCompactEvent(), FIXTURE_POLICY);
+    const draft = buildPreCompactDraft(preCompactEvent(), FIXTURE_POLICY);
     // `SelfGistNarrative` has no `constraints` member at all, so there is
     // nothing for a summariser to fill in wrongly; verify the assembled gist
     // still carries the full set when the narrative tries to be clever.
@@ -356,8 +418,8 @@ describe('PreCompactObserver', () => {
       sink: new RecordingGistSink(),
       telemetrySink,
       buildDraft: (event, policy) => ({
-        ...buildGistDraft(event, policy),
-        constraints: buildGistDraft(event, policy).constraints.slice(0, 1),
+        ...buildPreCompactDraft(event, policy),
+        constraints: buildPreCompactDraft(event, policy).constraints.slice(0, 1),
       }),
     });
     observer(preCompactEvent());
@@ -379,7 +441,7 @@ describe('PreCompactObserver', () => {
       policy: FIXTURE_POLICY,
       sink: lossy,
       telemetrySink: new MemorySink(),
-      buildDraft: (event, policy) => ({ ...buildGistDraft(event, policy), constraints: [] }),
+      buildDraft: (event, policy) => ({ ...buildPreCompactDraft(event, policy), constraints: [] }),
     });
     observer(preCompactEvent());
     assert.equal(lossy.drafts.length, 1);

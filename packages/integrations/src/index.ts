@@ -11,9 +11,16 @@
  * - `PreToolUseResult` / `PostToolUseResult` -> the generic builder (hook-builder)
  * - `ClaudeCodeHooks`                          -> the E-2 hooks surface
  * - `ClaudeCodeProxyHooks`                     -> the earlier interception surface
- * - `SELF_GIST_DIRECTIVE` / `GistDraft`        -> the template (B-8's parser agrees)
+ * - `SELF_GIST_DIRECTIVE`                      -> the template (B-8's parser agrees)
  * - `DEFAULT_MCP_COMMAND` / `DEFAULT_GATEWAY_URL` -> the profile registry
  * - `missingEnvVars`                           -> the profile registry
+ *
+ * `SELF_GIST_DIRECTIVE` still had to be arbitrated: templates.ts exports a
+ * prompt string and claude-code-observers.ts the sentinels the parser looks
+ * for, and they are not byte-identical by design (AGENTS.md §10). `GistDraft`
+ * no longer needs arbitration at all -- the three shapes that shared it are
+ * `SelfGistBlockDraft` (the model-writable block), `PreCompactDraft` (the
+ * handoff document) and the contract's `GistDraft`, which none of them is.
  */
 
 // Clean surfaces — no contested names.
@@ -143,12 +150,12 @@ export type {
   PostToolUseResult as ProxyPostToolUseResult,
 } from './claude-code.js';
 
-// Observers — everything except the two names the template owns.
+// Observers — everything except the directive prompt the template owns.
 export {
   CLAUDE_HOOK_NAMES,
   GIST_SENTINEL,
   isClaudeHookEvent,
-  buildGistDraft,
+  buildPreCompactDraft,
   assembleGist,
   verifyGistGovernance,
   createPreCompactObserver,
@@ -180,7 +187,8 @@ export type {
   HookFailure,
   HookErrorReporter,
   SelfGistNarrative,
-  GistDraftSink,
+  PreCompactDraftSink,
+  PreCompactDraft,
   PreCompactObserverOptions,
   RepinnedContext,
   RepinSink,

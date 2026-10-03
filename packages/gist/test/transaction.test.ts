@@ -4,13 +4,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArtifactRef, ContextState, Gist, StrataPolicy } from '@strata-ctx/core-types';
-import { sha256 } from '@strata-ctx/core-types';
+import { sha256, RAW_URI_UNSTORED } from '@strata-ctx/core-types';
 import { ArtifactStore } from '@strata-ctx/security';
 import type { GistEvent, StrataTelemetryEvent } from '@strata-ctx/telemetry';
 import { runCompactionTransaction } from '../src/transaction.js';
 import type { TransactionArtifactStore } from '../src/transaction.js';
 import { isResolvableArtifactUri } from '../src/artifact-uri.js';
-import { RAW_URI_UNSTORED } from '../src/draft.js';
 import {
   createTestGist,
   createTestPolicy,

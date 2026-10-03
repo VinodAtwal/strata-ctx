@@ -1,8 +1,7 @@
 import type { Gist, GistArtifact, GistChanged, StrataPolicy } from '@strata-ctx/core-types';
-import { validateGist, pinSetText } from '@strata-ctx/core-types';
+import { validateGist, pinSetText, RAW_URI_UNSTORED } from '@strata-ctx/core-types';
 import type { ArtifactStore } from '@strata-ctx/security';
 import type { StrataTelemetryEvent } from '@strata-ctx/telemetry';
-import { RAW_URI_UNSTORED } from './draft.js';
 
 /**
  * C-6: Offline consolidation / dreaming.

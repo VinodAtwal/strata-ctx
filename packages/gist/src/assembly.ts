@@ -5,6 +5,7 @@ import type {
   GistArtifact,
   GistChanged,
   GistDecision,
+  GistDraft,
   GistLog,
   GistNext,
   GistVerification,
@@ -12,12 +13,10 @@ import type {
 } from '@strata-ctx/core-types';
 import { validateGist } from '@strata-ctx/core-types';
 import type { StrataPolicy } from '@strata-ctx/core-types';
-import { pinSetText, collectGovernanceText } from '@strata-ctx/core-types';
+import { pinSetText, collectGovernanceText, RAW_URI_UNSTORED } from '@strata-ctx/core-types';
 import type { BudgetView } from '@strata-ctx/core-types';
 import { estimateTokens } from '@strata-ctx/core-types';
 import { isResolvableArtifactUri } from './artifact-uri.js';
-import { RAW_URI_UNSTORED } from './draft.js';
-import type { GistDraft } from './draft.js';
 
 export interface ToolCallSummary {
   readonly name: string;

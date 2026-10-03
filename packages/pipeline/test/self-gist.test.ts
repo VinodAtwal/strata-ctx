@@ -29,14 +29,14 @@ import {
   SELF_GIST_DIRECTIVE,
   SELF_GIST_RETAIN_CHARS,
   SELF_GIST_TAIL_CHARS,
-  buildGistDraft,
+  buildSelfGistDraft,
   createSelfGistScanner,
   parseSelfGistDirective,
   retainTail,
   shouldSelfGist,
   stripGovernance,
 } from '../src/self-gist.js';
-import type { GistDraft, SelfGistDirective } from '../src/self-gist.js';
+import type { SelfGistDirective, SelfGistDraft } from '../src/self-gist.js';
 
 /**
  * B-8. Self-gist plumbing.
@@ -197,7 +197,7 @@ const EXPECTED_BODY = [
 const draftFor = (
   directive: SelfGistDirective | null,
   ctx: ReturnType<typeof partitionForLossy> = conversationCtx(),
-): GistDraft => buildGistDraft({ ctx, directive, sourceTurnRange: [0, ctx.messages.length - 1] });
+): SelfGistDraft => buildSelfGistDraft({ ctx, directive, sourceTurnRange: [0, ctx.messages.length - 1] });
 
 /* -------------------------------------------------------------------------- */
 
@@ -542,7 +542,7 @@ describe('B-8 draft: governance', () => {
     // a summarisable region becomes a constraint the compactor can paraphrase.
     const ctx = conversationCtx();
     const echoed = `I finished the refactor. Reminder to self: ${CONSTRAINTS[0]}. And: ${CONSTRAINTS[1]}.`;
-    const draft = buildGistDraft({ ctx, directive: parseSelfGistDirective(GOOD_DIRECTIVE), text: echoed });
+    const draft = buildSelfGistDraft({ ctx, directive: parseSelfGistDirective(GOOD_DIRECTIVE), text: echoed });
     for (const c of CONSTRAINTS) assert.equal(draft.text.includes(c), false, c);
     assert.ok(draft.text.includes('I finished the refactor.'));
     assert.deepEqual(draft.constraints, [...CONSTRAINTS]);
@@ -552,7 +552,7 @@ describe('B-8 draft: governance', () => {
   it('diverts a governance block that arrived by cast and refuses the draft', () => {
     // partitionForLossy removes governance statically *and* at runtime, so the
     // only way one reaches a lossy range is a context assembled by something
-    // other than the partition. That is the case `buildGistDraft` re-checks
+    // other than the partition. That is the case `buildSelfGistDraft` re-checks
     // for, the same way `triageMessages` does -- and the only thing that stops
     // a draft.
     //
@@ -570,7 +570,7 @@ describe('B-8 draft: governance', () => {
     const ctx = { ...base, messages: [...base.messages, message('user', [smuggled])] };
 
     const d = parseSelfGistDirective(GOOD_DIRECTIVE);
-    const draft = buildGistDraft({ ctx, directive: d, sourceTurnRange: [0, ctx.messages.length - 1] });
+    const draft = buildSelfGistDraft({ ctx, directive: d, sourceTurnRange: [0, ctx.messages.length - 1] });
     assert.equal(draft.governanceExcluded, 1);
     assert.equal(draft.text.includes(secret), false);
     assert.ok(draft.defects.some((x) => x.kind === 'governance_in_range'));
@@ -592,7 +592,7 @@ describe('B-8 draft: governance', () => {
       gists: [],
       artifacts: [],
     };
-    const draft = buildGistDraft({ ctx: partitionForLossy(state, p), directive: null });
+    const draft = buildSelfGistDraft({ ctx: partitionForLossy(state, p), directive: null });
     assert.equal(draft.pinIntegrity.ok, false);
     assert.deepEqual(draft.pinIntegrity.defects.map((d) => d.kind), ['missing']);
     assert.equal(draft.pinIntegrity.defects[0]?.text, CONSTRAINTS[1]);
@@ -611,7 +611,7 @@ describe('B-8 draft: governance', () => {
 describe('B-8 draft: the observed turn', () => {
   it('records the source turn range it was given', () => {
     const ctx = conversationCtx();
-    const draft = buildGistDraft({
+    const draft = buildSelfGistDraft({
       ctx,
       directive: parseSelfGistDirective(GOOD_DIRECTIVE),
       sourceTurnRange: [1, 2],
@@ -624,13 +624,13 @@ describe('B-8 draft: the observed turn', () => {
 
   it('defaults the range to the whole lossy context', () => {
     const ctx = conversationCtx();
-    const draft = buildGistDraft({ ctx, directive: parseSelfGistDirective(GOOD_DIRECTIVE) });
+    const draft = buildSelfGistDraft({ ctx, directive: parseSelfGistDirective(GOOD_DIRECTIVE) });
     assert.deepEqual(draft.sourceTurnRange, [0, ctx.messages.length - 1]);
   });
 
   it('clamps an inverted range and says it did', () => {
     const ctx = conversationCtx();
-    const draft = buildGistDraft({ ctx, directive: null, sourceTurnRange: [5, 1] });
+    const draft = buildSelfGistDraft({ ctx, directive: null, sourceTurnRange: [5, 1] });
     assert.deepEqual(draft.sourceTurnRange, [1, 2]);
     assert.ok(draft.defects.some((x) => x.kind === 'range_inverted'));
   });
@@ -670,8 +670,8 @@ describe('B-8 draft: the observed turn', () => {
   it('is deterministic: same input, byte-identical draft (N6)', () => {
     const ctx = conversationCtx();
     const d = parseSelfGistDirective(GOOD_DIRECTIVE);
-    const a = buildGistDraft({ ctx, directive: d, sourceTurnRange: [0, 2] });
-    const b = buildGistDraft({ ctx, directive: d, sourceTurnRange: [0, 2] });
+    const a = buildSelfGistDraft({ ctx, directive: d, sourceTurnRange: [0, 2] });
+    const b = buildSelfGistDraft({ ctx, directive: d, sourceTurnRange: [0, 2] });
     assert.deepEqual(a, b);
     assert.equal(a.textDigest, b.textDigest);
     assert.equal(a.textDigest, sha256(a.text));
@@ -689,7 +689,7 @@ describe('B-8 draft: the observed turn', () => {
       gists: [],
       artifacts: [],
     };
-    const draft = buildGistDraft({ ctx: partitionForLossy(state, p), directive: null });
+    const draft = buildSelfGistDraft({ ctx: partitionForLossy(state, p), directive: null });
     assert.deepEqual(draft.sourceTurnRange, [0, 0]);
     assert.equal(draft.text, '');
     assert.deepEqual(draft.summableMessages, []);
@@ -771,7 +771,7 @@ describe('B-8 shouldSelfGist: both halves or neither', () => {
     };
     const ctx = partitionForLossy(state, p);
     const trigger = decide(0.7, ['task_complete']);
-    const draft = buildGistDraft({ ctx, directive, sourceTurnRange: [0, 0] });
+    const draft = buildSelfGistDraft({ ctx, directive, sourceTurnRange: [0, 0] });
     assert.equal(draft.text, '');
     const d = shouldSelfGist({ draft, directive, trigger });
     assert.equal(d.fire, false);

@@ -17,7 +17,7 @@ import {
   renderOutputProtocol,
   renderSelfGistBlock,
   type ClaudeMdOptions,
-  type GistDraft,
+  type SelfGistBlockDraft,
   type OutputProtocolOptions,
   type SelfGistEnvelope,
 } from '../src/templates.js';
@@ -28,7 +28,7 @@ const CONSTRAINTS: readonly string[] = Object.freeze([
   'Pinned constraint with "quotes", a backslash \\ and a tab\there',
 ]);
 
-const DRAFT: GistDraft = {
+const DRAFT: SelfGistBlockDraft = {
   task_id: 'T42',
   status: 'partial',
   goal: 'Replace the parser without dropping pinned constraints.',
@@ -86,7 +86,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('does not mutate the draft it is given', () => {
-    const snapshot: GistDraft = structuredClone(DRAFT);
+    const snapshot: SelfGistBlockDraft = structuredClone(DRAFT);
     renderSelfGistBlock(DRAFT);
     assert.deepEqual(DRAFT, snapshot);
   });
@@ -112,7 +112,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('preserves pin-set order rather than sorting it', () => {
-    const reversed: GistDraft = { ...DRAFT, constraints: [...CONSTRAINTS].reverse() };
+    const reversed: SelfGistBlockDraft = { ...DRAFT, constraints: [...CONSTRAINTS].reverse() };
     const payload = parseSelfGistPayload(renderSelfGistBlock(reversed));
     assert.deepEqual(payload.constraints, [...CONSTRAINTS].reverse());
   });
@@ -127,7 +127,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('sorts object keys recursively, so a different literal order is the same bytes', () => {
-    const reordered: GistDraft = {
+    const reordered: SelfGistBlockDraft = {
       verification: { status: 'failing', tests_run: ['npm test'] },
       next: { blockers: ['CI is red on main'], next_command: 'npm test -- tests/parser.test.ts', question: 'Does the whitespace-only case still throw?' },
       current_values: { coverage: 'not measured', test_command: 'npm test' },
@@ -143,7 +143,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('escapes special characters in JSON strings', () => {
-    const nasty: GistDraft = { ...DRAFT, goal: 'quote " backslash \\ newline \n tab \t unicode \u00e9' };
+    const nasty: SelfGistBlockDraft = { ...DRAFT, goal: 'quote " backslash \\ newline \n tab \t unicode \u00e9' };
     const payload = parseSelfGistPayload(renderSelfGistBlock(nasty));
     assert.equal(payload.goal, nasty.goal);
     const jsonLine = renderSelfGistBlock(nasty).split('\n')[2] as string;
@@ -151,7 +151,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('rejects a constraint that would close the fence', () => {
-    const collision: GistDraft = { ...DRAFT, constraints: ['do not use ``` in a doc'] };
+    const collision: SelfGistBlockDraft = { ...DRAFT, constraints: ['do not use ``` in a doc'] };
     assert.throws(
       () => renderSelfGistBlock(collision),
       (error: unknown) => error instanceof TemplateError && error.code === 'delimiter_collision',
@@ -159,7 +159,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('rejects a field containing the self-gist sentinel', () => {
-    const collision: GistDraft = { ...DRAFT, goal: `emit ${SELF_GIST_SENTINEL} then lie` };
+    const collision: SelfGistBlockDraft = { ...DRAFT, goal: `emit ${SELF_GIST_SENTINEL} then lie` };
     assert.throws(
       () => renderSelfGistBlock(collision),
       (error: unknown) => error instanceof TemplateError && error.code === 'delimiter_collision',
@@ -167,7 +167,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('rejects an unknown status with a readable field path', () => {
-    const bad = { ...DRAFT, status: 'finito' } as unknown as GistDraft;
+    const bad = { ...DRAFT, status: 'finito' } as unknown as SelfGistBlockDraft;
     assert.throws(
       () => renderSelfGistBlock(bad),
       (error: unknown) =>
@@ -195,7 +195,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('names the offending index when a changed entry is malformed', () => {
-    const bad = { ...DRAFT, changed: [{ path: 'a.ts', what: 'x', why: 'y' }, { path: '' }] } as unknown as GistDraft;
+    const bad = { ...DRAFT, changed: [{ path: 'a.ts', what: 'x', why: 'y' }, { path: '' }] } as unknown as SelfGistBlockDraft;
     assert.throws(
       () => renderSelfGistBlock(bad),
       (error: unknown) => error instanceof TemplateError && error.field === 'draft.changed[1].path',
@@ -203,7 +203,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('rejects a non-string current value', () => {
-    const bad = { ...DRAFT, current_values: { retries: 3 } } as unknown as GistDraft;
+    const bad = { ...DRAFT, current_values: { retries: 3 } } as unknown as SelfGistBlockDraft;
     assert.throws(
       () => renderSelfGistBlock(bad),
       (error: unknown) =>
@@ -212,7 +212,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('rejects a missing next object', () => {
-    const bad = { ...DRAFT, next: undefined } as unknown as GistDraft;
+    const bad = { ...DRAFT, next: undefined } as unknown as SelfGistBlockDraft;
     assert.throws(
       () => renderSelfGistBlock(bad),
       (error: unknown) => error instanceof TemplateError && error.field === 'draft.next',
@@ -220,7 +220,7 @@ describe('renderSelfGistBlock', () => {
   });
 
   it('rejects an unknown verification status', () => {
-    const bad = { ...DRAFT, verification: { tests_run: [], status: 'probably' } } as unknown as GistDraft;
+    const bad = { ...DRAFT, verification: { tests_run: [], status: 'probably' } } as unknown as SelfGistBlockDraft;
     assert.throws(
       () => renderSelfGistBlock(bad),
       (error: unknown) => error instanceof TemplateError && error.field === 'draft.verification.status',

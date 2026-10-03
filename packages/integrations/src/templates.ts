@@ -91,14 +91,20 @@ export interface GistVerificationDraft {
 }
 
 /**
- * What the agent is allowed to write. Deliberately *not* a `Gist`: it has no
- * `constraints` written by the model, no `compressed_by`, no `raw_recoverable`
- * and no `source_turn_range`. Those are gateway-owned. The `constraints` field
- * here is an echo of the policy used as a byte-equality verification target,
- * which is what turns "the model dropped a safety rule" into a detectable
- * condition instead of an invisible one.
+ * What the agent is allowed to write. Deliberately *not* a `Gist` and not the
+ * contract's `GistDraft`: it has no `constraints` written by the model, no
+ * `compressed_by`, no `raw_recoverable` and no `source_turn_range`. Those are
+ * gateway-owned. The `constraints` field here is an echo of the policy used as a
+ * byte-equality verification target, which is what turns "the model dropped a
+ * safety rule" into a detectable condition instead of an invisible one.
+ *
+ * Named for what it is rather than for the stage it feeds. This type, the
+ * PreCompact handoff document in claude-code-observers.ts, and the compactor's
+ * working set in pipeline/src/self-gist.ts all shipped under the name
+ * `GistDraft` while sharing no fields at all, so a reader who imported one
+ * could reasonably assume the other two meant the same thing.
  */
-export interface GistDraft {
+export interface SelfGistBlockDraft {
   readonly task_id: string;
   readonly status: GistStatus;
   readonly goal: string;
@@ -432,7 +438,7 @@ function renderGovernanceBlock(constraints: readonly string[]): string[] {
 }
 
 function renderExampleSelfGistBlock(options: ResolvedOutputProtocolOptions): string[] {
-  const example: GistDraft = {
+  const example: SelfGistBlockDraft = {
     task_id: 'T1',
     status: 'partial',
     goal: `Ship the ${options.projectName} change without regressing the pinned constraint set.`,
@@ -844,7 +850,7 @@ export function renderClaudeMd(options: ClaudeMdOptions = {}): string {
  *    recursively, so two structurally equal drafts produce identical bytes and a
  *    diff in a transcript means the content changed.
  */
-export function renderSelfGistBlock(draft: GistDraft): string {
+export function renderSelfGistBlock(draft: SelfGistBlockDraft): string {
   const envelope = normalizeDraft(draft);
   return [
     FENCE + SELF_GIST_LANGUAGE,
@@ -854,7 +860,7 @@ export function renderSelfGistBlock(draft: GistDraft): string {
   ].join('\n');
 }
 
-function normalizeDraft(draft: GistDraft): SelfGistEnvelope {
+function normalizeDraft(draft: SelfGistBlockDraft): SelfGistEnvelope {
   if (typeof draft !== 'object' || draft === null) {
     throw new TemplateError('invalid_draft_field', 'draft', 'expected an object');
   }

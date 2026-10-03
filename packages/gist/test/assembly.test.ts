@@ -2,10 +2,8 @@ import { test, describe, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { GistAssembler, createGistAssembler } from '../src/assembly.js';
 import { isResolvableArtifactUri } from '../src/artifact-uri.js';
-import { RAW_URI_UNSTORED } from '../src/draft.js';
-import type { GistDraft } from '../src/draft.js';
-import { validateGist } from '@strata-ctx/core-types';
-import type { ContentBlock, BlockMeta, Gist } from '@strata-ctx/core-types';
+import { validateGist, RAW_URI_UNSTORED } from '@strata-ctx/core-types';
+import type { ContentBlock, BlockMeta, Gist, GistDraft } from '@strata-ctx/core-types';
 import { sha256 } from '@strata-ctx/core-types';
 import {
   createTestContextState,
