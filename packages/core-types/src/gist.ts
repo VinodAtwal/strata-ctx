@@ -146,3 +146,92 @@ export function validateGist(input: unknown, expectedErrorCount?: number): GistV
 
   return defects.length === 0 ? { ok: true, gist: g, defects: [] } : { ok: false, defects };
 }
+
+/**
+ * The `log_gist.raw_uri` a draft carries while the transcript it names has not
+ * been written.
+ *
+ * The frozen contract leaves no third place to put that fact: `raw_uri` is a
+ * required non-empty string (above, `GistLogSchema`) and `raw_recoverable` is
+ * `z.literal(true)` (above, `GistSchema`), so `false` is not a schema-valid
+ * `Gist` at all. The marker says it in the URI instead.
+ *
+ * `unstored:` rather than `artifact://` because a marker must not be mistaken
+ * for a pointer. The store parses `artifact://` URIs against a bucket
+ * vocabulary and a 64-hex digest form, and every reader of a recovery claim --
+ * `isResolvableArtifactUri`, a grep for `artifact://` in a transcript -- treats
+ * one as bytes that exist. A synthetic `artifact://` URI wearing the costume of
+ * a content address is how two producers in this repo shipped a recovery claim
+ * that pointed at no object anywhere; a scheme no parser accepts cannot.
+ */
+export const RAW_URI_UNSTORED = 'unstored:raw-transcript';
+
+/**
+ * A `Gist` that has not been written to a store.
+ *
+ * Narrower than `Gist` in exactly one place: the recoverability claim may be
+ * absent, and when present it is `true`. Optional rather than `boolean`
+ * because a draft cannot assert `false` -- that value is not a `Gist` -- so the
+ * only two states a builder can produce are "claims recovery" and "has not
+ * earned it yet".
+ *
+ * This lives beside `GistSchema` rather than in the package that first needed
+ * it because four packages produce one of these and none of them can reach the
+ * others. `gist`, `integrations` and `governance` all import `core-types`, and
+ * a definition that had to be copied into each of them is a definition that
+ * will be corrected in three of the four.
+ */
+export const GistDraftSchema = GistSchema.extend({
+  raw_recoverable: z.literal(true).optional(),
+});
+export type GistDraft = z.infer<typeof GistDraftSchema>;
+
+/**
+ * The one condition a draft can violate that a `Gist` cannot: a recoverability
+ * claim with nothing behind it.
+ *
+ * `validateGist` cannot report it. `raw_uri` is a required non-empty string and
+ * nothing in `GistSchema` knows what the marker means, so a gist claiming
+ * recovery over an unstored transcript validates clean and an operator is never
+ * told. That is not a safety hole -- eviction still refuses, because
+ * `assessEvictable` asks whether the ACL can resolve the address before it
+ * discards anything -- but "the gist does not satisfy the v1 schema" is not a
+ * sentence anyone can act on, and this one is.
+ */
+export type GistDraftDefect = { readonly kind: 'raw_uri_unstored' };
+
+export interface GistDraftValidation {
+  readonly ok: boolean;
+  readonly draft?: GistDraft;
+  readonly defects: readonly GistDraftDefect[];
+}
+
+/**
+ * Parse a draft and refuse the claim the bytes cannot back.
+ *
+ * Scope is deliberately one check. Every other invariant `validateGist` owns is
+ * checked by the caller against the object the draft will become -- that is the
+ * existing discipline (assembly.ts:369 stamps the earned claim and re-validates
+ * rather than validating the incomplete draft), and duplicating the four
+ * transactional invariants here would give two functions an answer that has to
+ * be kept in step. What is added here is the one thing `validateGist` is
+ * structurally unable to see, because `z.literal(true)` makes the failure
+ * arrive as a bare schema rejection.
+ *
+ * The converse is not this function's job: a `raw_uri` outside the marker is
+ * still checked for resolvability wherever the store is reachable, because only
+ * the ACL knows the bucket vocabulary (`isResolvableArtifactUri`, which defers
+ * to `parseArtifactUri` for exactly that reason).
+ */
+export function validateGistDraft(input: unknown): GistDraftValidation {
+  const parsed = GistDraftSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, defects: [] };
+
+  const draft = parsed.data;
+  const defects: GistDraftDefect[] = [];
+  if (draft.raw_recoverable === true && draft.log_gist.raw_uri === RAW_URI_UNSTORED) {
+    defects.push({ kind: 'raw_uri_unstored' });
+  }
+
+  return defects.length === 0 ? { ok: true, draft, defects: [] } : { ok: false, defects };
+}
