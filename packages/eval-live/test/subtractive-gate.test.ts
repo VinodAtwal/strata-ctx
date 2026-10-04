@@ -370,10 +370,10 @@ const gateFetch = (mode: 'when-decayed' | 'always' | 'never'): typeof fetch =>
       .join('\n');
     const violates = mode === 'always' || (mode === 'when-decayed' && prompt.includes('Notes (condensed'));
     const content = violates ? VIOLATES : COMPLIES;
-    return new Response(JSON.stringify({ model: 'fake/m', choices: [{ message: { role: 'assistant', content } }] }), {
+    return Promise.resolve(new Response(JSON.stringify({ model: 'fake/m', choices: [{ message: { role: 'assistant', content } }] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    });
+    }));
   }) as unknown as typeof fetch;
 
 /** An `ArmResult` and a `CaseResult` shaped like the offline reporter's. */

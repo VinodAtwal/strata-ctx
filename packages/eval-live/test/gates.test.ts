@@ -324,6 +324,8 @@ const makeReport = (
       attempts: results.length,
       retries: 0,
       infrastructureFailures: 0,
+      unmeasuredArms: 0,
+      decayedNegativeControls: 0,
       observedAt: '2026-10-01T00:00:00.000Z',
       retentionThreshold: 0.5,
       caveats: ['This measures a prompt prefix, not a pin.'],

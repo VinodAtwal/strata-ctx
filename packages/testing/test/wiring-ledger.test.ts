@@ -74,14 +74,17 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
   },
   eval: {
     why: 'offline harness; its only importer is @strata-ctx/eval-live, which is itself unreachable',
-    exports: 343,
+    // 343 -> 348 at 1afd8b2, which added the hermetic corpus resolver. Still
+    // unreachable for the same reason.
+    exports: 348,
   },
   'eval-live': {
     why: 'F2-1..F2-3 are externally blocked, so no reachable module imports @strata-ctx/eval-live',
-    // 29 -> 31 at e151617, which added the claims-audit operators. Still
-    // unreachable for the same reason; the gate exists to make a change in this
-    // number a decision rather than a drift.
-    exports: 31,
+    // 29 -> 31 at e151617, which added the claims-audit operators, then 31 -> 34
+    // at a03dbc3, which added the subtractive arm. Still unreachable for the same
+    // reason: an instrument with no credential cannot run. The gate exists to make
+    // a change in this number a decision rather than a drift.
+    exports: 34,
   },
   gist: {
     why: 'no package depends on @strata-ctx/gist, so eviction and recovery cannot run',
@@ -265,6 +268,8 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'security/scanSecrets': 'redact.ts:468; redactDeep and RedactionEngine call the scanners internally',
 
   // --- @strata-ctx/telemetry ---
+  'telemetry/EXPLICIT_UNHANDLED_EVENT_ALLOWLIST':
+    'status.ts:312; a declaration table whose only reader is the exhaustiveness test, so it is test support living in src',
   'telemetry/GIST_INVARIANTS': 'events.ts:386; the gist package that would assert them is unreachable',
   'telemetry/GuardedSink': 'sink.ts:238; no reachable module constructs a sink, so none is wrapped',
   'telemetry/JsonlSink': 'sink.ts:296; the status CLI parses the log with nothing but node:fs (cli/src/index.ts:266)',

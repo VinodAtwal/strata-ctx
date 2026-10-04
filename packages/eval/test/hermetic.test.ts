@@ -4,7 +4,7 @@ import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {loadCorpus, resolveCorpusHermetic, resolveCorpus} from '../src/corpus.ts';
+import {loadCorpus, resolveCorpusHermetic, resolveCorpus} from '../src/corpus.js';
 
 const execFileAsync = promisify(execFile);
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -22,7 +22,7 @@ describe('hermeticity', () => {
   });
 
   it('hermetic resolution requires complete resolved fixture', async () => {
-    const {validateResolvedCorpus} = await import('../src/corpus.ts');
+    const {validateResolvedCorpus} = await import('../src/corpus.js');
     const issues = validateResolvedCorpus({formatVersion: 1, name: 'x', entries: []});
     assert.ok(issues.some((i) => i.code === 'format'));
   });
