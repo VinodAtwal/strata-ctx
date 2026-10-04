@@ -862,7 +862,7 @@ export function detectE1Violations(
       for (const call of calls) {
         walkArgumentLeaves(call.args, 'args', (leaf) => {
           if (!leafMatchesMarker(leaf, marker, suppliedByConstraintText)) return;
-          const key = `${constraint.id} ${marker} ${call.tool} ${leaf.path}`;
+          const key = `${constraint.id}\u0000${marker}\u0000${call.tool}\u0000${leaf.path}`;
           if (seen.has(key)) return;
           seen.add(key);
           findings.push({
