@@ -998,6 +998,181 @@ describe('E-15 the reader still refuses a line it cannot trust', () => {
   });
 });
 
+describe('G-8 a cache invalidation with no reorder must not read like one with a reorder', () => {
+  // The named failure (docs/testing-plan.md G-8, written before this work): the
+  // `cache` case used to fall through into `canary`. A `cache` event carries
+  // `prefixHit`/`prefixInvalidated` and no `passed`/`score`, so `!event.passed`
+  // was true and `event.score.toFixed(4)` threw on `undefined`. Asserting only
+  // that "cache is handled" would have passed with the trap intact: a report can
+  // say `cache` was handled and still be unable to tell these two logs apart.
+  // So the pair below differs in exactly one respect -- whether a compaction
+  // reorders the context -- and must be distinguishable in the field, in the
+  // rendered text and in the warnings.
+
+  const invalidated = (runId: string) =>
+    cache({ runId, prefixHit: false, prefixInvalidated: true });
+
+  const WITHOUT_REORDER = recordsOf([requestIn({ runId: RUN }), invalidated(RUN)]);
+  const WITH_REORDER = recordsOf([
+    requestIn({ runId: RUN }),
+    invalidated(RUN),
+    // The only difference: a compaction on the same run, which is the thing
+    // that invalidates a prefix cache in the first place.
+    compaction({ runId: RUN, droppedCount: 3, beforeTokens: 9000, afterTokens: 5000 }),
+  ]);
+
+  it('separates an unexplained invalidation from one a compaction accounts for', () => {
+    const unexplained = buildStatus(WITHOUT_REORDER);
+    const explained = buildStatus(WITH_REORDER);
+
+    assert.equal(unexplained.cache.records, 1);
+    assert.equal(unexplained.cache.prefixInvalidated, 1);
+    assert.equal(explained.cache.records, 1);
+    assert.equal(explained.cache.prefixInvalidated, 1);
+
+    assert.deepEqual(
+      [...unexplained.cache.unexplainedInvalidations],
+      [RUN],
+      'no compaction on this run, so the log cannot say what dropped the prefix',
+    );
+    assert.deepEqual(
+      [...explained.cache.unexplainedInvalidations],
+      [],
+      'a compaction reorders the context, so the invalidation is accounted for',
+    );
+    assert.notDeepEqual(
+      [...unexplained.cache.unexplainedInvalidations],
+      [...explained.cache.unexplainedInvalidations],
+    );
+  });
+
+  it('counts the two flags separately, because the event does not make them exclusive', () => {
+    // `CacheTelemetry` (core-types/src/telemetry.ts:21) is two independent
+    // booleans, so a record can carry both. A hit/miss partition would report
+    // one of those records under neither column and lose it.
+    const r = buildStatus(
+      recordsOf([
+        cache({ runId: RUN, prefixHit: true, prefixInvalidated: false }),
+        cache({ runId: RUN, prefixHit: true, prefixInvalidated: true }),
+        cache({ runId: RUN_2, prefixHit: false, prefixInvalidated: false }),
+      ]),
+    );
+    assert.equal(r.cache.records, 3);
+    assert.equal(r.cache.prefixHits, 2);
+    assert.equal(r.cache.prefixInvalidated, 1);
+    assert.equal(r.cache.neitherFlagSet, 1, 'the third record is counted, not discarded');
+  });
+
+  it('raises a warning for an invalidation nothing in the log accounts for', () => {
+    // `warnings` is the block the CLI prints above every count, so an
+    // unexplained invalidation that only appears in a field the reader has to
+    // go looking for is a finding that gets missed on the day it matters.
+    const unexplained = buildStatus(WITHOUT_REORDER);
+    assert.ok(
+      unexplained.warnings.some((w) => w.includes(RUN) && w.includes('prefix')),
+      unexplained.warnings.join(' | '),
+    );
+    const explained = buildStatus(WITH_REORDER);
+    assert.equal(
+      explained.warnings.some((w) => w.includes('prefix')),
+      false,
+      explained.warnings.join(' | '),
+    );
+  });
+
+  it('renders the two logs differently, because a field nobody prints is not a report', () => {
+    const a = formatStatus(buildStatus(WITHOUT_REORDER));
+    const b = formatStatus(buildStatus(WITH_REORDER));
+    assert.ok(a.includes('prefix invalidated'), a);
+    assert.ok(b.includes('prefix invalidated'), b);
+    assert.notEqual(a, b, 'the rendered reports must not be the same document');
+  });
+
+  it('never counts a cache event as a canary failure', () => {
+    // The regression the fall-through produced, stated as an assertion rather
+    // than as a comment: `canary_fail` is a `ViolationKind`, so a cache event
+    // that reached the canary branch would land in `violations.byKind` and in
+    // the exit-1 findings path.
+    const r = buildStatus(WITHOUT_REORDER);
+    assert.equal(r.violations.total, 0);
+    assert.equal(r.violations.byKind['canary_fail'], 0);
+    assert.deepEqual([...r.violations.kinds], []);
+  });
+
+  it('keeps counts complete and caps only the listing, announcing the cap', () => {
+    const many = Array.from({ length: 12 }, (_, i) =>
+      invalidated(`run-cache-${String(i)}`),
+    );
+    const r = buildStatus(recordsOf(many));
+    assert.equal(r.cache.records, 12, 'the count is never capped, only the listing');
+    assert.equal(r.cache.prefixInvalidated, 12);
+    assert.equal(r.cache.unexplainedInvalidations.length < 12, true);
+    assert.equal(r.cache.truncated, true);
+    assert.ok(
+      formatStatus(buildStatus(recordsOf(many))).includes('not shown'),
+      'a capped list that does not announce itself reads as complete',
+    );
+  });
+});
+
+describe('G-8 token-category savings: where the tokens went', () => {
+  it('reports the per-category ledger the log already carried', () => {
+    // `savings.tokensByCategory` was written on every savings record
+    // (events.ts:114, populated by savings.ts:151-168) and read by nothing, so
+    // an operator could see that money was saved and not one token of where it
+    // went.
+    const r = buildStatus(
+      recordsOf([
+        savingsEvent({ tokensByCategory: { input_saved: 10_000, gist_out: 200, probe_in: 5, probe_out: 0, compaction_out: 0 } }),
+        savingsEvent({ runId: RUN_2, tokensByCategory: { input_saved: 4_000, gist_out: 100, probe_in: 1, probe_out: 2, compaction_out: 3 } }),
+      ]),
+    );
+    assert.equal(r.savings.tokensByCategory?.input_saved, 14_000);
+    assert.equal(r.savings.tokensByCategory?.gist_out, 300);
+    assert.equal(r.savings.tokensByCategory?.probe_out, 2);
+    assert.equal(r.savings.tokensByCategory?.compaction_out, 3);
+  });
+
+  it('keeps input_saved signed, because a run that grew its input saved nothing', () => {
+    // savings.ts:150 documents `input_saved` as a signed difference on
+    // purpose. Summing it as an unsigned count would hide the one run that made
+    // the context bigger.
+    const r = buildStatus(recordsOf([savingsEvent({ tokensByCategory: { input_saved: -1_500, gist_out: 0, probe_in: 0, probe_out: 0, compaction_out: 0 } })]));
+    assert.equal(r.savings.tokensByCategory?.input_saved, -1_500);
+    assert.ok(
+      r.warnings.some((w) => w.includes('input grew') || w.includes('grew its input')),
+      r.warnings.join(' | '),
+    );
+  });
+
+  it('makes a category total that does not cover the run visible as such', () => {
+    // The completeness rule this section exists for: the listing is capped and
+    // the cap is announced, and a total that does not account for every
+    // category in the log says so rather than reading as the whole story.
+    const wide: Record<string, number> = { input_saved: 1_000 };
+    for (let i = 0; i < 11; i += 1) wide[`cat_${String(i)}`] = 10;
+    const r = buildStatus(recordsOf([savingsEvent({ tokensByCategory: wide })]));
+    assert.equal(r.savings.tokensByCategoryCategories, 12, 'the count is complete');
+    assert.equal(Object.keys(r.savings.tokensByCategory ?? {}).length < 12, true);
+    assert.equal(r.savings.tokensByCategoryTruncated, true);
+    const text = formatStatus(buildStatus(recordsOf([savingsEvent({ tokensByCategory: wide })])));
+    assert.ok(text.includes('not shown'), text);
+  });
+
+  it('reports no category breakdown when the log holds no savings record', () => {
+    // An absent breakdown and an empty one are different facts; the report must
+    // not present "the log said nothing about tokens" as "tokens were zero".
+    const r = buildStatus(recordsOf([requestIn(), stage()]));
+    assert.equal(r.savings.runs, 0);
+    assert.deepEqual(Object.keys(r.savings.tokensByCategory), []);
+    assert.equal(r.savings.tokensByCategoryCategories, 0);
+    assert.equal(r.savings.tokensByCategoryTruncated, false);
+    const text = formatStatus(r);
+    assert.ok(text.includes('no savings records yet'), text);
+    assert.equal(text.includes('input_saved'), false, text);
+  });
+});
+
 describe('exhaustiveness guard against unhandled event types', () => {
   it('enumerates STRATA_EVENT_TYPES and asserts every member is handled or explicitly allowed', async () => {
     // Load the allowlist from the module under test to keep this assertion in
@@ -1032,5 +1207,63 @@ describe('exhaustiveness guard against unhandled event types', () => {
         `Event type ${t} must be handled in switch or present in EXPLICIT_UNHANDLED_EVENT_ALLOWLIST`,
       );
     }
+  });
+
+  it('names nothing in the allowlist that the switch also handles', async () => {
+    // The other half of the guard, and the half that was missing. The test above
+    // passes just as happily with a stale entry: a type listed as "deliberately
+    // unhandled" while the switch handles it satisfies `handled || allowlist`
+    // twice, so the allowlist could claim `cache` was unhandled for as long as
+    // the switch kept quietly handling it, and nothing here would object. That
+    // is the same shape as the wiring-ledger gate's rule -- an allowlist entry
+    // for something now handled is a declaration that the handling might not be.
+    const statusModule = await import('../src/status.js');
+    const eventsModule = await import('../src/events.js');
+    const handledInSwitch = new Set<string>([
+      'request_in',
+      'stage',
+      'error',
+      'pin',
+      'compaction',
+      'gist',
+      'violation',
+      'savings',
+      'consolidation',
+      'cost',
+      'cache',
+      'canary',
+    ]);
+    const stale = Object.keys(statusModule.EXPLICIT_UNHANDLED_EVENT_ALLOWLIST)
+      .filter((t) => handledInSwitch.has(t))
+      .sort();
+    assert.deepEqual(
+      stale,
+      [],
+      'the allowlist declares these deliberately unhandled, but the switch handles them. Delete the entry.',
+    );
+    const unknownEntry = Object.keys(statusModule.EXPLICIT_UNHANDLED_EVENT_ALLOWLIST)
+      .filter((t) => !(eventsModule.STRATA_EVENT_TYPES as readonly string[]).includes(t))
+      .sort();
+    assert.deepEqual(unknownEntry, [], 'the allowlist names a type that is not in the union at all');
+  });
+
+  it('surfaces every event type the log can carry', async () => {
+    // Not the guard above: an observation about what the report now holds, so a
+    // reader of this file can tell the remaining gaps are none rather than
+    // having to trust a hand-maintained list. `ONE_OF_EVERY_TYPE` carries one
+    // record of each type, so anything the switch drops shows up as a count that
+    // stayed at zero.
+    const eventsModule = await import('../src/events.js');
+    const r = buildStatus(recordsOf(ONE_OF_EVERY_TYPE));
+    assert.deepEqual(
+      [...r.log.eventTypes],
+      [...eventsModule.STRATA_EVENT_TYPES],
+      'all twelve types reached the report',
+    );
+    assert.equal(r.cache.records, 1, 'the cache record the fixture carries is counted');
+    assert.ok(
+      Object.keys(r.savings.tokensByCategory).length > 0,
+      'the token-category ledger the savings fixture carries is surfaced',
+    );
   });
 });

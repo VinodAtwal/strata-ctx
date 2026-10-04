@@ -46,6 +46,23 @@ import { pricingFreshness } from './pricing.js';
  * because the honest report of a no-op request is the case that is easiest to
  * get wrong: silence and "nothing happened" look identical in a summary.
  *
+ * ## Two facts that reached the log and died there
+ *
+ * `case 'cache': break;` and a `savings` handler that read every dollar field
+ * and none of `tokensByCategory`. Both were written, both were read by nothing,
+ * and both were invisible on the one surface an operator reads. They are now
+ * `cache` and `savings.tokensByCategory`, added rather than merged: `cache`
+ * keeps its own case because the case it used to share with `canary` is the
+ * documented trap, and a merge would put the trap back.
+ *
+ * `cache` is surfaced as a discrimination rather than a count, because a count
+ * cannot answer the question the event was written for. A compaction is the only
+ * thing in this log that reorders the context, so it is the only thing that can
+ * account for a dropped prefix; `cache.unexplainedInvalidations` names the runs
+ * whose prefix was invalidated with nothing behind it. `CacheTelemetry` carries
+ * no reason, so the report says "unexplained" and stops -- naming a cause would
+ * be a claim the log does not support.
+ *
  * ## No network, no clock
  *
  * The report is a pure function of (records, options). `now` is an option, not
@@ -149,6 +166,22 @@ export interface SavingsSummary {
   readonly gate: 'pass' | 'fail' | 'unknown' | 'none';
   readonly failedRuns: number;
   readonly worstRun: { readonly runId: string; readonly netSavedUsd: number } | null;
+  /**
+   * E5's per-category token attribution, summed over every savings record.
+   * Empty when the log holds no savings record -- an absent breakdown, which is
+   * a different fact from a breakdown of zeroes.
+   */
+  readonly tokensByCategory: Readonly<Record<string, number>>;
+  /** Distinct category keys in the log. Complete regardless of the listing. */
+  readonly tokensByCategoryCategories: number;
+  /**
+   * True when `tokensByCategory` lists fewer than
+   * `tokensByCategoryCategories` keys. The ledger is keyed by a bare
+   * `Record<string, number>` on the wire (`events.ts:114`), so the key count is
+   * unbounded and the listing has to be capped; a capped breakdown that did not
+   * announce itself would read as the whole one.
+   */
+  readonly tokensByCategoryTruncated: boolean;
 }
 
 export interface ViolationSummary {
@@ -281,6 +314,34 @@ export interface PerRequestSummary {
   readonly byRun: readonly RunSummary[];
 }
 
+/**
+ * Where the savings went, in tokens, per E5's five categories.
+ *
+ * The three counts below are deliberately not a partition of `records`.
+ * `CacheTelemetry` (`core-types/src/telemetry.ts:21`) is two *independent*
+ * booleans, so a record may set both, set either, or set neither, and a hit/miss
+ * split would drop the records that do not fit it -- which is exactly how a
+ * cache that is behaving oddly disappears from the report that exists to show
+ * it behaving oddly.
+ */
+export interface CacheSummary {
+  readonly records: number;
+  /** Records with `prefixHit: true`, whether or not they also invalidated. */
+  readonly prefixHits: number;
+  readonly prefixInvalidated: number;
+  /** Records with both flags false: the log cannot say what happened. */
+  readonly neitherFlagSet: number;
+  /**
+   * Runs whose prefix was invalidated and that hold no compaction to account
+   * for it. Empty is the healthy reading; the field exists because a compaction
+   * is the only thing in the log that reorders context, so an invalidation
+   * without one is a finding rather than a detail.
+   */
+  readonly unexplainedInvalidations: readonly string[];
+  /** Capped view: counts above are complete, this list may not be. */
+  readonly truncated: boolean;
+}
+
 export interface StatusReport {
   readonly runs: number;
   readonly turns: number;
@@ -290,6 +351,7 @@ export interface StatusReport {
   readonly consolidations: ConsolidationSummary;
   readonly pins: PinSummary;
   readonly savings: SavingsSummary;
+  readonly cache: CacheSummary;
   readonly violations: ViolationSummary;
   readonly stages: StageSummary;
   readonly errors: ErrorSummary;
@@ -308,11 +370,14 @@ function emptyByKind(): Record<ViolationKind, number> {
  * Events intentionally not surfaced in detail by `buildStatus`. Each entry
  * carries a one-line reason to prevent a new event type from being added to
  * the union and silently dropped by the switch.
+ *
+ * Empty, and that is a finding rather than an absence: every member of
+ * `STRATA_EVENT_TYPES` now reaches the report. `cache` was the last holdout and
+ * it is listed nowhere here, because an allowlist entry for a type the switch
+ * handles is a declaration that the switch might not -- which is the mistake
+ * the exhaustiveness test in `test/status.test.ts` exists to catch.
  */
-export const EXPLICIT_UNHANDLED_EVENT_ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
-  cache:
-    'fall-through bug makes surfacing cache effects non-trivial (preserve separate case to avoid reintroducing silent wrong branch)',
-});
+export const EXPLICIT_UNHANDLED_EVENT_ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({});
 
 /**
  * How many runs `perRequest` lists, and how many error records `errors.recent`
@@ -327,6 +392,21 @@ export const EXPLICIT_UNHANDLED_EVENT_ALLOWLIST: Readonly<Record<string, string>
  */
 const MAX_RUNS_LISTED = 10;
 const MAX_ERRORS_LISTED = 10;
+
+/**
+ * How many runs `cache.unexplainedInvalidations` lists, and how many category
+ * keys `savings.tokensByCategory` lists.
+ *
+ * The category map is the reason this one is needed. `SavingsEvent
+ * .tokensByCategory` is `Readonly<Record<string, number>>` on the wire
+ * (`events.ts:114`), not the closed `TokenLedger` of `savings.ts:92`, so nothing
+ * bounds its key count and a future writer may add categories freely. A report
+ * that inlined an unbounded map is the same `--json` problem `readJsonl` already
+ * refuses to be. The per-category sums and the key count stay complete either
+ * way; only the listing is capped, and `truncated` says so.
+ */
+const MAX_CACHE_RUNS_LISTED = 10;
+const MAX_TOKEN_CATEGORIES_LISTED = 10;
 
 /** Accumulator behind one `StageEffect`, before it is frozen into the report. */
 interface StageTally {
@@ -365,6 +445,13 @@ const EMPTY_SAVINGS: Omit<SavingsSummary, 'gate'> = {
   netFraction: null,
   failedRuns: 0,
   worstRun: null,
+  // An absent ledger, stated as an empty map with a zero key count rather than
+  // as five zeroes: "the log held no savings record" and "the log said the run
+  // spent no overhead tokens" are different facts and only one of them is true
+  // of an empty log.
+  tokensByCategory: Object.freeze({}),
+  tokensByCategoryCategories: 0,
+  tokensByCategoryTruncated: false,
 };
 
 /**
@@ -417,6 +504,19 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
   let savingsFailed = 0;
   let sawUnknownGate = false;
   let worstRun: SavingsSummary['worstRun'] = null;
+  // First-seen order, like `evictionSkipReasons` beside it: the ledger's keys
+  // follow the log rather than the alphabet, and a category that appears late
+  // is not more interesting than one that appeared first.
+  const savingsTokensByCategory = new Map<string, number>();
+  let savingsInputShrankBy = 0;
+  let savingsInputGrewBy = 0;
+
+  let cacheRecords = 0;
+  let cachePrefixHits = 0;
+  let cachePrefixInvalidated = 0;
+  let cacheNeitherFlag = 0;
+  /** Runs that invalidated the prefix, first-seen order. */
+  const cacheInvalidatedRuns: string[] = [];
 
   let violationTotal = 0;
   let blocked = 0;
@@ -674,6 +774,20 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         if (worstRun === null || event.netSavedUsd < worstRun.netSavedUsd) {
           worstRun = { runId: event.runId, netSavedUsd: event.netSavedUsd };
         }
+        // `tokensByCategory` was written on every one of these records
+        // (savings.ts:151-168) and read by nothing, so the report could say
+        // money was saved and not one token of where it went.
+        for (const [category, tokens] of Object.entries(event.tokensByCategory)) {
+          savingsTokensByCategory.set(
+            category,
+            (savingsTokensByCategory.get(category) ?? 0) + tokens,
+          );
+        }
+        // Signed on purpose (savings.ts:150): a run that grew its input saved
+        // nothing, and summing it unsigned would let the good runs bury it.
+        const inputSaved = event.tokensByCategory['input_saved'] ?? 0;
+        if (inputSaved < 0) savingsInputGrewBy += -inputSaved;
+        else savingsInputShrankBy += inputSaved;
         break;
       }
       case 'consolidation': {
@@ -697,14 +811,26 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         break;
       }
       case 'cache': {
-        // Its own `break', deliberately. This was previously an empty case
-        // falling through to `canary', which was harmless while both were
-        // `break'. Giving `canary' a body turned the shared fall-through into a
-        // silent path from a `cache' event into the canary branch, where a
-        // `cache' event has neither `passed' nor `score'.
-        // The fall-through bug makes surfacing cache effects non-trivial (see
-        // comment above) — kept unread by explicit choice; see
-        // EXPLICIT_UNHANDLED_EVENT_ALLOWLIST.
+        // Its own `break', deliberately, and the reason is in the diff this
+        // replaces: this was previously an empty case falling through to
+        // `canary', which was harmless while both were `break'. Giving
+        // `canary' a body turned the shared fall-through into a silent path
+        // from a `cache' event into the canary branch, where a `cache' event
+        // has neither `passed` nor `score' -- `!event.passed` was true and
+        // `event.score.toFixed(4)` threw. It has a body now, and the two cases
+        // are still separate; merging them would reintroduce the exact trap.
+        //
+        // Both flags are counted independently because `CacheTelemetry`
+        // (core-types/src/telemetry.ts:21) declares them that way. A hit/miss
+        // partition would silently drop every record that sets both or neither,
+        // and the records that set neither are the ones worth seeing.
+        cacheRecords += 1;
+        if (event.prefixHit) cachePrefixHits += 1;
+        if (event.prefixInvalidated) {
+          cachePrefixInvalidated += 1;
+          if (!cacheInvalidatedRuns.includes(event.runId)) cacheInvalidatedRuns.push(event.runId);
+        }
+        if (!event.prefixHit && !event.prefixInvalidated) cacheNeitherFlag += 1;
         break;
       }
       case 'canary': {
@@ -749,6 +875,18 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
     );
   }
 
+  // The discrimination this whole section turns on: a compaction is the only
+  // thing in this log that reorders the context, so it is the only thing that
+  // can account for a dropped prefix cache. An invalidation with no compaction
+  // behind it is not automatically wrong -- the upstream provider can invalidate
+  // on its own -- but the log cannot tell the reader which of the two happened,
+  // and an unexplained invalidation is the first thing to look at when cache
+  // effectiveness drops for reasons nobody can name.
+  const unexplainedInvalidations = cacheInvalidatedRuns.filter((id) => {
+    const tally = runTallies.get(id);
+    return tally === undefined || tally.compactions === 0;
+  });
+
   const netFraction = savingsBaseline > 0 ? savingsNet / savingsBaseline : null;
   const grossFraction = savingsBaseline > 0 ? savingsGross / savingsBaseline : null;
   const gate: SavingsSummary['gate'] =
@@ -784,6 +922,26 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
   }
   if (validationFailures > 0) {
     warnings.push(`${validationFailures} compaction(s) failed validation and were aborted`);
+  }
+  if (unexplainedInvalidations.length > 0) {
+    // Named as unexplained rather than as a fault. The event carries no reason
+    // field (`CacheTelemetry` is two booleans), so "why" is not in the log and
+    // inventing one here would be a claim nothing supports.
+    warnings.push(
+      `CACHE: the prefix was invalidated on ${unexplainedInvalidations.length} run(s) with no compaction to ` +
+        `account for it [${unexplainedInvalidations.join(', ')}]; the log records no reason, so an upstream ` +
+        'invalidation and a local one are indistinguishable here',
+    );
+  }
+  if (savingsInputGrewBy > 0) {
+    // `input_saved` is a signed difference (savings.ts:150), so a negative total
+    // is a real finding: the pipeline made the context bigger on at least one
+    // run. Reported by magnitude, not as a rate, because the denominator that
+    // would make a rate honest is not in this log.
+    warnings.push(
+      `savings: ${savingsInputGrewBy} token(s) of input grew rather than shrank across ${savingsRuns} ` +
+        `run(s) (${savingsInputShrankBy} shrank). The net dollar figure above does not separate the two.`,
+    );
   }
   if (pricing?.stale === true) warnings.push(pricing.message);
 
@@ -834,6 +992,20 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
           outcome: runOutcome(t),
         }),
       ),
+  );
+
+  // Capped listing, complete sums. `Object.fromEntries` over the first N keys
+  // keeps first-seen order (a Map preserves insertion order), and the count
+  // below stays the number of keys the log actually held rather than the number
+  // that survived the slice -- otherwise a truncated breakdown would report
+  // itself as the whole one.
+  const tokenCategoryKeys = [...savingsTokensByCategory.keys()];
+  const tokensByCategory = Object.freeze(
+    Object.fromEntries(
+      tokenCategoryKeys
+        .slice(0, MAX_TOKEN_CATEGORIES_LISTED)
+        .map((k) => [k, savingsTokensByCategory.get(k) ?? 0]),
+    ),
   );
 
   return Object.freeze({
@@ -900,7 +1072,20 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
       netFraction,
       failedRuns: savingsFailed,
       worstRun,
+      tokensByCategory,
+      tokensByCategoryCategories: tokenCategoryKeys.length,
+      tokensByCategoryTruncated: tokenCategoryKeys.length > MAX_TOKEN_CATEGORIES_LISTED,
       gate,
+    }),
+    cache: Object.freeze({
+      records: cacheRecords,
+      prefixHits: cachePrefixHits,
+      prefixInvalidated: cachePrefixInvalidated,
+      neitherFlagSet: cacheNeitherFlag,
+      unexplainedInvalidations: Object.freeze(
+        unexplainedInvalidations.slice(0, MAX_CACHE_RUNS_LISTED),
+      ),
+      truncated: unexplainedInvalidations.length > MAX_CACHE_RUNS_LISTED,
     }),
     violations: Object.freeze({
       total: violationTotal,
@@ -1125,6 +1310,35 @@ export function formatStatus(report: StatusReport): string {
   );
   out.push(`  post-compact    ${p.postCompactMissing} missing after compaction`);
 
+  const ca = report.cache;
+  if (ca.records > 0) {
+    out.push('');
+    // Only rendered when the log holds a cache record. An absent section and a
+    // section reading "0 invalidations" are different facts, and printing the
+    // second for a log with no cache records at all would be the first one.
+    out.push('prefix cache');
+    out.push(
+      `  records         ${ca.records}, ${ca.prefixHits} prefix hit(s), ` +
+        `${ca.prefixInvalidated} prefix invalidated`,
+    );
+    // Counted, not derived into a hit rate: the denominator would be a guess
+    // about which requests consulted the cache, and the log does not record
+    // that. `neitherFlagSet` is the count of records that say nothing either
+    // way, which is the number a reader wants before trusting either column.
+    if (ca.neitherFlagSet > 0) {
+      out.push(`  neither flag    ${ca.neitherFlagSet} record(s) set neither flag, so neither column covers them`);
+    }
+    if (ca.unexplainedInvalidations.length > 0) {
+      out.push(
+        `  unexplained     ${ca.unexplainedInvalidations.length} invalidation(s) with no compaction behind ` +
+          `them: ${ca.unexplainedInvalidations.join(', ')}`,
+      );
+    }
+    if (ca.truncated) {
+      out.push(`  ... and more; only the first ${ca.unexplainedInvalidations.length} unexplained run(s) are shown`);
+    }
+  }
+
   const s = report.savings;
   out.push('');
   out.push('savings (net is the gate, G7)');
@@ -1138,6 +1352,18 @@ export function formatStatus(report: StatusReport): string {
     out.push(`  NET saved       ${usd6(s.netSavedUsd)} (${pctf(s.netFraction)})   <- the truth`);
     if (s.worstRun !== null) {
       out.push(`  worst run       ${s.worstRun.runId} at ${usd6(s.worstRun.netSavedUsd)}`);
+    }
+    // `input_saved` is signed, so this line can read negative; that is the
+    // whole reason it is printed rather than folded into a total.
+    const tokenEntries = Object.entries(s.tokensByCategory);
+    if (tokenEntries.length > 0) {
+      out.push(`  tokens          ${tokenEntries.map(([k, v]) => `${k} ${v}`).join(', ')}`);
+      if (s.tokensByCategoryTruncated) {
+        out.push(
+          `  ... and ${s.tokensByCategoryCategories - tokenEntries.length} more category/categories not shown; ` +
+            'the totals above still cover every record',
+        );
+      }
     }
   }
 
