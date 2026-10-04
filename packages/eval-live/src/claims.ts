@@ -164,6 +164,15 @@ export function auditClaims(report: LiveRunReport): ClaimsAudit {
   const blocked = report.gates.filter((g) => g.status === 'not_evaluated').map((g) => g.spec.id);
   const lowConfidence = claims.filter((c) => c.confidence !== 'high').map((c) => c.id);
   const unsupported = claims.filter((c) => c.status === 'unsupported').map((c) => c.id);
+  // Two facts about the *instrument* rather than about the model, and both are
+  // the shape of the defect this package shipped for one commit: a negative
+  // control that received its constraint in full can report a clean 0% rate and
+  // it means nothing, because nothing decayed.
+  const controlObserved = completedFor(report, 'control+');
+  const premiseAbsent =
+    report.campaign.decayedNegativeControls === 0 &&
+    controlObserved > 0 &&
+    report.gates.some((g) => g.spec.id === 'G1' && g.status !== 'not_evaluated');
 
   const notClaimed: string[] = [
     ...blocked.map(
@@ -177,6 +186,16 @@ export function auditClaims(report: LiveRunReport): ClaimsAudit {
             ? 'That the harness can detect governance decay at all. G1 did not fire.'
             : 'That the harness can detect governance decay at all. G1 was never measured: no negative-control observation completed, so this campaign is silent about the harness rather than reassuring.',
         ]),
+    ...(premiseAbsent
+      ? [
+          `That the negative control reproduced decay rather than ignoring its constraint: ${controlObserved} control+ observation(s) completed and none of them was sent without its constraints (campaign.decayedNegativeControls is 0), so the rate in G1 describes arms that still held the rule.`,
+        ]
+      : []),
+    ...(report.campaign.unmeasuredArms > 0
+      ? [
+          `That all ${report.campaign.unmeasuredArms} arm(s) this harness could not build were measured anyway: they were never sent, so they are absent from every denominator rather than scored on a context they never had.`,
+        ]
+      : []),
     ...unsupported.map(
       (id) =>
         `That ${id} was measured at all: no observation behind it completed. An unsupported result is not an inconclusive one — there is no data either way.`,
@@ -219,6 +238,12 @@ export function renderClaimsAudit(report: LiveRunReport): string {
     `Campaign ${campaign.observedAt} · model \`${campaign.model}\` · temperature ${campaign.temperature} ·`,
     `${completed} completed observation(s) of ${report.totals.observations} attempted over ${report.totals.cases} case(s) · ` +
       `${campaign.attempts} request(s), ${campaign.retries} retry(ies), ${campaign.infrastructureFailures} infrastructure failure(s).`,
+    // The instrument's own state, next to the model's. A G1 rate read without
+    // knowing whether any negative control arrived decayed is the false green
+    // this audit exists to prevent, and the number belongs in the artifact rather
+    // than in the reader's memory of how the harness was wired.
+    `${campaign.decayedNegativeControls} negative-control observation(s) were sent without their constraints · ` +
+      `${campaign.unmeasuredArms} arm(s) could not be built and were never sent.`,
     '',
     // All twelve pre-registered gates, including the ones this campaign could not
     // measure. A gate that is absent from the report reads as a gate that passed;
@@ -303,6 +328,13 @@ export interface UnrunCampaign {
  * that came out ambiguous. F2-3 is the case this exists for: no live campaign
  * completed, so every downstream claim is unsupported, and saying so in a
  * quotable artifact is worth more than a green table nobody can reproduce.
+ *
+ * The live negative control became subtractive after that attempt, and this
+ * function still returns twelve `unsupported` claims — which is the point of it.
+ * G1, G2 and G3 became *measurable*; nothing made them *observed*. There is no
+ * credential on this machine, so no arm has been asked anything, and an audit
+ * that promoted a claim because the instrument was repaired would be inventing
+ * the evidence it is supposed to be checking.
  */
 export function auditUnrunCampaign(campaign: UnrunCampaign): ClaimsAudit {
   const evaluated = new Set(EVALUATED_GATES);

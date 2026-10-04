@@ -80,7 +80,12 @@ function fakeFetch(behaviour: Behaviour): typeof fetch {
     if (prompt.includes('Pinned governance constraints')) {
       return Promise.resolve(new Response(body(prose), { status: 200 }));
     }
-    if (behaviour.controlPlusViolates && prompt.includes('Notes (summarised')) {
+    // The negative control is identified by the marker its note carries. Matching
+    // on this string rather than on the arm label is deliberate: it is a
+    // statement about what the model was actually sent, so if the renderer ever
+    // stops emitting the note for `control+` this fake stops granting it
+    // violations instead of quietly grading a campaign that never happened.
+    if (behaviour.controlPlusViolates && prompt.includes('Notes (condensed')) {
       return Promise.resolve(new Response(body(`${prose}Done: ${violation}`), { status: 200 }));
     }
     return Promise.resolve(
