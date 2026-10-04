@@ -113,6 +113,21 @@ export interface CompactionSummary {
   readonly aborted: number;
 }
 
+export interface ConsolidationSummary {
+  readonly runs: number;
+  readonly clustersFormed: number;
+  readonly metaGistsCreated: number;
+  readonly gistsEvicted: number;
+  readonly constraintsPreservedRuns: number;
+  readonly violatedRuns: number;
+  readonly totalDurationMs: number;
+  readonly avgClustersPerRun: number | null;
+  /** True when at least one run produced clusters but evicted nothing. */
+  readonly producedClustersWithZeroEvictions: boolean;
+  /** Capped view: this section does not list individual runs. */
+  readonly truncated: boolean;
+}
+
 export interface PinSummary {
   readonly constraints: number;
   readonly applications: number;
@@ -272,6 +287,7 @@ export interface StatusReport {
   readonly log: LogHealth;
   readonly budget: BudgetSummary;
   readonly compactions: CompactionSummary;
+  readonly consolidations: ConsolidationSummary;
   readonly pins: PinSummary;
   readonly savings: SavingsSummary;
   readonly violations: ViolationSummary;
@@ -287,6 +303,16 @@ export interface StatusReport {
 function emptyByKind(): Record<ViolationKind, number> {
   return { pin_missing_pre_apply: 0, pin_post_compact_missing: 0, canary_fail: 0 };
 }
+
+/**
+ * Events intentionally not surfaced in detail by `buildStatus`. Each entry
+ * carries a one-line reason to prevent a new event type from being added to
+ * the union and silently dropped by the switch.
+ */
+export const EXPLICIT_UNHANDLED_EVENT_ALLOWLIST: Readonly<Record<string, string>> = Object.freeze({
+  cache:
+    'fall-through bug makes surfacing cache effects non-trivial (preserve separate case to avoid reintroducing silent wrong branch)',
+});
 
 /**
  * How many runs `perRequest` lists, and how many error records `errors.recent`
@@ -367,6 +393,15 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
   let totalAfter = 0;
   const byTrigger: Record<string, number> = {};
   const byMethod: Record<string, number> = {};
+
+  let consolidationRuns = 0;
+  let consolidationClusters = 0;
+  let consolidationMetaGists = 0;
+  let consolidationEvicted = 0;
+  let consolidationPreservedRuns = 0;
+  let consolidationViolatedRuns = 0;
+  let consolidationDuration = 0;
+  let consolidationProducedClustersWithZeroEvictions = false;
 
   let pinConstraints = 0;
   let pinApplications = 0;
@@ -641,16 +676,35 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         }
         break;
       }
+      case 'consolidation': {
+        consolidationRuns += 1;
+        consolidationClusters += event.clustersFormed;
+        consolidationMetaGists += event.metaGistsCreated;
+        consolidationEvicted += event.gistsEvicted;
+        consolidationDuration += event.durationMs;
+        if (event.constraintsPreserved) {
+          consolidationPreservedRuns += 1;
+        } else {
+          consolidationViolatedRuns += 1;
+        }
+        if (event.clustersFormed > 0 && event.gistsEvicted === 0) {
+          consolidationProducedClustersWithZeroEvictions = true;
+        }
+        break;
+      }
       case 'cost': {
         if (!event.breakevenOk) breakevenFailures += 1;
         break;
       }
       case 'cache': {
-        // Its own `break`, deliberately. This was previously an empty case
-        // falling through to `canary`, which was harmless while both were
-        // `break`. Giving `canary` a body turned the shared fall-through into a
-        // silent path from a `cache` event into the canary branch, where a
-        // `cache` event has neither `passed` nor `score`.
+        // Its own `break', deliberately. This was previously an empty case
+        // falling through to `canary', which was harmless while both were
+        // `break'. Giving `canary' a body turned the shared fall-through into a
+        // silent path from a `cache' event into the canary branch, where a
+        // `cache' event has neither `passed' nor `score'.
+        // The fall-through bug makes surfacing cache effects non-trivial (see
+        // comment above) — kept unread by explicit choice; see
+        // EXPLICIT_UNHANDLED_EVENT_ALLOWLIST.
         break;
       }
       case 'canary': {
@@ -814,6 +868,18 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
       byTrigger: Object.freeze({ ...byTrigger }),
       byMethod: Object.freeze({ ...byMethod }),
       aborted: compactions - validationFailures,
+    }),
+    consolidations: Object.freeze({
+      runs: consolidationRuns,
+      clustersFormed: consolidationClusters,
+      metaGistsCreated: consolidationMetaGists,
+      gistsEvicted: consolidationEvicted,
+      constraintsPreservedRuns: consolidationPreservedRuns,
+      violatedRuns: consolidationViolatedRuns,
+      totalDurationMs: consolidationDuration,
+      avgClustersPerRun: consolidationRuns > 0 ? consolidationClusters / consolidationRuns : null,
+      producedClustersWithZeroEvictions: consolidationProducedClustersWithZeroEvictions,
+      truncated: false,
     }),
     pins: Object.freeze({
       constraints: pinConstraints,
@@ -1029,6 +1095,26 @@ export function formatStatus(report: StatusReport): string {
   }
   out.push(`  by trigger      ${countMap(c.byTrigger)}`);
   out.push(`  by method       ${countMap(c.byMethod)}`);
+
+  const con = report.consolidations;
+  out.push('');
+  out.push('consolidations');
+  if (con.runs === 0) {
+    out.push('  none recorded');
+  } else {
+    out.push(`  runs            ${con.runs}`);
+    out.push(`  clusters formed ${con.clustersFormed}`);
+    out.push(`  meta-gists      ${con.metaGistsCreated}`);
+    out.push(`  gists evicted   ${con.gistsEvicted}`);
+    out.push(`  constraints ok  ${con.constraintsPreservedRuns} run(s), violated ${con.violatedRuns} run(s)`);
+    out.push(`  avg clusters    ${con.avgClustersPerRun === null ? 'n/a' : con.avgClustersPerRun.toFixed(2)}`);
+    if (con.producedClustersWithZeroEvictions) {
+      out.push(`  NOTE            clusters formed (${con.clustersFormed}) but evicted ${con.gistsEvicted} (non-zero clusters with zero evictions)`);
+    }
+    if (con.truncated) {
+      out.push(`  truncated       the consolidated view omits individual runs`);
+    }
+  }
 
   const p = report.pins;
   out.push('');

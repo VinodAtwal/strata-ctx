@@ -997,3 +997,40 @@ describe('E-15 the reader still refuses a line it cannot trust', () => {
     assert.ok(r.warnings.some((w) => w.includes('damaged')), r.warnings.join(' | '));
   });
 });
+
+describe('exhaustiveness guard against unhandled event types', () => {
+  it('enumerates STRATA_EVENT_TYPES and asserts every member is handled or explicitly allowed', async () => {
+    // Load the allowlist from the module under test to keep this assertion in
+    // lockstep with the implementation.
+    const statusModule = await import('../src/status.js');
+    const eventsModule = await import('../src/events.js');
+    const EXPLICIT_UNHANDLED_EVENT_ALLOWLIST = statusModule.EXPLICIT_UNHANDLED_EVENT_ALLOWLIST;
+    const STRATA_EVENT_TYPES = eventsModule.STRATA_EVENT_TYPES;
+
+    const handledInSwitch = new Set<string>([
+      'request_in',
+      'stage',
+      'error',
+      'pin',
+      'compaction',
+      'gist',
+      'violation',
+      'savings',
+      'consolidation',
+      'cost',
+      'cache',
+      'canary',
+    ]);
+
+    const allowlist = EXPLICIT_UNHANDLED_EVENT_ALLOWLIST;
+    const unknown = STRATA_EVENT_TYPES.filter((t) => !handledInSwitch.has(t) && !allowlist[t]);
+    assert.equal(unknown.length, 0, `Unhandled event types without explicit allowlist: ${unknown.join(', ')}`);
+
+    for (const t of STRATA_EVENT_TYPES) {
+      assert.ok(
+        handledInSwitch.has(t) || allowlist[t],
+        `Event type ${t} must be handled in switch or present in EXPLICIT_UNHANDLED_EVENT_ALLOWLIST`,
+      );
+    }
+  });
+});
