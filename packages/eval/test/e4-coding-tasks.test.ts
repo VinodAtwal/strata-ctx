@@ -12,7 +12,6 @@ import {
   E4Error,
   buildE4Document,
   buildE4Fixture,
-  compareE4GistModes,
   createE4ArmRunner,
   detectE4Violations,
   evaluateE4Gates,
@@ -20,6 +19,7 @@ import {
   renderE4Prompt,
   runE4Suite,
   toE4Task,
+  compareE4GistModes,
   type E4CaseOutcome,
   type E4Measurement,
   type E4Task,
@@ -27,7 +27,7 @@ import {
   type E4TaskStrategy,
   type E4ToolCall,
 } from '../src/suites/e4-coding-tasks.js';
-import { loadCorpus, resolveCorpus, type ResolvedTask } from '../src/corpus.js';
+import { type ResolvedTask } from '../src/corpus.js';
 import { join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -217,8 +217,9 @@ describe('the shipped corpus builds a fixture', () => {
   let shipped: ReturnType<typeof toE4Task>[];
 
   before(async () => {
-    const corpus = loadCorpus(CORPUS_PATH);
-    const live = await resolveCorpus(corpus);
+    const { loadResolvedCorpus, resolveCorpusFromResolved } = await import('../src/corpus.js');
+    const resolved = loadResolvedCorpus(CORPUS_PATH.replace('.json', '.resolved.json'));
+    const live = resolveCorpusFromResolved(resolved);
     shipped = live.map(toE4Task);
   });
 
@@ -829,9 +830,10 @@ describe('runE4Suite', () => {
 
 describe('the live corpus resolves', () => {
   it('produces one task per entry, cited to aegis', async function () {
-    const corpus = loadCorpus(CORPUS_PATH);
-    const live = await resolveCorpus(corpus);
-    assert.equal(live.length, corpus.entries.length);
+    const { loadResolvedCorpus, resolveCorpusFromResolved } = await import('../src/corpus.js');
+    const resolved = loadResolvedCorpus(CORPUS_PATH.replace('.json', '.resolved.json'));
+    const live = resolveCorpusFromResolved(resolved);
+    assert.equal(live.length, resolved.entries.length);
     assert.ok(live.every((task) => task.citation.startsWith('VinodAtwal/aegis#')));
     // Every resolved task must be buildable, so E4 can run on the real corpus.
     const fixture = buildE4Fixture(live.map(toE4Task));

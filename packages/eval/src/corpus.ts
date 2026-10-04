@@ -178,7 +178,7 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
     );
   }
 
-  const requiredText = (
+  const requiredTextLocal = (
     obj: Record<string, unknown>,
     key: string,
     path: string,
@@ -200,7 +200,7 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
     return value;
   };
 
-  const name = requiredText(input, 'name', 'name', 'corpus name') ?? '';
+  const name = requiredTextLocal(input, 'name', 'name', 'corpus name') ?? '';
   let description: string | undefined;
   if (input.description !== undefined) {
     if (typeof input.description !== 'string') {
@@ -209,6 +209,8 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
       description = input.description;
     }
   }
+
+
 
   const resolveSource = (raw: unknown, path: string): CorpusSource => {
     if (!isRecord(raw)) {
@@ -222,7 +224,7 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
     }
     if (kind === 'github') {
       rejectUnknownKeys(raw, GITHUB_SOURCE_KEYS, path, 'github source', add);
-      const repo = requiredText(raw, 'repo', `${path}.repo`, 'a repository must be owner/name') ?? '';
+      const repo = requiredTextLocal(raw, 'repo', `${path}.repo`, 'a repository must be owner/name') ?? '';
       if (repo !== '' && !REPO_PATTERN.test(repo)) {
         add(`${path}.repo`, 'format', `must be "owner/name", got "${repo}"`);
       }
@@ -239,7 +241,7 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
     }
     if (kind === 'board') {
       rejectUnknownKeys(raw, BOARD_SOURCE_KEYS, path, 'board source', add);
-      const id = requiredText(raw, 'id', `${path}.id`, 'a board id') ?? '';
+      const id = requiredTextLocal(raw, 'id', `${path}.id`, 'a board id') ?? '';
       return { kind: 'board', id };
     }
     add(`${path}.kind`, 'enum', `must be "github" or "board", got ${typeName(kind)}`);
@@ -252,8 +254,8 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
       return { id: '', text: '', kind: 'soft_policy', forbidden: [] };
     }
     rejectUnknownKeys(raw, CONSTRAINT_KEYS, path, 'constraint', add);
-    const id = requiredText(raw, 'id', `${path}.id`, 'constraint id') ?? '';
-    const text = requiredText(raw, 'text', `${path}.text`, 'constraint text') ?? '';
+    const id = requiredTextLocal(raw, 'id', `${path}.id`, 'constraint id') ?? '';
+    const text = requiredTextLocal(raw, 'text', `${path}.text`, 'constraint text') ?? '';
     const kindRaw = raw.kind;
     let kind: ConstraintKindName = 'soft_policy';
     if (kindRaw === undefined) {
@@ -302,9 +304,9 @@ const resolve = (input: unknown): { ok: true; corpus: Corpus } | { ok: false; is
       }
       rejectUnknownKeys(raw, ENTRY_KEYS, path, 'entry', add);
 
-      const id = requiredText(raw, 'id', `${path}.id`, 'entry id') ?? '';
-      const label = requiredText(raw, 'label', `${path}.label`, 'entry label') ?? '';
-      const language = requiredText(raw, 'language', `${path}.language`, 'entry language') ?? '';
+      const id = requiredTextLocal(raw, 'id', `${path}.id`, 'entry id') ?? '';
+      const label = requiredTextLocal(raw, 'label', `${path}.label`, 'entry label') ?? '';
+      const language = requiredTextLocal(raw, 'language', `${path}.language`, 'entry language') ?? '';
 
       let category: CorpusCategory = 'greenfield';
       const categoryRaw = raw.category;
@@ -403,6 +405,28 @@ export function loadCorpus(path: string): Corpus {
   return parseCorpus(document, path);
 }
 
+export function loadResolvedCorpus(path: string): ResolvedCorpus {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new CorpusError([{ path: '', code: 'io', message: `cannot be read: ${detail}` }], path);
+  }
+  let document: unknown;
+  try {
+    document = JSON.parse(text) as unknown;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new CorpusError([{ path: '', code: 'json', message: `is not valid JSON: ${detail}` }], path);
+  }
+  const issues = validateResolvedCorpus(document);
+  if (issues.length > 0) {
+    throw new CorpusError(issues, path);
+  }
+  return Object.freeze(document as ResolvedCorpus);
+}
+
 // ---------------------------------------------------------------- resolution
 
 /** The task text for one entry, as fetched from its source. */
@@ -417,6 +441,18 @@ export interface ResolvedTask {
   /** Where this came from, for the report. */
   readonly citation: string;
   readonly notes?: string;
+}
+
+export interface ResolvedCorpus {
+  readonly formatVersion: number;
+  readonly name: string;
+  readonly description?: string;
+  readonly generatedAt: string;
+  readonly refreshedAt?: string;
+  readonly refreshMethod?: string;
+  readonly refreshNote?: string;
+  readonly sourceCorpusPath?: string;
+  readonly entries: readonly ResolvedTask[];
 }
 
 /** Fetches one entry's task text. Injected so tests never shell out. */
@@ -446,7 +482,9 @@ export const ghResolver: TaskResolver = async (entry) => {
     repo,
     '--json',
     'title,body',
-  ]);
+  ], {
+    timeout: 30_000,
+  });
   const parsed = JSON.parse(stdout) as { title?: string; body?: string };
   const title = parsed.title ?? '';
   const body = (parsed.body ?? '').trim();
@@ -454,6 +492,54 @@ export const ghResolver: TaskResolver = async (entry) => {
     throw new Error(`${repo}#${number} resolved to an empty issue`);
   }
   return `#${number} ${title}\n\n${body}`.trim();
+};
+
+/**
+ * Resolve task text through the GitHub CLI with bounded retry.
+ *
+ * Refresh operations must be bounded in time and retry briefly on transient
+ * failures without retrying forever.
+ */
+export const ghRefreshResolver: TaskResolver = async (entry): Promise<string> => {
+  const maxAttempts = 2;
+  let attempt = 0;
+  let lastErr: unknown;
+  while (attempt <= maxAttempts) {
+    try {
+      if (entry.source.kind === 'board') {
+        const board = readBoardRow(entry.source.id);
+        return board;
+      }
+      const { repo, number } = entry.source;
+      const { stdout } = await execFileAsync('gh', [
+        'issue',
+        'view',
+        String(number),
+        '--repo',
+        repo,
+        '--json',
+        'title,body',
+      ], {
+        timeout: 30_000,
+      });
+      const parsed = JSON.parse(stdout) as { title?: string; body?: string };
+      const title = parsed.title ?? '';
+      const body = (parsed.body ?? '').trim();
+      if (title === '' && body === '') {
+        throw new Error(`${repo}#${number} resolved to an empty issue`);
+      }
+      return `#${number} ${title}\n\n${body}`.trim();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < maxAttempts) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 500));
+        attempt += 1;
+        continue;
+      }
+      break;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 };
 
 /** Where the board lives, relative to the repo root. */
@@ -545,4 +631,178 @@ export const resolveCorpus = async (
           : `${BOARD_PATH}#${r.entry.source.id}`,
       ...(r.entry.notes === undefined ? {} : { notes: r.entry.notes }),
     }));
+};
+
+export interface ResolveCorpusOptions {
+  readonly allowNetwork?: boolean;
+  readonly resolvedPath?: string;
+}
+
+export const resolveCorpusHermetic = async (
+  corpus: Corpus,
+  options: ResolveCorpusOptions = {},
+): Promise<readonly ResolvedTask[]> => {
+  if (options.allowNetwork !== true) {
+    try {
+      const resolved = loadResolvedCorpus(options.resolvedPath ?? 'packages/eval/corpus/aegis-backlog.resolved.json');
+      const tasks = resolveCorpusFromResolved(resolved);
+      const byId = new Map(tasks.map((t) => [t.id, t]));
+      const ordered: ResolvedTask[] = [];
+      let missing = 0;
+      for (const entry of corpus.entries) {
+        const t = byId.get(entry.id);
+        if (t === undefined) {
+          missing += 1;
+          break;
+        }
+        ordered.push(t);
+      }
+      if (missing === 0 && ordered.length === corpus.entries.length) {
+        return ordered;
+      }
+    } catch {
+      // fall through
+    }
+    throw new Error('hermetic resolution requires committed resolved corpus fixture');
+  }
+  return resolveCorpus(corpus, ghRefreshResolver);
+};
+
+export const resolveCorpusFromResolved = (resolved: ResolvedCorpus): readonly ResolvedTask[] => {
+  const entries = resolved.entries;
+  if (entries.length === 0) {
+    throw new CorpusError([{ path: 'entries', code: 'format', message: 'must contain at least one entry' }]);
+  }
+  // Validate completeness: all entries must have non-empty prompt
+  for (let i = 0; i < entries.length; i += 1) {
+    const e = entries[i];
+    if (e === undefined) {
+      throw new CorpusError([{ path: `entries[${i}]`, code: 'missing', message: 'is missing' }]);
+    }
+    if (e.prompt.trim() === '') {
+      throw new CorpusError([{ path: `entries[${i}].prompt`, code: 'format', message: 'must not be empty' }]);
+    }
+  }
+  return entries;
+};
+
+export const validateResolvedCorpus = (input: unknown): readonly CorpusIssue[] => {
+  const issues: CorpusIssue[] = [];
+  const add = (path: string, code: CorpusIssueCode, message: string): void => {
+    issues.push({ path, code, message });
+  };
+  const requiredTextLocal = (
+    obj: Record<string, unknown>,
+    key: string,
+    path: string,
+    noun: string,
+  ): string | undefined => {
+    const value = obj[key];
+    if (value === undefined) {
+      add(path, 'missing', 'is required');
+      return undefined;
+    }
+    if (typeof value !== 'string') {
+      add(path, 'type', `must be a string, got ${typeName(value)}`);
+      return undefined;
+    }
+    if (value.trim() === '') {
+      add(path, 'format', `must not be empty (${noun})`);
+      return undefined;
+    }
+    return value;
+  };
+
+  if (!isRecord(input)) {
+    add('', 'not_object', `must be a JSON object, got ${typeName(input)}`);
+    return issues;
+  }
+  rejectUnknownKeys(
+    input,
+    ['formatVersion', 'name', 'description', 'generatedAt', 'refreshedAt', 'refreshMethod', 'refreshNote', 'sourceCorpusPath', 'entries'] as const,
+    '',
+    'resolved corpus',
+    add,
+  );
+
+  const version = input.formatVersion;
+  if (version === undefined) {
+    add('formatVersion', 'missing', 'is required');
+  } else if (typeof version !== 'number') {
+    add('formatVersion', 'type', `must be a number, got ${typeName(version)}`);
+  } else if (version !== CORPUS_FORMAT_VERSION) {
+    add(
+      'formatVersion',
+      'version',
+      `${version} cannot be read by this corpus loader (it reads ${CORPUS_FORMAT_VERSION})`,
+    );
+  }
+
+  requiredTextLocal(input, 'name', 'name', 'corpus name');
+
+  if (input.description !== undefined && typeof input.description !== 'string') {
+    add('description', 'type', `must be a string, got ${typeName(input.description)}`);
+  }
+  if (input.generatedAt !== undefined && typeof input.generatedAt !== 'string') {
+    add('generatedAt', 'type', `must be a string, got ${typeName(input.generatedAt)}`);
+  }
+  if (input.refreshedAt !== undefined && typeof input.refreshedAt !== 'string') {
+    add('refreshedAt', 'type', `must be a string, got ${typeName(input.refreshedAt)}`);
+  }
+  if (input.refreshMethod !== undefined && typeof input.refreshMethod !== 'string') {
+    add('refreshMethod', 'type', `must be a string, got ${typeName(input.refreshMethod)}`);
+  }
+  if (input.refreshNote !== undefined && typeof input.refreshNote !== 'string') {
+    add('refreshNote', 'type', `must be a string, got ${typeName(input.refreshNote)}`);
+  }
+  if (input.sourceCorpusPath !== undefined && typeof input.sourceCorpusPath !== 'string') {
+    add('sourceCorpusPath', 'type', `must be a string, got ${typeName(input.sourceCorpusPath)}`);
+  }
+
+  const entriesRaw = input.entries;
+  if (entriesRaw === undefined) {
+    add('entries', 'missing', 'is required');
+  } else if (!Array.isArray(entriesRaw)) {
+    add('entries', 'type', `must be an array, got ${typeName(entriesRaw)}`);
+  } else if (entriesRaw.length === 0) {
+    add('entries', 'format', 'must contain at least one entry');
+  } else {
+    entriesRaw.forEach((raw, index) => {
+      const path = `entries[${index}]`;
+      if (!isRecord(raw)) {
+        add(path, 'not_object', `must be an object, got ${typeName(raw)}`);
+        return;
+      }
+      rejectUnknownKeys(
+        raw,
+        ['id', 'label', 'language', 'category', 'constraint', 'prompt', 'citation', 'notes'],
+        path,
+        'resolved task',
+        add,
+      );
+      requiredTextLocal(raw, 'id', `${path}.id`, 'entry id');
+      requiredTextLocal(raw, 'label', `${path}.label`, 'entry label');
+      requiredTextLocal(raw, 'language', `${path}.language`, 'entry language');
+      requiredTextLocal(raw, 'prompt', `${path}.prompt`, 'entry prompt');
+      requiredTextLocal(raw, 'citation', `${path}.citation`, 'entry citation');
+      const categoryRaw = raw.category;
+      if (categoryRaw === undefined) {
+        add(`${path}.category`, 'missing', 'is required ("greenfield" or "refinement")');
+      } else if (categoryRaw !== 'greenfield' && categoryRaw !== 'refinement') {
+        add(
+          `${path}.category`,
+          'enum',
+          `must be "greenfield" or "refinement", got ${typeName(categoryRaw)}`,
+        );
+      }
+      if (raw.notes !== undefined && typeof raw.notes !== 'string') {
+        add(`${path}.notes`, 'type', `must be a string, got ${typeName(raw.notes)}`);
+      }
+      if (raw.constraint === undefined) {
+        add(`${path}.constraint`, 'missing', 'is required');
+      }
+    });
+  }
+
+  return issues;
 };
