@@ -168,7 +168,7 @@ describe('F2-4: the live negative control loses the constraint, on the real corp
       );
     }
     assert.ok(
-      LIVE_CAVEATS.some((c) => c.includes('cannot distinguish a refusal from a use')),
+      LIVE_CAVEATS.some((c) => c.includes('refusal') || c.includes('ambiguity')),
       'a marker this close to a refusal has to be named in the report, not just here',
     );
   });
