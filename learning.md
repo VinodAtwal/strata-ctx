@@ -29,6 +29,33 @@ a whole row to change one field. Concretely: compute the cell's `[start, end)` s
 `line.slice(0, start) + value + line.slice(end)`. Parsing is for *reading* the value; it is not
 license to rewrite the row.
 
+## 2026-10-05 — A rendered field you never checked is not a field
+
+**What went wrong.** `scripts/live-campaign.mjs` called
+`renderUnrunAudit(auditUnrunCampaign({...}))`. `renderUnrunAudit` takes a *campaign* and calls
+`auditUnrunCampaign` itself, so it received an audit object and read `campaign.model` and
+`campaign.reason` off a thing that has neither. Every field rendered as the string `undefined`:
+`Attempted model \`undefined\` at \`undefined\``, `the campaign did not run: undefined`.
+
+**Why it was not obvious.** It did not crash. It printed a complete, well-formatted, 12-gate
+claims audit — the exact shape of a correct report — with `undefined` where the model and endpoint
+should be. Exit code was right. Nothing in the output said "broken." The failure was only visible
+by reading the *content* of a report whose whole job is to be trustworthy, and the one field a
+reader skims is the model name.
+
+Worse, I had already unit-tested the exact call in isolation and it passed, because the isolated
+test passed the campaign directly. The bug lived only in the composition.
+
+**The rule.** When a function's output is a report, assert on the report's *fields*, not on its
+shape. `assert.doesNotMatch(out, /undefined/)` in a test that runs the real no-credential path is
+what caught this; "it exited 2 and printed UNSUPPORTED twelve times" passed happily. And in plain
+JS, where the type signature cannot catch a wrong argument shape, the call site is the only place
+the mistake is visible.
+
+Related: a wrapper that composes two functions where one already calls the other is a smell. If
+`renderX` internally does `auditX`, then `renderX(auditX(y))` type-checks in TypeScript, runs
+without error, and is always wrong. Pass `y`.
+
 ## 2026-10-05 — A convention with no enforcer is a convention that dies
 
 **What went wrong.** Seven of 132 `est_ed` values had drifted from the other 125: three carried a

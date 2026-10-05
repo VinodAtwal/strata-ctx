@@ -31,6 +31,7 @@ repo. **If you find a count hardcoded in any doc, that is a defect** — see §1
 | Assess readiness / risk | `docs/maturity.md`, `docs/decisions.md` §1 | — |
 | Deploy or operate it | `docs/operations.md` | — |
 | Learn from a mistake | `learning.md` | §8.0 |
+| Run the live A/B campaign (spends money) | `docs/evaluation.md` §Running it | §3, §8 |
 
 ---
 
@@ -110,6 +111,11 @@ Report other packages' errors rather than fixing them — they belong to whoever
 **A green suite that cannot fail is worth nothing.** Every new behaviour needs a test that
 fails against the broken implementation. Prove it: revert or stub the fix, watch the test go
 red, restore. A test you have never seen fail is a test you have not verified.
+
+**When the output is a report, assert on its fields, not its shape.** "It printed twelve
+UNSUPPORTED rows" passes while every model name in it reads `undefined`. Add
+`assert.doesNotMatch(out, /undefined/)` against the real code path — that is the assertion that
+catches a wrong argument shape, which in plain JS nothing else will.
 
 ---
 

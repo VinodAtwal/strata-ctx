@@ -20,6 +20,7 @@
     "check": "npm run typecheck && npm run lint && npm run test && npm run contract:check",
     "contract:check": "node scripts/check-contract.mjs",
     "status": "node scripts/status.mjs",
+    "live": "node scripts/live-campaign.mjs",
     "dev": "node --import tsx tools/dev.ts",
     "contract:update": "node scripts/check-contract.mjs --update"
   },

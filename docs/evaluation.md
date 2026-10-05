@@ -385,9 +385,32 @@ redactor that eats 20% of ordinary output is unusable, and recall-only suites hi
 | Property-based (WS-D) | governance invariant | ✅ yes | no |
 | Determinism | G11 | ✅ yes | no |
 
+## Running it
+
+```bash
+npm run live                                    # dry run: prints the plan, spends nothing
+npm run live -- --help
+npm run live -- --live --model <provider/model-id>
+```
+
+The credential is `OPENROUTER_API_KEY`, read by `scripts/live-campaign.mjs` and by nothing under
+`packages/` — package tests stay independent of the machine they run on. The endpoint defaults to
+OpenRouter's OpenAI-compatible API; `--base-url` points it anywhere that speaks the same wire format.
+
+**`--live` is required to send anything.** A dry run with a credential present still exits 0 having
+spent nothing, because the failure mode of getting that backwards is a real invoice.
+
+With no credential it does not print nothing, and it does not print a result. It prints the plan,
+names the missing variable, and emits the **unrun** claims audit: twelve gates, every one
+`unsupported`, which is the truthful record of a campaign that did not happen. An unsupported claim
+is not an inconclusive one — there is no data either way.
+
+Input is `packages/eval-live/fixtures/e1-live.json`. Six cases, all three arms, 18 invocations per
+full run. Two cases are declared negative controls, so a campaign that measured nothing cannot read
+as a pass; `--cases N` runs a subset and says so, because a partial run cannot support a
+whole-suite claim.
+
 ## Running it on your own codebase
 
-The product feature nobody else in this category has: **the harness ships**. `ctx eval --tasks
-./my-tasks.yaml` runs the paired A/B on your tasks, your model, your repos, and emits the same report
-format. That is both the honest answer to "how does it perform for me?" and the strongest possible
-defense against "your eval doesn't reflect my workload."
+`ctx eval --tasks ./my-tasks.yaml` runs the paired A/B on your tasks, your model, your repos, and
+emits the same report format. That is the honest answer to "how does it perform for me?"
