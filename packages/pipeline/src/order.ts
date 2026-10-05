@@ -270,6 +270,9 @@ export function runTier0(
     const stageAfter = measure(ctx.messages);
     const cacheAfter = cacheableFingerprint(ctx.messages);
 
+    // Estimate tokens using the pipeline's existing heuristic (core-types/estimateTokens).
+    // These are estimates, not provider-reported usage. Per §6.2, we populate when
+    // a real measurement is unavailable using the same estimation the pipeline uses.
     runs.push({
       name,
       telemetry: {
@@ -280,6 +283,8 @@ export function runTier0(
         blocksOut: stageAfter.blocks,
         durationMs,
         changed: code !== undefined || blockFingerprint(ctx.messages) !== fingerprintBefore,
+        inputTokens: estimateTokens({ ...state, messages: ctx.messages }),
+        outputTokens: estimateTokens({ ...state, messages: next.messages }),
       },
       cache: { prefixHit: cacheAfter === cacheBefore, prefixInvalidated: cacheAfter !== cacheBefore },
       failedOpen: code !== undefined,
