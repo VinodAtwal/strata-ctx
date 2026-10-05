@@ -130,7 +130,8 @@ const ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
  *
  * ## The +12 that moved `inherited`, and why it was not a regression
  *
- * 946 -> 958 was not new dead code. All twelve arrived with F2-4's tool-call
+ * 946 -> 958 was not new dead code (now 948: `2ea82bb` pruned 11 eval-live
+ * re-exports and `3b23f34` added `recoverEvictedMessages`). All twelve arrived with F2-4's tool-call
  * channel, whose exports `eval-live`'s barrel now re-exports. `eval-live` has no
  * entry root, so every one of its exports is `inherited` by definition and the
  * count rises whether or not anything calls them -- and most are called inside
@@ -144,14 +145,14 @@ const ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
  * ------------------------------------------------------------------ */
 
 const UNCALLED_BASELINE = {
-  /** Every exported runtime value the barrel walk reaches. */
-  exports: 1110,
-  /** Of those, the ones with a caller outside their own declaring file. */
+  /** Every exported runtime value the barrel walk reaches. Informational. */
+  exports: 1100,
+  /** Of those, the ones with a caller outside their own declaring file. Informational. */
   wired: 152,
-  /** exports - wired. The number this gate is about. */
-  unwired: 958,
-  /** Unwired because no entry root reaches the declaring package. */
-  inherited: 574,
+  /** exports - wired. Informational; `local` is the number this gate is about. */
+  unwired: 948,
+  /** Unwired because no entry root reaches the declaring package. Informational. */
+  inherited: 564,
   /** Unwired inside a reachable package; each needs a reason in Gate 1. */
   local: 384,
   /** The local half by package -- the only figure here Gate 1 does not imply. */
