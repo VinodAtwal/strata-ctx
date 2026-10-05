@@ -1,32 +1,53 @@
 export {
+  BASE_SYSTEM_MESSAGE,
   DEFAULT_BASE_URL,
   DEFAULT_RETENTION_STRATEGY,
   completeOnce,
   completeWithRetries,
+  deriveToolSurface,
   detectRetention,
   detectViolations,
+  gradeLiveCompletion,
+  gradeToolCalls,
   liveArm,
+  LIVE_TOOL_SURFACE,
   newRunStats,
+  parseToolCalls,
+  readToolCalls,
   renderArmPrompt,
   renderConstraintBlock,
   renderNegativeControlBlock,
+  renderOutputInstruction,
   renderPrompt,
+  renderToolCalls,
   resolveLiveArm,
   retentionScore,
   RETENTION_THRESHOLD,
+  toolChannelFor,
+  TOOL_CALL_SYSTEM_MESSAGE,
   UNMEASURABLE_ARM,
+  UNREADABLE_TOOL_CALL,
 } from './live-arm.js';
 export type {
   ArmPrompt,
   CompletionResult,
+  GradingBasis,
   LiveArmOptions,
   LiveArmSession,
   LiveCompletion,
+  LiveGrading,
   LiveRetentionPlan,
   LiveRetentionStrategy,
   LiveRunStats,
+  LiveToolArgumentType,
+  LiveToolCall,
+  LiveToolChannel,
+  LiveToolDefinition,
   LiveUsage,
+  ProviderToolCall,
+  ProviderToolCalls,
   ResolvedLiveArm,
+  ToolCallChannelRead,
 } from './live-arm.js';
 export {
   confidenceFor,
@@ -48,6 +69,12 @@ export type {
   GateStatus,
 } from './gates.js';
 export { DEFAULT_RETENTION_THRESHOLD, LIVE_ARMS, LIVE_CAVEATS, runCampaign, statsOf } from './campaign.js';
-export type { CampaignMetadata, CampaignOptions, LiveRunReport, RunCampaignOptions } from './campaign.js';
+export type {
+  CampaignMetadata,
+  CampaignOptions,
+  GradingBasisCounts,
+  LiveRunReport,
+  RunCampaignOptions,
+} from './campaign.js';
 export { auditClaims, auditUnrunCampaign, renderClaimsAudit, renderUnrunAudit } from './claims.js';
 export type { AuditedClaim, AuditedStatus, ClaimsAudit, UnrunCampaign } from './claims.js';

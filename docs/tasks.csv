@@ -107,13 +107,14 @@ J-9,J,Dev infra,"Test gate verdict: bound hangs, enumerate suite (d82f650)",seq,
 A-17,A,Core gateway,"GistDraft consolidation into core-types (610b817,71ded21,98e06c4)",seq,0.5,A-4,2,-,done
 J-10,J,Dev infra,Test gate process-group kill: prevent orphan leaks (fix-1),seq,0.25,J-9,0,-,done
 J-11,J,Dev infra,Gate enumeration + AGENTS update (fix-2),seq,0.25,J-10,0,-,done
-F2-4,F,Evals,Live grader cannot distinguish a refusal from a use,agent,1.5,F2-1,4,"G1,G2",todo
+F2-4,F,Evals,Live grader cannot distinguish a refusal from a use,par,1.5,F2-1,5,"G1,G2",done
 F2-5,F,Evals,E1 constraint text carries the token it forbids,agent,0.5,F2-4,4,G1,done
 F2-6,F,Evals,Maturity assessment: evidence-backed distance to a production product,agent,2,-,4,none,done
-F2-7,F,Evals,Live campaign unrun: no provider credential on any machine,ext,1d,-,4,"G1,G2",todo
+F2-7,F,Evals,Live campaign unrun: no provider credential on any machine,ext,1d,-,5,"G1,G2",todo
 G-8,G,Telemetry,Surface cache invalidation and token-category savings,agent,1,-,4,-,done
-G-9,G,Telemetry,Per-stage token accounting needs a core-types addition,agent,1.5,G-8,4,-,todo
-B-15,B,Context pipeline,B-3 pointerization deferred until an adapter classifies file subjects,seq,2,-,4,-,todo
-C-8,C,Gist engine,Gist eviction and recovery deferred: no package depends on it,seq,3,-,4,-,todo
-H-9,H,Output compress,Stream H output compression deferred: no in-repo caller,seq,2,-,4,-,todo
-J-12,J,Dev infra,Fail the gate when the uncalled-export count rises (needs owner approval),seq,0.5,-,4,-,todo
+G-9,G,Telemetry,Per-stage token accounting needs a core-types addition,par,1.5,G-8,5,-,done
+B-15,B,Context pipeline,B-3 pointerization blocked: Gemini egresses a pointer stub as an empty response,par,2,-,5,-,todo
+C-8,C,Gist engine,Gist eviction stays deferred: trigger and safety order recorded,seq,3,-,4,-,done
+H-9,H,Output compress,Stream H compression stays deferred: trigger recorded,seq,2,-,4,-,done
+J-12,J,Dev infra,Fail the gate when the uncalled-export count rises (needs owner approval),par,0.5,-,5,-,done
+D-11,D,Gateway,Dedupe orphaned tool_result when two same-named tool calls collide,agent,1,-,5,-,done

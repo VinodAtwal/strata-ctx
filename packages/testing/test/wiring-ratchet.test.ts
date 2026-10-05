@@ -105,6 +105,24 @@ const ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
  * comparing against it would be comparing a table with itself; the local half
  * is the independent check, and it is why this is here.
  *
+ * ## The +12 that moved `inherited`, and why it is not a regression
+ *
+ * 946 -> 958 was not new dead code. All twelve arrived with F2-4's tool-call
+ * channel, whose exports `eval-live`'s barrel now re-exports. `eval-live` has no
+ * entry root, so every one of its exports is `inherited` by definition and the
+ * count rises whether or not anything calls them -- and most are called inside
+ * `eval-live`, just not from a reachable file. `local` is unchanged at 384, and
+ * `local` is the half that means a reachable package grew something nobody calls.
+ *
+ * That asymmetry is a real weakness in keying the gate on the total, and it is
+ * recorded here rather than left for the next person to trip over: harness
+ * packages (`eval`, `eval-live`, `testing`, `canary`) can move the total by
+ * hundreds for reasons that have nothing to do with dead product code. The
+ * obvious repair is to ratchet on `local` and report `inherited` alongside,
+ * which would make the gate immune to benign movement. It is not done here
+ * because the row asked for the total, and narrowing a gate's scope is the
+ * owner's call rather than the implementer's.
+ *
  * To accept growth: wire it, delete it, or edit the numbers below and say in the
  * commit body why the total is allowed to move. There is no third option and
  * no way to satisfy this gate from `UNWIRED_OPERATORS`.
@@ -112,13 +130,13 @@ const ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 
 const UNCALLED_BASELINE = {
   /** Every exported runtime value the barrel walk reaches. */
-  exports: 1098,
+  exports: 1110,
   /** Of those, the ones with a caller outside their own declaring file. */
   wired: 152,
   /** exports - wired. The number this gate is about. */
-  unwired: 946,
+  unwired: 958,
   /** Unwired because no entry root reaches the declaring package. */
-  inherited: 562,
+  inherited: 574,
   /** Unwired inside a reachable package; each needs a reason in Gate 1. */
   local: 384,
   /** The local half by package -- the only figure here Gate 1 does not imply. */
