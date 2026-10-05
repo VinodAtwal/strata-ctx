@@ -68,10 +68,11 @@ File boundaries are the test, not package ones. `pointerizeBlocks` is declared i
 `packages/pipeline/src/truncate.ts:326`, and it stays wired.
 
 Clause 2 is a decision, not a bug fix, and it moved the number a long way: 432 of
-1089 exports wired before it, 152 after. The gap was almost entirely code that
-*does* run, through a sibling in its own file that something else calls. §6 says
-how each of those rows is labelled, because "the ledger says unwired" and "the
-operator is inert" are different claims and only one of them is mechanical.
+1089 exports wired before it, 152 after. (1089 was the tree's total *then*; §4
+records the nine exports it has gained since.) The gap was almost entirely code
+that *does* run, through a sibling in its own file that something else calls. §6
+says how each of those rows is labelled, because "the ledger says unwired" and
+"the operator is inert" are different claims and only one of them is mechanical.
 
 ### Reference confidence
 
@@ -83,14 +84,18 @@ A reference only counts as a caller when it is one of `call`, `new`, `value`, or
 see §6. An `import` with no call is weaker still: the symbol is reachable but
 nothing invokes it, so it is wired only in the sense that a module could.
 
-## 3. The three gates
+## 3. The four gates
 
-All three live in `packages/testing/test/wiring-ledger.test.ts`.
+All four live in `packages/testing/test/wiring-ledger.test.ts`, except Gate 4,
+which is in `packages/testing/test/wiring-ratchet.test.ts`. It is a separate file
+because it declares a different kind of thing — one number about the whole tree
+rather than a table of exceptions — and because it needs the ledger built twice
+in the suite otherwise.
 
 **Gate 1 — per-operator, both directions.** Every locally unwired symbol needs a
 row in `UNWIRED_OPERATORS` naming its declaring file and why it is allowed to be
 uncalled, and every row must still be true. An unwired symbol with no row fails;
-a row whose symbol has since become wired fails. 383 rows, checked in both
+a row whose symbol has since become wired fails. 384 rows, checked in both
 directions on every run.
 
 Both directions needed a fix to work at all, and the reason is worth recording.
@@ -113,41 +118,89 @@ compared. A new export in an unreachable package changes the count and fails.
 because the data they need is never produced. Those are declared in
 `DEAD_GATES` together with the pattern that would prove the gate has opened. If
 a producer ever appears, the declaration must be deleted and the gap fixed.
-
 Gate 3 needs one accommodation the identifier search cannot give it: a dead gate
-is usually expressed as a string literal, and blanking strings erases exactly the
-evidence. `findLiteralProducers` searches the comment-blanked view with strings
+is usually expressed as a string literal, and blanking strings erases exactly
+the evidence. `findLiteralProducers` searches the comment-blanked view with strings
 intact, and accepts a match only when it *begins* on a character that survived
 blanking. A match that starts inside a string is prose; a match that starts in
 code and merely contains a literal is a real producer.
 
+**Gate 4 — the ratchet on the total.** Gate 1 can be satisfied by declaring the
+new thing: ten dead operators and ten rows is a green commit. Gate 4 is the only
+gate that cannot be satisfied that way. It fails when the total count of uncalled
+runtime exports rises above `UNCALLED_BASELINE`, so accepting growth is a
+deliberate edit to one constant with a reason beside it.
+
+`docs/testing-plan.md` made its own falsifier a precondition, and §4 records the
+measurement it asked for. In short: the count is deterministic (five runs, eight
+concurrent runs, three timezones, two locales and two working directories all
+produce digest `e6e681876d468322` on the tree the baseline was taken against),
+it ignores type-only exports and duplicate barrel re-exports, and adding one
+operator *and calling it* moves it by zero.
+
+**Why it fails in both directions.** A one-way ceiling goes slack every time
+somebody wires something real: the count falls to 942, the baseline stays at 946,
+and the next four uncalled exports pass with nobody deciding to allow them. Slack
+is indistinguishable from permission once it exists. So falling below the
+baseline fails too, with the opposite remedy — tighten the constant to the
+measured value. That is what makes it a ratchet: the number moves only by someone
+editing one constant on purpose, and the direction that costs effort is the
+direction that obliges the edit.
+
 ## 4. Current inventory
+
+Measured, not carried forward. `node --import tsx scripts/wiring-inventory.ts`
+prints these figures and a digest of the canonical inventory; `--json` emits one
+key-sorted array, so `diff` over your change names which exports moved rather
+than only that the total did.
 
 | Metric | Count |
 |---|---|
 | Production files scanned | 134 |
 | Reachable from the entry roots | 69 |
-| Exported runtime values | 1089 |
+| Exported runtime values | 1098 |
 | Wired | 152 |
-| Unwired | 937 |
-| — unwired only because the package is unreachable | 554 |
-| — unwired inside a reachable package (**need a declared reason**) | 383 |
+| Unwired | 946 |
+| — unwired only because the package is unreachable | 562 |
+| — unwired inside a reachable package (**need a declared reason**) | 384 |
 
-The 383 each carry one reason: `core-types` 32, `gateway` 72, `integrations` 126,
-`pipeline` 51, `security` 52, `telemetry` 50. They fall into four shapes, and the
-count for each is in the table's own header comment: 119 rows that predate the
+The 384 each carry one reason: `core-types` 32, `gateway` 72, `integrations` 126,
+`pipeline` 51, `security` 52, `telemetry` 51. They fall into four shapes, and the
+count for each is in the table's own header comment: 120 rows that predate the
 ruling, plus 264 it exposed — 109 that execute through a same-file reader, 152
 that are inert, 3 with no call site at all. §6 explains the difference, because it
 is the difference between "nobody names this" and "nobody runs this".
 
-The 554 are inherited. Reachable packages: `cli`, `core-types`, `gateway`,
+The 562 are inherited. Reachable packages: `cli`, `core-types`, `gateway`,
 `integrations`, `pipeline`, `security`, `telemetry`. Unreachable: `canary` (28
-exports), `eval` (343), `eval-live` (31), `gist` (6), `governance` (36),
+exports), `eval` (348), `eval-live` (34), `gist` (6), `governance` (36),
 `output-compress` (60), `testing` (50).
 
-That `eval` and `eval-live` together hold 374 of the 1089 exports and are
+That `eval` and `eval-live` together hold 382 of the 1098 exports and are
 unreachable says more about the evaluation harness being wired separately than
 about the product being unwired. It is still counted honestly.
+
+### This table was stale by nine exports, and the measurement is what corrected it
+
+An earlier version of this section said **1089 exports / 152 wired / 937
+unwired**, of which 383 local and 554 inherited. The tree says 1098 / 152 / 946.
+The nine are accounted for, and every one of them was already visible in
+`UNWIRED_OPERATORS` or `UNREACHABLE_PACKAGES` — the prose was what was stale,
+not the declarations:
+
+| Where | Then | Now | Where it happened |
+|---|---|---|---|
+| `eval` exports (inherited) | 343 | 348 | the hermetic corpus resolver, `1afd8b2` |
+| `eval-live` exports (inherited) | 31 | 34 | the claims-audit operators `e151617`, then the subtractive arm `a03dbc3` |
+| `telemetry` uncalled (local) | 50 | 51 | `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST`, declared at `31539a6` |
+
+That the numbers were stale for four commits while the gates stayed green is the
+point of recording it here rather than quietly overwriting: the gates are
+per-symbol and per-package, and none of them asserts a total. A per-symbol gate
+cannot notice that the summary above it is wrong. Gate 4 is the assertion that
+does, and it was written against the measured figures — declaring 937 would have
+shipped a gate that failed on the commit that fixed this paragraph.
+
 
 ## 5. Named inert subsystems
 
@@ -280,11 +333,18 @@ already lived through once.
    of band, so make it specific enough to be falsifiable — and if the operator
    runs through a same-file reader, say so and name the line that calls the
    reader.
+5. **If the count moved at all, tighten `UNCALLED_BASELINE`.** Step 3 and step 4
+   both change the total in step 4's case, and Gate 4 fails on the change in
+   *either* direction. This is the step that surprises people: wiring an operator
+   is an improvement and it still needs a one-line edit, because a baseline left
+   high is permission for the next N dead exports. Wiring thirty operators and
+   leaving the number alone is how a ceiling becomes a suggestion.
 
 Run it with:
 
 ```
 node --import tsx --test packages/testing/test/wiring-ledger.test.ts
+node --import tsx --test packages/testing/test/wiring-ratchet.test.ts
 ```
 
 ## 8. Verification
@@ -300,7 +360,7 @@ temporary probes, each reverted immediately:
 | One export added to `gist`, a declared-unreachable package | Gate 2 fails: `gist: declared 6, found 7` |
 | A real `kind: 'file'` producer added to `pointer.ts` | Gate 3 fails: `B-3-file-subject: packages/pipeline/src/pointer.ts:287 now produces it` |
 | The same pattern as a comment in `pointer.ts` | Gate stays closed |
-| **The table as it stood when the ruling landed (367 rows), run against the pre-ruling scanner** | **Gate 1's reverse direction fails with 280 rows: the 264 the ruling exposed plus the 16 §3 describes. 432 wired before, 152 after. The table has since grown to 383, with the 16 in it** |
+| **The table as it stood when the ruling landed (367 rows), run against the pre-ruling scanner** | **Gate 1's reverse direction fails with 280 rows: the 264 the ruling exposed plus the 16 §3 describes. 432 wired before, 152 after. The table has since grown to 384, with the 16 in it** |
 | A real call site added for a symbol Gate 1 declares unwired | Gate 1's reverse direction fails, naming the symbol |
 
 The fourth row is the one that matters for trusting the third: it shows the dead
@@ -314,6 +374,115 @@ were checked one at a time rather than generated and trusted: a claim that a
 symbol runs through a reader is only written down when a reachable file imports
 that reader and calls it.
 
+### Gate 4, measured before it was adopted
+
+`docs/testing-plan.md` made the falsifier a precondition, so the probes came
+first. Every one ran in a scratch copy of the tree (`rsync` excluding
+`node_modules`, `dist`, `.git`, `*.tsbuildinfo`), never in the working tree,
+because three other agents were editing it at the same time. Two rounds: the
+first asked what moves the count, the second asked whether the benign cases move
+it. The scratch copy is itself checked first — it reads 1098 / 562 / 384 before
+any mutation, so a delta is the mutation and not the copy.
+
+**Determinism.** Five sequential runs, eight concurrent runs, three timezones, two
+locales, and two working directories (`/` and the repo) all produced byte-identical
+reports and digest `e6e681876d468322`. `collectProductionFiles` sorts by path,
+`collectExports` dedupes by `package|name`, and `buildLedger` sorts its entries, so
+nothing depends on `readdirSync` order.
+
+**What moves the count.** Each row is one change to the scratch tree:
+
+| Change | Δunwired | Reading |
+|---|---|---|
+| `export type { T }`, `export interface I` | 0 | types are erased; §2's claim holds |
+| A type-only module reached through a barrel | 0 | the barrel walk skips it |
+| `export type` added to an unreachable package | 0 | same rule, inherited half |
+| `export {}` naming nothing new | 0 | no new name, no new entry |
+| Barrel re-exports a symbol the barrel already exports | 0 | counted once, not twice |
+| The same symbol re-exported through two modules | 0 | deduped by `package\|name` |
+| A new module no barrel reaches | 0 | not reachable |
+| A comment mentioning a function | 0 | comments are blanked |
+| Trailing whitespace on a live line | 0 | formatting cannot move a count |
+| A new `*.test.ts` exporting an operator | 0 | excluded |
+| A `dist/` copy exporting a new name | 0 | excluded |
+| `import '@strata-ctx/eval'` from a reachable file | 0 | **a bare import is not a reachability edge** — see below |
+| **One new operator, wired, one caller in another reachable file** | **0** | **+1 export, +1 wired: the gate does not tax working code** |
+| An unwired operator | +1 | what the gate is for |
+| Two unwired operators | +2 | linear |
+| Deleting an unwired operator | −1 | the ratchet must respond |
+| Wiring 1 / 2 / 3 declared-unwired `gateway` exports | −1 / −2 / −3 | linear, and exactly `local` |
+| One caller named `redactHeaders` added to `gateway` | −2 | −1 local, **−1 inherited**: it also flips `testing/redactHeaders` wired — §6 |
+| An alias (`export { x as y }`) of a wired symbol | +1 | a rename is a new name on the surface |
+| `export * as ns` over a module no barrel reaches | +2 | counted as `ns.member`, one per member |
+| `export * as ns` over an already-reachable module | 0 | **missed** — §9 |
+| `export declare const`, `export declare function` | +1 each | the one counted non-runtime; §9 |
+| A new package nobody imports | +2 inherited | total rises too |
+| `export * from '@strata-ctx/eval'` in a reachable barrel | **+301** | 946 → 1247; 562 → 213 inherited, 384 → 1034 local |
+| `export * from` a *new* package in a reachable barrel | +4 local | 2 symbols, counted twice — §9 |
+
+Four results in that table are worth more than the rest.
+
+**The falsifier predicted noise and got none.** The plan's stated risk was that
+barrel exports and type-only exports would make the count move for reasons that
+have nothing to do with dead code. Neither does. One entry *is* counted without a
+runtime binding — `export declare`, which `DECLARES` and `INLINE_DECL` both
+accept — and the tree contains zero occurrences of it. §9 records that rather
+than fixing it: changing the scanner's acceptance rules would move every declared
+row, which is the blast radius §6 warns about, for a gain nobody can point at.
+
+**Adding an operator and calling it moves the total by zero.** That is the row
+that decides the whole design. A gate that fired on it would be taxing the one
+behaviour §1 asks for, and it would be muted within a week — the fate
+AGENTS.md §10 records for the `TOOL_ALIASES` checker, which reported six working
+tools as unserveable until someone noticed the names went through a resolver.
+
+**A bare import is not a reachability edge, and that surprised the probe.** Adding
+`import '@strata-ctx/eval'` to a reachable file moved nothing at all: still 69
+reachable files, still 562 inherited. Reachability follows *barrel re-exports*
+only, so what actually pulls a package in is `export * from '@strata-ctx/eval'`
+in a barrel somebody already reaches — and that one line moves 301 exports at
+once, 47 of which the re-export makes newly wired. It is the largest single-step
+move in the table, and Gate 4 reports it as `total 946 -> 1247` with no
+interpretation required. Gates 1 and 2 also fail on it, for the same edit.
+
+**Reaching another package's barrel attributes its symbols to the re-exporter.**
+`export * from '@strata-ctx/eval'` records eval's exports under `pipeline`,
+which is why inherited drops and local rises by nearly the same amount. The
+symbols are the same; only the key they are filed under moves. Worth knowing
+before reading a `local` jump as new dead code.
+
+**Gate 4's own two directions, probed against the real gate file.** Each row runs
+both `wiring-ledger.test.ts` and `wiring-ratchet.test.ts` in a scratch copy:
+
+| Probe | Gates 1–3 | Gate 4 |
+|---|---|---|
+| Three unwired operators, each with a declared `UNWIRED_OPERATORS` row | **green, 30/30** | red: `total 946 -> 949 (+3)`, `local 384 -> 387 (+3)`, `pipeline: 51 -> 54 (+3)` |
+| One new operator, wired by a caller in another reachable file | **green, 35/35** | **green** |
+| A module exporting only `export type` + `export interface` | **green, 35/35** | **green** |
+| The barrel re-exports a symbol it already exports | **green, 35/35** | **green** |
+| Three declared-unwired `gateway` exports gain a caller | Gate 1 red: the three rows are no longer true | red: `total 946 -> 943 (−3)`, `local 384 -> 381 (−3)`, `wired 152 -> 155 (+3)` |
+| An unwired export is deleted | Gate 1 red: stale rows | red: `total 946 -> 945 (−1)`, `local 384 -> 383 (−1)` |
+
+The first row is the row's whole justification. Three dead operators and three
+honest reasons for them is a green commit under every pre-existing gate, and it
+should not be.
+
+The last two rows are the price, and they were accepted deliberately rather than
+discovered later. A ceiling that never tightens is a number nobody maintains, and
+the cost is one line in a file whose owner is the person who made the change.
+
+**Three of these probes were wrong before they were measured, in the same way.**
+The first "wired operator is benign" probe exported a *helper* to make the call
+reachable, and the helper was itself an uncalled export — so Gate 1 failed and
+Gate 4 rose, and the probe "proved" the opposite of its point. The second had a
+module re-exported both plainly and as a namespace, and its own +1 export hid
+the −2 it was measuring. The third wired three names and reported −2. The rule
+that came out of it: reachability is a property of the *file*, not of the
+reference, so a probe's caller must export nothing — and a probe that adds an
+export has to add it to both sides of the arithmetic or it is measuring itself.
+The rows above are the re-run versions; the four wrong numbers never reached this
+table.
+
 ## 9. Limitations
 
 The scanner is lexical, not a parser. It tracks braces well enough to skip
@@ -322,3 +491,32 @@ scoping, shadowing, or re-binding. It searches `packages/` and `tools/`; adding 
 production source tree elsewhere means adding it to the scan roots. It does not
 resolve dynamic `import(specifier)` with a computed argument, and it treats a
 same-named export in another package as the same symbol — see §6.
+
+Four limitations were found by the §8 probes rather than by reading the code, and
+all four are recorded here instead of being fixed, because each fix would move
+the declared rows:
+
+- **`export declare const` / `function` is counted though it is erased at
+  runtime.** `DECLARES` and `INLINE_DECL` both accept it, so it is an export with
+  no runtime binding. Zero occurrences in the tree, so the 946 baseline is
+  unaffected today; the first one added would cost a declared row it should not
+  need.
+- **`export * as ns` over an already-reachable module is missed entirely.**
+  `collectExports` dedupes by resolved path and its `seen` set ignores the
+  namespace prefix, so once a module has been visited under any prefix, the
+  namespaced visit adds nothing. Measured: the same module reached both plainly
+  and as `ns` yields +0 where two new names exist. This is the one bias that
+  points the wrong way — an uncalled namespaced operator would not be counted, so
+  neither Gate 1 nor Gate 4 would see it.
+- **Reaching another package's barrel files its symbols under the re-exporting
+  package.** `collectExports` takes the package from the barrel being walked, so
+  `export * from '@strata-ctx/eval'` in `pipeline`'s barrel records eval's
+  exports as `pipeline/*`. The count is not wrong; the attribution is. A
+  cross-package runtime re-export also double-counts, since the symbol then
+  appears under both package keys. The tree has exactly one cross-package
+  re-export and it is `export type`, so nothing is double-counted today.
+- **Reachability follows barrel re-exports only.** A bare
+  `import '@strata-ctx/eval'` in a reachable file makes no package reachable and
+  changes no count. That is a defensible definition — the inventory is about what
+  the public barrels expose — but it means an import nobody re-exports is
+  invisible to all four gates.
