@@ -119,6 +119,152 @@ export async function recoverTurns(
 }
 
 /**
+ * A transcript read back far enough to undo an eviction.
+ *
+ * `digests` exists so "it restored something" can be told apart from "it
+ * restored the right bytes": a caller compares these against the `meta.sha256`
+ * of the blocks it lost, and a mismatch names the block rather than leaving the
+ * operator to eyeball text. `complete` is the one field an operator should gate
+ * on before treating a segment as whole.
+ */
+export interface EvictedSegmentRecovery {
+  /**
+   * Every non-governance message in the transcript, artifact content
+   * substituted back in. This is the eviction drop set by construction; see
+   * `recoverEvictedMessages`.
+   */
+  readonly messages: readonly Message[];
+  /** One sha256 per content block, in message then block order. */
+  readonly digests: readonly string[];
+  readonly resolvedArtifacts: readonly ArtifactRef[];
+  /** Pointers in the segment the store could not serve. */
+  readonly missingArtifacts: readonly string[];
+  /** False when the transcript was unreadable, so nothing was verified. */
+  readonly governanceIntact: boolean;
+  /**
+   * False when any pointer went unresolved, which means a message came back as
+   * a stub standing in for bytes this call did not retrieve. Distinct from
+   * `governanceIntact`, which is about the transcript round-tripping.
+   */
+  readonly complete: boolean;
+}
+
+/** One sha256 per content block, in the order `messages` presents them. */
+const digestsOf = (messages: readonly Message[]): readonly string[] =>
+  messages.flatMap((message) => message.content.map((block) => sha256(block.text ?? '')));
+
+/**
+ * Recover everything an eviction of this gist can have removed.
+ *
+ * ## Why this exists alongside `recoverTurns`
+ *
+ * The two address the same transcript differently, and the difference is not
+ * cosmetic -- it decides whether a deleted message can be got back.
+ *
+ * - Eviction chooses its drop set **by identity, not by index**: everything in
+ *   the committed context that is neither a governance message nor the gist it
+ *   just appended (`transaction.ts:652-667`). It does not consult any range.
+ * - `recoverTurns` returns `rawMessages.slice(from, to + 1)`
+ *   (`reversibility.ts:99`), where the window is the first through last
+ *   `user`/`assistant` message index (`assembly.ts:57-68`). It skips every
+ *   message of any other role that sits outside that span.
+ *
+ * So a trailing `tool` result -- the shape a turn actually ends in -- is
+ * deleted, proven present in the transcript by `findRun`
+ * (`transaction.ts:264-280`), and never returned by `recoverTurns`. Measured on
+ * the shipped fixture plus one appended tool result: 5 messages deleted, 4
+ * recovered, `95f20da5...` unreachable through `recoverTurns` while still
+ * present in the artifact. "Verified recoverable" and "recoverable through the
+ * tool" were not the same claim, and only the first was checked.
+ *
+ * This closes that by construction: it returns every non-governance message in
+ * the transcript, so its result is a superset of `recoverTurns`' for any input
+ * where the turn window is a subset of the transcript. It reads only, adds no
+ * assertion to the gist, and cannot weaken `raw_recoverable` -- the claim that
+ * guards *discarding* bytes is unaffected by how willing this function is to
+ * hand them back.
+ *
+ * Governance blocks are excluded deliberately: eviction keeps them and step 5
+ * re-materialises them from the pin buffer (`transaction.ts:637-638`), so they
+ * are re-derived rather than recovered, and returning them would describe as
+ * "recovered" something that was never lost.
+ */
+export async function recoverEvictedMessages(
+  gist: Gist,
+  store: RecoveryArtifactStore,
+  options: RecoverTurnsOptions = {},
+): Promise<EvictedSegmentRecovery> {
+  const { strict = false, artifactResolver } = options;
+
+  const rawUri = gist.log_gist.raw_uri;
+  const rawResult = await store.read(rawUri).catch(() => null);
+
+  if (!rawResult) {
+    if (strict) throw new Error(`raw transcript not found: ${rawUri}`);
+    // Nothing was read, so nothing was verified. Same rule as `recoverTurns`:
+    // reporting `governanceIntact: true` here would certify a transcript that
+    // was never consulted.
+    return {
+      messages: [],
+      digests: [],
+      resolvedArtifacts: [],
+      missingArtifacts: [rawUri],
+      governanceIntact: false,
+      complete: false,
+    };
+  }
+
+  // A transcript that cannot be parsed is a refusal, not an empty result: an
+  // empty segment here would read as "nothing was lost".
+  let persisted: Message[];
+  try {
+    persisted = parseRawTranscript(rawResult.text);
+  } catch (e) {
+    if (strict) throw e;
+    return {
+      messages: [],
+      digests: [],
+      resolvedArtifacts: [],
+      missingArtifacts: [rawUri],
+      governanceIntact: false,
+      complete: false,
+    };
+  }
+
+  const droppable = persisted.filter((message) => !isGovernanceMessage(message));
+
+  const { resolvedArtifacts, missingArtifacts, contents } = await resolveArtifactRefs(
+    droppable,
+    store,
+    artifactResolver,
+    strict,
+  );
+
+  const messages = substituteArtifactContent(droppable, contents);
+
+  return {
+    messages,
+    digests: digestsOf(messages),
+    resolvedArtifacts,
+    missingArtifacts,
+    governanceIntact: verifyGovernanceIntegrity(persisted),
+    complete: missingArtifacts.length === 0,
+  };
+}
+
+/**
+ * Whether eviction would keep this message, which is the same predicate the
+ * transaction uses to build its drop set (`transaction.ts:652-653`).
+ *
+ * Duplicated rather than imported: `transaction.ts` depends on this module, so
+ * sharing it would be a cycle. The two must agree, and the test that pins it
+ * asserts the agreement by recovering exactly the set the transaction dropped.
+ */
+function isGovernanceMessage(message: Message): boolean {
+  return message.content.length > 0 && message.content.every((block) => block.meta.tier === 'governance');
+}
+
+/**
  * Parse raw transcript text into Message array.
  * Supports JSONL (one message per line) and JSON array formats.
  */
