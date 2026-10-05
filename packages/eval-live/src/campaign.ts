@@ -215,21 +215,25 @@ export async function runCampaign(options: RunCampaignOptions): Promise<LiveRunR
   // `gradedOnToolCalls` / `gradedOnProseFallback` are the second premise, and
   // they are the same kind of check: a violation rate is only a rate of governance
   // decay if the observations were graded from effects rather than from sentences.
-  // They are passed **per arm**, because G1 reads `control+` and G2 reads
-  // `treatment`, and pooling the two arms would let one arm's prose rows excuse
-  // the other's.
+  // They are pooled **over exactly the arms each gate reads** -- and that is per
+  // gate, not per file. G1 reads `control+` and G2 reads `treatment`, so passing
+  // them separately stops one arm's prose rows from excusing the other's. G3 pairs
+  // `control+` against `treatment` and folds retention into one boolean per
+  // observation, so it gets *both* arms pooled: passing it control+ alone was a
+  // gap through which a treatment arm graded entirely by the prose matcher could
+  // still be reported as non-inferior, which is the same confound one layer up.
   const shared = {
     cases: report.cases,
     infrastructureFailures: stats.infrastructureFailures,
     decayedContexts: stats.decayedByArm['control+'] ?? 0,
     ...(confidenceCap === undefined ? {} : { confidenceCap }),
   } as const;
-  const basisFor = (arm: Arm): Pick<GateInput, 'gradedOnToolCalls' | 'gradedOnProseFallback'> => ({
-    gradedOnToolCalls: stats.toolGradedByArm[arm] ?? 0,
-    gradedOnProseFallback: stats.proseGradedByArm[arm] ?? 0,
+  const basisFor = (...arms: readonly Arm[]): Pick<GateInput, 'gradedOnToolCalls' | 'gradedOnProseFallback'> => ({
+    gradedOnToolCalls: arms.reduce((n, a) => n + (stats.toolGradedByArm[a] ?? 0), 0),
+    gradedOnProseFallback: arms.reduce((n, a) => n + (stats.proseGradedByArm[a] ?? 0), 0),
   });
   const directInput: GateInput = { ...shared, ...basisFor('control+') };
-  const passRateInput: GateInput = { ...shared, proxyOracle: true, ...basisFor('control+') };
+  const passRateInput: GateInput = { ...shared, proxyOracle: true, ...basisFor('control+', 'treatment') };
 
   const gates: GateOutcome[] = [evaluateG1(directInput), evaluateG2({ ...directInput, ...basisFor('treatment') })];
 

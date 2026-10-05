@@ -500,8 +500,12 @@ describe('F2-4: G1 fires on a decayed context and refuses on a whole one', () =>
         armOf('treatment', { status: 'pass' }),
       ]),
     );
-    assert.equal(evaluateG1({ cases }).status, 'met');
-    assert.equal(evaluateG1({ cases, decayedContexts: 0 }).status, 'not_met');
+    // The grading basis is required now, and the offline suite can state one:
+    // `runE1Suite` grades observed tool calls, so all 8 observations are on the
+    // structured channel. That is the confound-free state, so it needs no cap.
+    const basis = { gradedOnToolCalls: cases.length, gradedOnProseFallback: 0 };
+    assert.equal(evaluateG1({ cases, ...basis }).status, 'met');
+    assert.equal(evaluateG1({ cases, ...basis, decayedContexts: 0 }).status, 'not_met');
   });
 
   it('still reports all twelve gates unsupported when no campaign has run', () => {
