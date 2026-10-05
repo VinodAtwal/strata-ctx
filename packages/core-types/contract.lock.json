@@ -1,7 +1,7 @@
 {
   "package": "@strata-ctx/core-types",
   "frozenVersion": "1.0.0",
-  "digest": "4dda325007f5f2e33beccde215f9d650bff106933a04e9bc8dad63e4c8d8819d",
+  "digest": "2abea9eb56758454ba48cfe561263ff7f5d661ff9ca61746e50bb0fe92dafa8c",
   "exports": [
     {
       "name": "ArtifactId",
@@ -381,7 +381,7 @@
     {
       "name": "StageTelemetry",
       "kind": "InterfaceDeclaration",
-      "signature": "export interface StageTelemetry { readonly stage: StageName; readonly bytesIn: number; readonly bytesOut: number; readonly blocksIn: number; readonly blocksOut: number; readonly durationMs: number; readonly changed: boolean; }"
+      "signature": "export interface StageTelemetry { readonly stage: StageName; readonly bytesIn: number; readonly bytesOut: number; readonly blocksIn: number; readonly blocksOut: number; readonly durationMs: number; readonly changed: boolean; readonly inputTokens?: number; readonly outputTokens?: number; }"
     },
     {
       "name": "StrataPolicy",

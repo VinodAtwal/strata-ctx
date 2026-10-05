@@ -16,6 +16,9 @@ export interface StageTelemetry {
   readonly blocksOut: number;
   readonly durationMs: number;
   readonly changed: boolean;
+  /** Optional per-stage token counts when a real token measurement exists. */
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
 }
 
 export interface CacheTelemetry {
