@@ -186,6 +186,14 @@ function decide(
   if (subject === undefined) return { drop: undefined, retainedHighSeverity: false };
 
   if (block.meta.supersededBy !== undefined) {
+    // Severity outranks a producer flag. A newer read of a path makes an
+    // earlier one less true, which is why the flag exists -- but an error/fatal
+    // block is the record that the earlier read *failed*, and that fact does not
+    // expire when the file is later read successfully. Dropping it here is how an
+    // ENOENT disappeared: the flag rule never consulted severity, and
+    // `enforcePairAtomicity` then co-dropped the call that would have explained
+    // it. `retainedHighSeverity: true` keeps it out of `drops` and counts it.
+    if (isHighSeverity(block)) return { drop: undefined, retainedHighSeverity: true };
     return {
       drop: {
         sha256: block.meta.sha256,
@@ -218,7 +226,7 @@ function decide(
   // blocks and only one of them is severe. `enforcePairAtomicity` re-applies this
   // rule to the pair, and refuses the drop when the severe half has no equally
   // severe replacement.
-  if (isHighSeverity(block) && !sameVersion) {
+  if (isHighSeverity(block) && (!sameVersion || !isHighSeverity(winner))) {
     return { drop: undefined, retainedHighSeverity: true };
   }
 
@@ -277,6 +285,8 @@ function enforcePairAtomicity(
   const { uses, results } = pairIndex(flat);
   const coDrops = new Map<number, DedupeDrop>();
   const retainedHighSeverity = new Set<number>();
+  /** Whether this pass is deleting the block at a position, for `survivingTwin`. */
+  const leaving = (index: number): boolean => dropAt.has(index) || coDrops.has(index);
 
   for (let i = 0; i < flat.length; i += 1) {
     if (!dropAt.has(i)) continue;
@@ -308,11 +318,20 @@ function enforcePairAtomicity(
     // The surviving counterpart of the partner's kind: the answer to the call
     // that won. Without it the byte comparison below has nothing to compare
     // against, which is reported as `superseded` rather than guessed at.
-    const survivor = survivingTwin(flat, block, lastIndexByIdentity, other);
+    const survivor = survivingTwin(flat, block, lastIndexByIdentity, other, partnerAt, leaving);
 
-    if (isHighSeverity(partner) && (survivor === undefined || !isHighSeverity(survivor))) {
+    // Case 3 applies to *both* halves, not only to the partner. The severe half
+    // is frequently `block` itself: an error/fatal `tool_result` carrying a
+    // producer flag, positioned before its own call. A guard that asked only
+    // about the partner therefore examined the benign half, found nothing wrong,
+    // and co-dropped the severe one together with it. Retract both halves, and
+    // count only the severe one -- the benign call was saved by the pair, not by
+    // the severity exemption.
+    const severe = isHighSeverity(block) ? i : isHighSeverity(partner) ? partnerAt : undefined;
+    if (severe !== undefined && (survivor === undefined || !isHighSeverity(survivor))) {
       dropAt.delete(i);
-      retainedHighSeverity.add(partnerAt);
+      dropAt.delete(partnerAt);
+      retainedHighSeverity.add(severe);
       continue;
     }
 
@@ -340,6 +359,8 @@ function survivingTwin(
   block: NonGovernanceBlock,
   lastIndexByIdentity: ReadonlyMap<string, number>,
   table: ReadonlyMap<string, number[]>,
+  excluding: number,
+  leaving: (index: number) => boolean,
 ): NonGovernanceBlock | undefined {
   const subject = block.meta.subject;
   if (subject === undefined) return undefined;
@@ -348,7 +369,18 @@ function survivingTwin(
   const winner = flat[winnerIndex]?.value;
   if (winner === undefined) return undefined;
   const twinIndex = winner.id === undefined ? undefined : table.get(winner.id)?.[0];
-  return twinIndex === undefined ? undefined : flat[twinIndex]?.value;
+  if (twinIndex === undefined) return undefined;
+  // The twin cannot stand in for itself. `winner` is usually `block`, so the
+  // twin this walk finds is `excluding` -- the very block the severity check is
+  // about. Returning it made `isHighSeverity(survivor)` confirm an error/fatal
+  // block against itself, so the guard passed and the block was deleted along
+  // with its call. That is how an ENOENT result disappeared from a transcript
+  // whose call had been superseded by a producer flag.
+  if (twinIndex === excluding) return undefined;
+  // A twin this pass is also deleting is not a surviving replacement either,
+  // which is the second case the note above promises.
+  if (leaving(twinIndex)) return undefined;
+  return flat[twinIndex]?.value;
 }
 
 /**
