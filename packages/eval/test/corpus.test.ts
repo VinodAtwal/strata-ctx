@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, describe } from 'node:test';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import {
   CORPUS_FORMAT_VERSION,
@@ -10,6 +11,7 @@ import {
   CorpusResolutionError,
   loadCorpus,
   parseCorpus,
+  readBoardRow,
   resolveCorpus,
   validateCorpus,
   type Corpus,
@@ -288,4 +290,90 @@ test('an entry that resolves to empty text is a failure, not an empty task', asy
       return true;
     },
   );
+});
+/**
+ * The board reader must refuse a row it cannot parse, not guess at one.
+ *
+ * `readBoardRow` splits on bare commas, so a quoted title containing one shifts
+ * every column after it and silently returns a title truncated mid-sentence.
+ * Three rows did carry such a title until they were rewritten; nothing referenced
+ * them, so no citation was ever affected. The point of this suite is that the
+ * next one to be written fails loudly instead.
+ */
+describe('the board reader', () => {
+  const header = 'id,stream,stream_name,title,exec,est_ed,deps,wave,gate,status';
+  const write = (body: string): string => {
+    const path = join(mkdtempSync(join(tmpdir(), 'board-')), 'tasks.csv');
+    writeFileSync(path, body);
+    return path;
+  };
+
+  test('resolves a well-formed row to its full title', () => {
+    const path = write(
+      `${header}\nZ-1,Z,Stream,"A title with no commas inside",par,1,-,5,-,done\n`,
+    );
+    assert.equal(readBoardRow('Z-1', path), 'Z-1: A title with no commas inside');
+  });
+
+  test('throws on a comma in a title rather than returning a truncated one', () => {
+    const path = write(
+      `${header}\nZ-2,Z,Stream,"A title with, a comma inside",par,1,-,5,-,done\n`,
+    );
+    // The failure this prevents is not a crash: without the check the reader
+    // returns "Z-2: A title with" and calls it a citation.
+    assert.throws(
+      () => readBoardRow('Z-2', path),
+      (err: Error) => {
+        assert.match(err.message, /comma inside its title/);
+        assert.match(err.message, /refuses rather than truncating/);
+        return true;
+      },
+    );
+  });
+
+  test('accepts a quoted comma in the gate column, which is legitimate', () => {
+    // The gate column really does hold "G1,G2". A reader that split on a bare
+    // comma saw eleven fields here and would have rejected a valid row, which is
+    // how an arity check written to catch one bug becomes a bug of its own.
+    const path = write(
+      `${header}\nZ-3,F,Evals,A perfectly ordinary title,par,1,-,5,"G1,G2",done\n`,
+    );
+    assert.equal(readBoardRow('Z-3', path), 'Z-3: A perfectly ordinary title');
+  });
+
+  test('throws on a row whose field count disagrees with the header', () => {
+    const path = write(`${header}\nZ-4,Z,Stream,title,par,1\n`);
+    assert.throws(() => readBoardRow('Z-4', path), /has 6 fields but the header has 10/);
+  });
+
+  test('every real board row resolves, so none of them can truncate', () => {
+    const board = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'docs', 'tasks.csv'),
+      'utf8',
+    );
+    const ids = board
+      .split(/\r?\n/)
+      .slice(1)
+      .filter((l) => l.trim() !== '')
+      .map((l) => l.slice(0, l.indexOf(',')));
+
+    assert.ok(ids.length > 100, `expected a populated board, found ${ids.length} rows`);
+    // Asserted through the production reader rather than a count, because a raw
+    // comma count cannot tell a quoted "G1,G2" from an unquoted extra field --
+    // that confusion is what made the first version of this test wrong.
+    for (const id of ids) {
+      const resolved = readBoardRow(id);
+      assert.ok(resolved.startsWith(`${id}: `), `row ${id} resolved to ${resolved}`);
+      assert.ok(resolved.length > id.length + 12, `row ${id} resolved to a suspiciously short title: ${resolved}`);
+    }
+  });
+
+  test('the real board resolves a known row to a title that is not truncated', () => {
+    // F2-0 previously carried "real upstream, with a governed refusal
+    // assertion"; if a quoted-comma title ever returns, this reads back short.
+    const resolved = readBoardRow('F2-0');
+    assert.match(resolved, /^F2-0: Local-machine real-mode E2E/);
+    assert.doesNotMatch(resolved, /real upstream$/);
+    assert.ok(resolved.length > 'F2-0: '.length + 40, `title looks truncated: ${resolved}`);
+  });
 });

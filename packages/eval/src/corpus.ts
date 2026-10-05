@@ -545,27 +545,82 @@ export const ghRefreshResolver: TaskResolver = async (entry): Promise<string> =>
 /** Where the board lives, relative to the repo root. */
 const BOARD_PATH = 'docs/tasks.csv';
 
-const readBoardRow = (id: string): string => {
-  const text = readFileSync(BOARD_PATH, 'utf8');
-  const lines = text.split('\n');
-  const header = lines[0] ?? '';
-  const titleIdx = header.split(',').indexOf('title');
-  const idIdx = header.split(',').indexOf('id');
-  if (titleIdx === -1 || idIdx === -1) {
-    throw new Error(`${BOARD_PATH} has no id/title columns`);
-  }
-  for (const line of lines.slice(1)) {
-    if (line.trim() === '') continue;
-    // Board rows are simple comma-separated fields with no embedded commas in
-    // the columns read here, so a plain split is sufficient and a CSV parser
-    // would be a dependency with no payoff.
-    const cells = line.split(',');
-    if (cells[idIdx]?.trim() === id) {
-      const title = (cells[titleIdx] ?? '').replace(/^"|"$/g, '');
-      return `${id}: ${title}`.trim();
+/**
+ * Split one CSV row into fields, honouring `"` quoting and `""` escapes.
+ *
+ * Small on purpose: the board is the only CSV this reads, and a general parser
+ * would be a dependency with no payoff. Quoting is not optional here -- the
+ * `gate` column legitimately holds `"G1,G2"`, so a bare split on comma produces
+ * eleven cells for a ten-column row and every index after `gate` is wrong.
+ */
+const splitCsvRow = (line: string): string[] => {
+  const cells: string[] = [];
+  let current = '';
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i] ?? '';
+    if (quoted) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          current += '"';
+          i += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',') {
+      cells.push(current);
+      current = '';
+    } else {
+      current += ch;
     }
   }
-  throw new Error(`${BOARD_PATH} has no row ${id}`);
+  cells.push(current);
+  return cells;
+};
+
+/**
+ * Read one board row by id.
+ *
+ * A comma inside a *title* is refused rather than parsed around. The row would
+ * parse cleanly, but this reader looks the title up by column index and the
+ * repo's own rule is that titles carry no commas; if that is ever relaxed, the
+ * title is the one column where a truncation would be invisible -- `get_task`
+ * would cite a sentence that stops mid-clause and nothing would report it. A
+ * loud refusal at the boundary is worth more than a plausible wrong answer.
+ */
+export const readBoardRow = (id: string, path: string = BOARD_PATH): string => {
+  const text = readFileSync(path, 'utf8');
+  const lines = text.split('\n');
+  const header = splitCsvRow(lines[0] ?? '');
+  const titleIdx = header.indexOf('title');
+  const idIdx = header.indexOf('id');
+  if (titleIdx === -1 || idIdx === -1) {
+    throw new Error(`${path} has no id/title columns`);
+  }
+  for (const [offset, line] of lines.slice(1).entries()) {
+    if (line.trim() === '') continue;
+    const cells = splitCsvRow(line);
+    if (cells.length !== header.length) {
+      throw new Error(
+        `${path} row ${offset + 2} has ${cells.length} fields but the header has ` +
+          `${header.length}. Row starts: ${line.slice(0, 60)}`,
+      );
+    }
+    const title = cells[titleIdx] ?? '';
+    if (title.includes(',')) {
+      throw new Error(
+        `${path} row ${offset + 2} has a comma inside its title, which this reader ` +
+          `refuses rather than truncating. Rewrite the title without one: ${title.slice(0, 60)}`,
+      );
+    }
+    if (cells[idIdx]?.trim() === id) return `${id}: ${title.trim()}`;
+  }
+  throw new Error(`${path} has no row ${id}`);
 };
 
 export class CorpusResolutionError extends Error {

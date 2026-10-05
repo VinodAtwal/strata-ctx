@@ -75,8 +75,11 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
   eval: {
     why: 'offline harness; its only importer is @strata-ctx/eval-live, which is itself unreachable',
     // 343 -> 348 at 1afd8b2, which added the hermetic corpus resolver. Still
-    // unreachable for the same reason.
-    exports: 348,
+    // unreachable for the same reason. 348 -> 349 added readBoardRow, exported
+    // only so the board reader can be tested against a malformed row it would
+    // otherwise never see; the barrel re-exports corpus.ts wholesale, so the
+    // test seam is public whether or not that was intended. Still unreachable.
+    exports: 349,
   },
   'eval-live': {
     why: 'F2-1..F2-3 are externally blocked, so no reachable module imports @strata-ctx/eval-live',

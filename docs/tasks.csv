@@ -99,12 +99,12 @@ E-11,E,Integrations,Drop non-OpenCode config keys from profile: strataHooks (not
 E-12,E,Integrations,Verify a real OpenCode session loads the plugin and a pre_tool_use hook fires (binding proof),seq,1.0,"E-10,E-11",3,none,done
 E-13,E,Integrations,strata-ctx CLI binary: mcp serve + hook entrypoints (deferred; unblocks the MCP profile),seq,2.0,E-11,3,none,done
 E-14,B,Integrity,Deterministic tool-argument floor (I-9): refuse destructive tool calls,ext,1d,E-9,wave-1,G4,done
-F2-0,F,Evals,"Local-machine real-mode E2E: OpenCode -> gateway -> real upstream, with a governed refusal assertion",seq,1.5,E-12,3,none,done
+F2-0,F,Evals,"Local-machine real-mode E2E: OpenCode -> gateway -> real upstream with a governed refusal assertion",seq,1.5,E-12,3,none,done
 E-15,E,Integrations,Operator adoption path: internal-only distribution (no public registry) + quickstart + per-request what-happened-to-my-context in strata status,seq,2.0,"E-13,G-5",3,none,done
 J-8,J,Dev infra,Wiring ledger: gate wired exports (f277c2d),seq,0.5,J-3,2,-,done
 C-5,C,Gist engine,Malformed URI handling: 4d defect reporting (07d710c),seq,0.5,C-3,2,-,done
-J-9,J,Dev infra,"Test gate verdict: bound hangs, enumerate suite (d82f650)",seq,0.5,J-2,0,-,done
-A-17,A,Core gateway,"GistDraft consolidation into core-types (610b817,71ded21,98e06c4)",seq,0.5,A-4,2,-,done
+J-9,J,Dev infra,"Test gate verdict: bound hangs and enumerate suite (d82f650)",seq,0.5,J-2,0,-,done
+A-17,A,Core gateway,"GistDraft consolidation into core-types (610b817/71ded21/98e06c4)",seq,0.5,A-4,2,-,done
 J-10,J,Dev infra,Test gate process-group kill: prevent orphan leaks (fix-1),seq,0.25,J-9,0,-,done
 J-11,J,Dev infra,Gate enumeration + AGENTS update (fix-2),seq,0.25,J-10,0,-,done
 F2-4,F,Evals,Live grader cannot distinguish a refusal from a use,par,1.5,F2-1,5,"G1,G2",done
@@ -130,4 +130,4 @@ F2-9,F,Evals,A live run now reports whether it exercised the structured channel,
 H-10,H,Output compress,Wire output-compress after TOON and TRON are validated on real output,ext,1,H-9,5,-,todo
 J-13,J,Dev infra,Re-key the uncalled-export ratchet on local rather than the total,agent,1,J-12,5,-,done
 J-14,J,Dev infra,Declare the gist to telemetry dependency the code already had,agent,0.5,-,5,-,done
-F2-10,F,Evals,Board loader splits on commas so a quoted comma-title truncates,agent,0.5,-,5,-,todo
+F2-10,F,Evals,Board reader refuses a comma in a title instead of truncating it,agent,0.5,-,5,-,done

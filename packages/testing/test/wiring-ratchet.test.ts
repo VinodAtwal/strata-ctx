@@ -146,13 +146,13 @@ const ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 
 const UNCALLED_BASELINE = {
   /** Every exported runtime value the barrel walk reaches. Informational. */
-  exports: 1100,
+  exports: 1101,
   /** Of those, the ones with a caller outside their own declaring file. Informational. */
   wired: 152,
   /** exports - wired. Informational; `local` is the number this gate is about. */
-  unwired: 948,
+  unwired: 949,
   /** Unwired because no entry root reaches the declaring package. Informational. */
-  inherited: 564,
+  inherited: 565,
   /** Unwired inside a reachable package; each needs a reason in Gate 1. */
   local: 384,
   /** The local half by package -- the only figure here Gate 1 does not imply. */
