@@ -227,11 +227,27 @@ field on a draft that no production path produces. If gist is ever connected, th
 recovery path and the `raw_recoverable` guard have to land in the same change, and
 the Gate 2 count has to be re-declared with the reason.
 
-**`output-compress` — 60 exports, unreachable.** `applyOutputCompression` is
+**`output-compress` — 60 exports, unreachable, held by decision.** `applyOutputCompression` is
 declared at `packages/output-compress/src/compress.ts:340`. Its only other
 references are the barrel at `packages/output-compress/src/index.ts:109` and tests
 at `packages/output-compress/test/reference.test.ts:11` and `:319`. The
 compression step is exercised by tests that call it directly and by nothing else.
+
+*Measured before deciding whether to keep it* (2026-10-05, 40-row corpus, driven
+through the real adapter egress paths rather than through the compressor alone):
+
+| Host | estimated request tokens | chars | note |
+|---|---|---|---|
+| Anthropic | 1224 → 878 (**−28%**) | 4284 → 3072 | TOON raw string egresses intact |
+| OpenAI-compatible | 1060 → 757 (**−29%**) | 4238 → 3026 | TOON raw string egresses intact |
+| Gemini | 845 → 845 (**0%**) | — | normal results arrive as `{output: [...]}`, an object shape the classifier vetoes |
+
+Governance and pinned text pass through unchanged in all three. **Held, not
+deleted** (`docs/maturity.md` §3.2): the two-host saving is large enough to
+revisit, but wiring it would add a fourth cross-stream edge (§12.1) and
+`MACHINE_FORMATS` is unvalidated against real model output. Keeping the number
+here is the point — "deferred" without a measurement is a guess, and a guess
+cannot be revisited later by anyone who was not in the room.
 
 **`B-3` — reachable and still inert.** `pointerizeBlocks` is called at
 `packages/pipeline/src/truncate.ts:326`, and it is the only thing the

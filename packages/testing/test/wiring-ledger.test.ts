@@ -106,7 +106,7 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
     exports: 36,
   },
   'output-compress': {
-    why: 'no package depends on @strata-ctx/output-compress, so applyOutputCompression never runs',
+    why: 'held by decision 2026-10-05: no package depends on @strata-ctx/output-compress, so applyOutputCompression never runs. Measured at -28% Anthropic / -29% OpenAI-compatible / 0% Gemini request tokens through the real adapter egress; wiring it adds a fourth cross-stream edge and MACHINE_FORMATS is unvalidated against real model output. See docs/wiring-ledger.md and docs/maturity.md §3.2',
     exports: 60,
   },
   testing: {
