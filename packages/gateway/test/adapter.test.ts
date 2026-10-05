@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { StrataPolicySchema, sha256 } from '@strata-ctx/core-types';
-import { collectGovernanceText, enforcePins, type Message, type StrataPolicy } from '@strata-ctx/core-types';
+import { collectGovernanceText, enforcePins, type ContentBlock, type Message, type StrataPolicy } from '@strata-ctx/core-types';
 import { fromCanonical, toCanonical, type AnthropicRequest } from '../src/anthropic-adapter.js';
 
 const base: AnthropicRequest = {
@@ -171,4 +171,86 @@ test('unknown top-level request fields are preserved', () => {
   const out = fromCanonical(toCanonical(base), withExtras);
   assert.equal(out.temperature, 0.2);
   assert.equal(out.top_p, 0.9);
+});
+
+/* -------------------------------------------------------------------------- */
+/* tool_use egress (B-16)                                                     */
+/* -------------------------------------------------------------------------- */
+
+const wireInput = (req: AnthropicRequest): unknown => {
+  for (const m of req.messages) {
+    const parts = Array.isArray(m.content) ? m.content : [];
+    for (const p of parts) {
+      if (p.type === 'tool_use') return (p as { input?: unknown }).input;
+    }
+  }
+  return undefined;
+};
+
+test('a tool_use round trips its arguments instead of sending an empty object', () => {
+  const c = toCanonical({
+    ...base,
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'reading' },
+          { type: 'tool_use', id: 'tu_1', name: 'read_file', input: { path: 'src/index.ts', limit: 40 } },
+        ],
+      },
+    ],
+  });
+  // The arguments have to be on the block already, or there is nothing to read.
+  const call = c.messages[1]?.content[1] as { text?: string } | undefined;
+  assert.ok(call?.text?.includes('src/index.ts'), 'ingress puts the payload in text');
+  assert.deepEqual(wireInput(fromCanonical(c, base)), { path: 'src/index.ts', limit: 40 });
+});
+
+test('an empty argument object is sent as an empty object', () => {
+  const c = toCanonical({
+    ...base,
+    messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'tu_2', name: 'list_dir', input: {} }] }],
+  });
+  assert.deepEqual(wireInput(fromCanonical(c, base)), {});
+});
+
+test('a non-object tool_use argument is a value, not a loss', () => {
+  // Anthropic's `input` is arbitrary JSON, so a bare string is a legal call.
+  // Gemini's Struct field cannot do this, which is why the two decode paths
+  // differ on exactly this case.
+  for (const input of ['query', 42, null, [{ path: 'a.ts' }]]) {
+    const c = toCanonical({
+      ...base,
+      messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'tu_3', name: 'search', input }] }],
+    });
+    assert.deepEqual(wireInput(fromCanonical(c, base)), input, JSON.stringify(input));
+  }
+});
+
+test('a tool_use whose arguments a lossy stage rewrote states the loss', () => {
+  // Truncate/summary rewrote the text, so the envelope is gone. `{}` would be a
+  // lie here: Anthropic reads an empty object as "called with no arguments" and
+  // the model would run the tool that way.
+  const c = toCanonical({
+    ...base,
+    messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'tu_4', name: 'read_file', input: { path: 'secret.ts' } }] }],
+  });
+  const rewrittenBlock: ContentBlock = { ...c.messages[1]!.content[0]!, text: 'HEAD... TAIL' };
+  const rewritten: Message = { ...c.messages[1]!, content: [rewrittenBlock] };
+  const out = fromCanonical({ ...c, messages: [c.messages[0]!, rewritten] }, base);
+  const input = wireInput(out) as { error?: string };
+  assert.match(input.error ?? '', /ANTHROPIC_INPUT_LOSS/);
+  assert.ok(!(JSON.stringify(input).includes('secret.ts')), 'the loss marker must not echo the arguments');
+});
+
+test('a tool_use with no text at all is an empty call, not a claimed loss', () => {
+  const c = toCanonical({
+    ...base,
+    messages: [{ role: 'assistant', content: [{ type: 'tool_use', id: 'tu_5', name: 'noop', input: {} }] }],
+  });
+  const src = c.messages[1]!.content[0]!;
+  const bare: ContentBlock = { type: 'tool_use', toolName: 'noop', meta: src.meta };
+  const stripped: Message = { ...c.messages[1]!, content: [bare] };
+  const out = fromCanonical({ ...c, messages: [c.messages[0]!, stripped] }, base);
+  assert.deepEqual(wireInput(out), {}, 'absent text means no arguments, which is honest');
 });

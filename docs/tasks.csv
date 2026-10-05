@@ -118,7 +118,7 @@ C-8,C,Gist engine,Gist eviction stays deferred: trigger and safety order recorde
 H-9,H,Output compress,Stream H compression stays deferred: trigger recorded,seq,2,-,4,-,done
 J-12,J,Dev infra,Fail the gate when the uncalled-export count rises (needs owner approval),par,0.5,-,5,-,done
 D-11,D,Gateway,Dedupe orphaned tool_result when two same-named tool calls collide,agent,1,-,5,-,done
-B-16,B,Context pipeline,Tool arguments lost at ingress: ContentBlock has no structured input field,agent,1,-,5,-,todo
+B-16,B,Context pipeline,Anthropic egress sent tool_use input as {} instead of reading the arguments back out of text,agent,1,-,5,-,done
 B-17,B,Context pipeline,Property-test tool-pair atomicity over generated transcripts,agent,1,-,5,-,done
 C-13,C,Gist engine,Gist eviction needs an async LossyStage.run port,ext,1,C-8,5,-,todo
 C-14,C,Gist engine,MCP recovery unreachable: in-memory context over a disk artifact store,ext,1,C-8,5,-,todo

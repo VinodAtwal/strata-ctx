@@ -120,6 +120,50 @@ const textOf = (content: AnthropicContentBlock): string => {
   }
 };
 
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/** The token a caller sees when a tool_use block's arguments are not readable. */
+const INPUT_LOSS = 'ANTHROPIC_INPUT_LOSS';
+
+/**
+ * The `input` for a tool_use egress, read back out of the block's `text`.
+ *
+ * This is a *read*, not a recovery. `textOf` puts the whole payload on ingress,
+ * so for any block that has not been through a lossy stage the arguments are
+ * sitting in `text` and simply have to be read. The two are written as
+ * functions rather than kept in sync by hand because they are one envelope, and
+ * the write side is the one that owns the shape.
+ *
+ * A tool_use `input` is arbitrary JSON, so a non-object argument -- `"query"`,
+ * `42`, `null` -- is *legal* and passes through untouched. That is the one place
+ * this differs from the Gemini adapter's decode: there the wire field is a
+ * typed Struct, so a non-object is a loss, while here it is a value.
+ *
+ * The only true loss is text that no longer parses as the envelope, which means
+ * a lossy stage rewrote it. `{}` is the wrong answer there: Anthropic treats an
+ * empty object as a valid call with no arguments, and the model would run the
+ * tool with arguments nobody supplied. Say so instead.
+ */
+const toolInputOf = (b: ContentBlock): unknown => {
+  const raw = b.text;
+  if (raw === undefined || raw === '') return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {
+      error: `${INPUT_LOSS}: this tool_use's arguments no longer parse, so the call is incomplete; a lossy stage rewrote them`,
+    };
+  }
+  if (!isRecord(parsed) || !('input' in parsed)) {
+    return {
+      error: `${INPUT_LOSS}: this tool_use's arguments are not the envelope ingress wrote, so the call is incomplete`,
+    };
+  }
+  return parsed['input'];
+};
+
 export function toCanonical(req: AnthropicRequest, now = Date.now()): ContextState {
   const messages: Message[] = [];
 
@@ -197,6 +241,13 @@ export function toCanonical(req: AnthropicRequest, now = Date.now()): ContextSta
  * Canonical -> Anthropic Messages. Deliberately lossy on the way out only in
  * fields the wire format cannot express; nothing is dropped, because every
  * canonical block carries a `text` projection of its payload.
+ *
+ * Carrying the payload in `text` is necessary but not sufficient, and this
+ * function is where the difference bites: a block whose payload lives in `text`
+ * is only preserved if something reads it back. `tool_use` used to send
+ * `input: {}` regardless, which is how a populated call became an empty one.
+ * Every `text`-backed payload on this path is now read back out; see
+ * `toolInputOf`.
  */
 export function fromCanonical(state: ContextState, req: AnthropicRequest): AnthropicRequest {
   const system = state.messages.filter((m) => m.role === 'system');
@@ -215,7 +266,7 @@ export function fromCanonical(state: ContextState, req: AnthropicRequest): Anthr
         // needs the bytes keeps the original block untouched.
         return { type: 'image', source: { type: 'ref', ref: b.id ?? '' } };
       case 'tool_use':
-        return { type: 'tool_use', id: b.id ?? '', name: b.toolName ?? 'unknown', input: {} };
+        return { type: 'tool_use', id: b.id ?? '', name: b.toolName ?? 'unknown', input: toolInputOf(b) };
       case 'tool_result':
         return {
           type: 'tool_result',
