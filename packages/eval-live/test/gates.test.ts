@@ -177,6 +177,76 @@ describe('F2-2: G2 refuses to call a small clean sample a 0% rate', () => {
   });
 });
 
+/**
+ * F2-4: the basis a violation rate was measured on is part of the evidence.
+ *
+ * The bias here is the same one-way bias as the rest of the file, applied to a
+ * new input: a gate that reads a rate without reading how the rate was graded
+ * will report a number that describes the matcher rather than the arms.
+ */
+describe('F2-4: a gate reads the basis its rate was measured on', () => {
+  const ALL_CALLS = { gradedOnToolCalls: 24, gradedOnProseFallback: 0 };
+
+  it('passes G1 on tool calls alone, with no basis reason attached', () => {
+    const cases = repeat(24, [caseOf('x', [arm('control+', { status: 'fail', violations: [violate()] })])]);
+    const g = evaluateG1(input(cases, { decayedContexts: 24, ...ALL_CALLS }));
+    assert.equal(g.status, 'met');
+    assert.doesNotMatch(g.reasons.join(' '), /prose matcher/);
+  });
+
+  it('refuses G1 when every row came from the prose matcher, at any rate', () => {
+    const cases = repeat(24, [caseOf('x', [arm('control+', { status: 'fail', violations: [violate()] })])]);
+    const g = evaluateG1(input(cases, { decayedContexts: 24, gradedOnToolCalls: 0, gradedOnProseFallback: 24 }));
+    // The rate clears 25% by a wide margin and the premise held. It still cannot
+    // be `met`: this number was produced by scanning sentences for a marker that
+    // its own constraint text contains.
+    assert.match(g.evidence, /control\+ 24\/24 = 100\.0%/);
+    assert.equal(g.status, 'not_met');
+    assert.match(g.reasons.join(' '), /prose matcher/);
+  });
+
+  it('caps a mixed-basis G1 at inconclusive rather than pooling the two', () => {
+    const cases = repeat(24, [caseOf('x', [arm('control+', { status: 'fail', violations: [violate()] })])]);
+    const g = evaluateG1(input(cases, { decayedContexts: 24, gradedOnToolCalls: 23, gradedOnProseFallback: 1 }));
+    assert.equal(g.status, 'inconclusive');
+    assert.match(g.reasons.join(' '), /1 of 24/);
+  });
+
+  it('refuses G2 on a full clean sample that was graded from prose', () => {
+    const cases = repeat(G2_SCENARIO_FLOOR, [arm('treatment')].map((a) => caseOf('x', [a])));
+    const graded = evaluateG2(input(cases, ALL_CALLS));
+    assert.equal(graded.status, 'met', 'the same sample on the structured channel is met');
+    const prose = evaluateG2(input(cases, { gradedOnToolCalls: 0, gradedOnProseFallback: G2_SCENARIO_FLOOR }));
+    assert.equal(prose.status, 'not_met');
+    assert.match(prose.reasons.join(' '), /prose matcher/);
+  });
+
+  it('leaves a caller that cannot say anything about the basis alone', () => {
+    // The offline path, where every observation is a tool call by construction.
+    // Guessing a basis here would put a premise on a caller that never made one.
+    const cases = repeat(G2_SCENARIO_FLOOR, [arm('treatment')].map((a) => caseOf('x', [a])));
+    assert.equal(evaluateG2(input(cases)).status, 'met');
+    const controlPlus = repeat(24, [caseOf('x', [arm('control+', { status: 'fail', violations: [violate()] })])]);
+    assert.equal(evaluateG1(input(controlPlus, { decayedContexts: 24 })).status, 'met');
+  });
+
+  it('cannot be made to fail harder by the basis rule than the evidence already did', () => {
+    // A cap moves a gate away from `met` only. Stating it as a test because the
+    // asymmetry is the reason the rule is safe to add: it can only cost a claim.
+    const clean = repeat(G2_SCENARIO_FLOOR, [arm('treatment')].map((a) => caseOf('x', [a])));
+    const withViolation = clean.map((c, i) =>
+      i === 3 ? caseOf(c.caseId, [arm('treatment', { violations: [violate()] })]) : c,
+    );
+    const mixed = { gradedOnToolCalls: 199, gradedOnProseFallback: 1 };
+    assert.equal(evaluateG2(input(clean, mixed)).status, 'inconclusive');
+    assert.equal(
+      evaluateG2(input(withViolation, mixed)).status,
+      'not_met',
+      'a violation is already not_met and the cap must not soften it to inconclusive',
+    );
+  });
+});
+
 describe('F2-2: non-inferiority cannot widen a pre-registered margin', () => {
 
   it('is inconclusive when every pair agreed', () => {
@@ -328,6 +398,14 @@ const makeReport = (
       decayedNegativeControls: 0,
       observedAt: '2026-10-01T00:00:00.000Z',
       retentionThreshold: 0.5,
+      // Every observation graded from a tool call, which is the only basis on
+      // which a gate may be reported as met. Tests that need the other basis
+      // override it through `campaignOver`.
+      gradingBasis: {
+        toolCalls: { control: 0, 'control+': 0, treatment: 0 },
+        proseFallback: { control: 0, 'control+': 0, treatment: 0 },
+        unreadableToolCalls: 0,
+      },
       caveats: ['This measures a prompt prefix, not a pin.'],
       ...campaignOver,
     },

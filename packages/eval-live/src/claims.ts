@@ -174,6 +174,18 @@ export function auditClaims(report: LiveRunReport): ClaimsAudit {
     controlObserved > 0 &&
     report.gates.some((g) => g.spec.id === 'G1' && g.status !== 'not_evaluated');
 
+  // The same class of check, one layer down: a violation rate over prose-graded
+  // rows is a rate over sentences, and `detectViolations` cannot tell a refusal
+  // from a use. G1 and G2 already refuse to call that `met`; the audit's job is
+  // to say so in the reader's own terms rather than leaving it to a gate reason
+  // buried under the table.
+  const basis = report.campaign.gradingBasis;
+  const totalOf = (counts: Readonly<Record<string, number>>): number =>
+    Object.values(counts).reduce((sum, n) => sum + n, 0);
+  const toolGraded = totalOf(basis.toolCalls);
+  const proseGraded = totalOf(basis.proseFallback);
+  const measuredSomething = toolGraded + proseGraded > 0;
+
   const notClaimed: string[] = [
     ...blocked.map(
       (id) =>
@@ -194,6 +206,18 @@ export function auditClaims(report: LiveRunReport): ClaimsAudit {
     ...(report.campaign.unmeasuredArms > 0
       ? [
           `That all ${report.campaign.unmeasuredArms} arm(s) this harness could not build were measured anyway: they were never sent, so they are absent from every denominator rather than scored on a context they never had.`,
+        ]
+      : []),
+    ...(measuredSomething && proseGraded > 0
+      ? [
+          toolGraded === 0
+            ? `That any violation rate here is a rate of governance decay: all ${proseGraded} completed observation(s) were graded by the prose matcher, which counts forbidden strings in sentences and cannot distinguish a refusal from a use. The violation counts are counts of strings.`
+            : `That any violation rate here is a rate of governance decay: ${proseGraded} of ${toolGraded + proseGraded} completed observation(s) were graded by the prose matcher and ${toolGraded} from a tool call. The two are reported separately in campaign.gradingBasis and are not pooled, so no single rate in this report covers both.`,
+        ]
+      : []),
+    ...(basis.unreadableToolCalls > 0
+      ? [
+          `That the ${basis.unreadableToolCalls} response(s) whose tool-call arguments could not be read were compliant: they were reported as errors, because a call whose arguments will not parse is a call whose effect nobody could look at.`,
         ]
       : []),
     ...unsupported.map(
@@ -231,6 +255,9 @@ export function renderClaimsAudit(report: LiveRunReport): string {
   // campaign where every request failed used to render as "24 observations"; it
   // observed none. Both numbers are stated so neither can be quoted alone.
   const completed = report.totals.observations - report.totals.errored;
+  const basis = campaign.gradingBasis;
+  const totalOf = (counts: Readonly<Record<string, number>>): number =>
+    Object.values(counts).reduce((sum, n) => sum + n, 0);
 
   const lines: string[] = [
     `# Claims audit`,
@@ -244,6 +271,13 @@ export function renderClaimsAudit(report: LiveRunReport): string {
     // than in the reader's memory of how the harness was wired.
     `${campaign.decayedNegativeControls} negative-control observation(s) were sent without their constraints · ` +
       `${campaign.unmeasuredArms} arm(s) could not be built and were never sent.`,
+    // The grading basis, next to the premise checks. A violation count is a count
+    // of effects or a count of strings depending on this line, and it is the
+    // difference between the two numbers in this report being measurements and
+    // being artefacts of the matcher.
+    `${totalOf(basis.toolCalls)} observation(s) graded from a tool call · ` +
+      `${totalOf(basis.proseFallback)} graded by the prose matcher · ` +
+      `${basis.unreadableToolCalls} response(s) whose arguments could not be read.`,
     '',
     // All twelve pre-registered gates, including the ones this campaign could not
     // measure. A gate that is absent from the report reads as a gate that passed;
