@@ -156,7 +156,7 @@ Reference numbers at commit `ba9b67f`, Node 20.12.1, macOS:
 # pass 3640
 # fail 0
 # skipped 1
-contract unchanged: 120 exports, digest 4dda325007f5f2e3, frozen at 1.0.0
+contract unchanged: 120 exports, digest 2abea9eb56758454, frozen at 1.0.0
 ```
 
 ### Integration: the checks you should not run mid-development

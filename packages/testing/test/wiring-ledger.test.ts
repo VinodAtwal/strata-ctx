@@ -92,8 +92,14 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
     exports: 35,
   },
   gist: {
-    why: 'no package depends on @strata-ctx/gist, so eviction and recovery cannot run',
-    exports: 6,
+    why: 'no package depends on @strata-ctx/gist, so eviction and recovery cannot run: LossyStage.run is synchronous and runCompactionTransaction is not, and every host that could inject the stage would need a third cross-stream edge',
+    // 6 -> 7 at 3b23f34, which added recoverEvictedMessages. It addresses the same
+    // transcript as recoverTurns and addresses it differently: eviction drops by
+    // identity, while recoverTurns returns a turn window, so a turn ending in a
+    // tool result lost that result. Both functions staying reachable is the point
+    // -- "verified recoverable" and "recoverable through the tool" are different
+    // claims and only the first was being checked.
+    exports: 7,
   },
   governance: {
     why: 'no package depends on @strata-ctx/governance; the gateway pins with its own code path',

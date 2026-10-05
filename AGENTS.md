@@ -15,7 +15,7 @@ blocked — see §7 before picking anything up.
 
 ## 1. Prime Directive
 
-**The contract is frozen.** `packages/core-types@1.0.0` (digest `4dda325007f5f2e3`, 120 exports) is frozen. No agent may add, remove, or change its public exports. If you need a new type, propose it in your task report — the contract owner will decide whether to unfreeze.
+**The contract is frozen.** `packages/core-types@1.0.0` (digest `2abea9eb56758454`, 120 exports) is frozen. No agent may add, remove, or change its public exports. If you need a new type, propose it in your task report — the contract owner will decide whether to unfreeze.
 
 ---
 
@@ -284,7 +284,7 @@ Externally blocked right now, so nobody burns a day rediscovering this:
 | `SELF_GIST_DIRECTIVE` | **two different exports, not one shared constant** | `pipeline/src/self-gist.ts` exports a `SelfGistMarkers` object (`open`/`close`/`fenceOpen`/`fenceClose`/`instruction`) — the sentinels the *parser* looks for. `integrations/src/templates.ts` exports a *prompt string*. They are not byte-identical and must not be made so. The invariant is narrower and real: the fence and the sentinel must agree, or the parser never fires |
 | `FENCE` / `SELF_GIST_LANGUAGE` / `SELF_GIST_SENTINEL` | `integrations/src/templates.ts` | ` ``` `, `ctx-gist`, `<<<STRATA-SELF-GIST>>>`. The E-9 hook guard *rejects* any text containing the sentinel outside a gist block — do not loosen that to "be helpful" |
 | `PROVIDERS` | `gateway/src/config.ts` **and** `gateway/src/credentials.ts` | Two different sets that share a name: config = routable upstreams (`anthropic`, `openai-compat`, `gemini`, `mock`); credentials = key-holding providers (`anthropic`, `openai`, `gemini`). `index.ts` re-exports the config one as `CONFIG_PROVIDERS` for exactly this reason. Do not star-export both |
-| `contract.lock.json` digest | `packages/core-types/contract.lock.json` | `4dda325007f5f2e3`, 120 exports. Change it only via `npm run contract:update`, deliberately, in its own commit — it has moved once, to consolidate `GistDraft` |
+| `contract.lock.json` digest | `packages/core-types/contract.lock.json` | `2abea9eb56758454`, 120 exports. Change it only via `npm run contract:update`, deliberately, in its own commit — it has moved twice: once to consolidate `GistDraft`, and once at `a63bfa8` for G-9's optional `StageTelemetry.inputTokens`/`outputTokens` |
 
 ### Two traps this repo has already paid for
 
