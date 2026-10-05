@@ -119,15 +119,22 @@ One server, usable from every agent that speaks MCP. Tools:
 | Tool | Purpose | Tier |
 |---|---|---|
 | `ctx_search` | JIT retrieval over the artifact store — **don't compress, don't fetch** | 3 |
-| `ctx_get_task` | Fetch a full transcript range that was compacted away (reversibility) | — |
+| `ctx_get_task` | Fetch a task record's retained turns (see the caveat below) | — |
 | `ctx_get_artifact` | Resolve `artifact://` pointers to content | — |
 | `ctx_note` | Write a note into the memory tiers | 3 |
 | `ctx_status` | Current token budget, compaction count, pin status, savings today | — |
 | `ctx_remember` | Explicitly promote something to a durable tier | 3 |
 
-`ctx_get_task` is the escape hatch that makes aggressive compression *safe* to ship: any time a
-refinement turn needs detail it no longer has, the agent can pull the original back. This is how we
-honor the Focus finding that iterative-refinement tasks *degrade* under compression.
+**`ctx_get_task` is not the reversibility path, and this doc used to say it was.** It reads
+`task.turns` and nothing else, so it returns the turns compaction *kept*. An earlier version of
+this file called it "the escape hatch that makes aggressive compression safe to ship"; that was
+wrong about the code, and the tool description carried the same claim to every MCP client. The
+recovered originals are in the raw transcript artifact written during compaction, reached through
+`ctx_get_artifact` — and only when the server is bound to a store that can resolve it. The CLI
+binds `createInMemoryContext()`, which has no disk behind it, so on that path recovery is not
+reachable at all. Until the store is wired through, an agent that has lost detail to compression
+has no in-band way to get it back, which is the Focus finding that iterative-refinement tasks
+degrade under compression — still open, and now stated as the gap it is rather than as a feature.
 
 ## 6. GitHub Copilot — the honest assessment
 

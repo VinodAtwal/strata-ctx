@@ -304,7 +304,7 @@ describe('mcp-server: get_task', () => {
     assert.deepEqual(data.range, { from: 1, to: 4 });
   });
 
-  test('from_turn/to_turn narrow the returned range (compaction reversibility)', async () => {
+  test('from_turn/to_turn narrow the returned range', async () => {
     const { data } = await callData(server, 'get_task', {
       task_id: 'T-100',
       from_turn: 2,
@@ -316,6 +316,37 @@ describe('mcp-server: get_task', () => {
       { turn: 2, role: 'assistant', text: 'uploader should stream to disk', tokens: 10 },
       { turn: 3, role: 'tool', text: 'uploader: wrote 1.2GB to tmp', tokens: 8 },
     ]);
+  });
+
+  test('returns only what the task record holds, and says so', async () => {
+    // Compaction drops evicted turns from `task.turns`. The handler reads that
+    // array and nothing else -- no artifact lookup, no `recoverTurns` -- so a
+    // dropped turn is unreachable through this tool. The description used to
+    // promise the opposite ("the reversibility escape hatch: it returns the
+    // original turns that compaction dropped"), which a client would read as a
+    // guarantee and then treat a short result as a bug.
+    const turnsBefore = memory.getTask(taskId('T-100'))?.turns.length ?? 0;
+    assert.ok(turnsBefore > 0, 'precondition: the seed has turns to lose');
+
+    // Drop the first two turns the way an eviction would, then ask for them back.
+    const task = memory.getTask(taskId('T-100'));
+    assert.ok(task !== undefined);
+    const dropped = task.turns.slice(0, 2);
+    (task.turns as unknown as { splice: (...args: unknown[]) => unknown }).splice(0, 2);
+
+    const { data } = await callData(server, 'get_task', {
+      task_id: 'T-100',
+      from_turn: dropped[0]?.turn,
+      to_turn: dropped[dropped.length - 1]?.turn,
+    });
+    assert.equal(data.returned_turn_count, 0, 'evicted turns are not recoverable here');
+
+    const description = server
+      .listTools()
+      .find((t) => t.name === 'get_task')
+      ?.description.toString();
+    assert.match(description ?? '', /NOT a reversibility escape hatch/);
+    assert.doesNotMatch(description ?? '', /This is the reversibility escape hatch/);
   });
 
   test('an inverted range is a tool error, not a protocol error', async () => {

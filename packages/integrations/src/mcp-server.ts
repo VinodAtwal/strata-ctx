@@ -1021,8 +1021,11 @@ export const TOOL_SCHEMAS = {
   },
   get_task: {
     description:
-      'Fetch a stored task, optionally a single turn range. This is the reversibility escape hatch: ' +
-      'it returns the original turns that compaction dropped.',
+      'Fetch a stored task, optionally a single turn range. Returns the turns the task ' +
+      'record still holds. This is NOT a reversibility escape hatch: compaction removes ' +
+      'evicted turns from that record, so this tool cannot return what was dropped. The ' +
+      'raw transcript is written to the artifact store during compaction instead, and ' +
+      'whether an operator can resolve it depends on the store this server is bound to.',
     inputSchema: {
       type: 'object',
       properties: {
