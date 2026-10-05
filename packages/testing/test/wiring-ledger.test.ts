@@ -82,10 +82,14 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
     why: 'F2-1..F2-3 are externally blocked, so no reachable module imports @strata-ctx/eval-live',
     // 29 -> 31 at e151617, which added the claims-audit operators, then 31 -> 34
     // at a03dbc3, which added the subtractive arm, then 34 -> 46 at c014270, which
-    // added the structured tool-call channel. Still unreachable for the same
-    // reason: an instrument with no credential cannot run. The gate exists to make
-    // a change in this number a decision rather than a drift.
-    exports: 46,
+    // added the structured tool-call channel, then 46 -> 35 at 2ea82bb, which
+    // audited that channel's barrel and found 11 of the 12 new re-exports used
+    // only by their own tests. Publishing them made them things a downstream
+    // package could depend on, which is the cost the explicit barrel exists to
+    // avoid. Still unreachable for the same reason: an instrument with no
+    // credential cannot run. The gate exists to make a change in this number a
+    // decision rather than a drift.
+    exports: 35,
   },
   gist: {
     why: 'no package depends on @strata-ctx/gist, so eviction and recovery cannot run',
