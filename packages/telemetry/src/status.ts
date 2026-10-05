@@ -967,7 +967,7 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
 
   const byStage: readonly StageEffect[] = Object.freeze(
     [...stageTallies.values()].map((t) => {
-      const effect: StageEffect = {
+      const base: StageEffect = {
         stage: t.stage,
         runs: t.runs,
         changed: t.changed,
@@ -978,12 +978,8 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         durationMs: t.durationMs,
         reductionFraction: t.bytesIn > 0 ? 1 - t.bytesOut / t.bytesIn : null,
       };
-      if (t.inputTokensCount > 0) {
-        (effect as StageEffect).inputTokens = t.inputTokensSum;
-      }
-      if (t.outputTokensCount > 0) {
-        (effect as StageEffect).outputTokens = t.outputTokensSum;
-      }
+      const withIn = t.inputTokensCount > 0 ? { ...base, inputTokens: t.inputTokensSum } : base;
+      const effect = t.outputTokensCount > 0 ? { ...withIn, outputTokens: t.outputTokensSum } : withIn;
       return Object.freeze(effect);
     }),
   );
