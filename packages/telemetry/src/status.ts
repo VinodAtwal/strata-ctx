@@ -210,6 +210,8 @@ export interface StageEffect {
   readonly durationMs: number;
   /** 1 - bytesOut/bytesIn. null when nothing entered the stage. */
   readonly reductionFraction: number | null;
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
 }
 
 export interface StageSummary {
@@ -418,6 +420,10 @@ interface StageTally {
   blocksIn: number;
   blocksOut: number;
   durationMs: number;
+  inputTokensSum: number;
+  outputTokensSum: number;
+  inputTokensCount: number;
+  outputTokensCount: number;
 }
 
 /** Accumulator behind one `RunSummary`. Same lifetime as the report's. */
@@ -626,6 +632,10 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
             blocksIn: event.blocksIn,
             blocksOut: event.blocksOut,
             durationMs: event.durationMs,
+            inputTokensSum: event.inputTokens ?? 0,
+            outputTokensSum: event.outputTokens ?? 0,
+            inputTokensCount: event.inputTokens === undefined ? 0 : 1,
+            outputTokensCount: event.outputTokens === undefined ? 0 : 1,
           });
         } else {
           tally.runs += 1;
@@ -635,6 +645,14 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
           tally.blocksOut += event.blocksOut;
           tally.durationMs += event.durationMs;
           if (event.changed) tally.changed += 1;
+          if (event.inputTokens !== undefined) {
+            tally.inputTokensSum += event.inputTokens;
+            tally.inputTokensCount += 1;
+          }
+          if (event.outputTokens !== undefined) {
+            tally.outputTokensSum += event.outputTokens;
+            tally.outputTokensCount += 1;
+          }
         }
 
         if (run !== null) {
@@ -948,8 +966,8 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
   const intact = gaps.length === 0 && duplicateSeq.length === 0;
 
   const byStage: readonly StageEffect[] = Object.freeze(
-    [...stageTallies.values()].map((t) =>
-      Object.freeze({
+    [...stageTallies.values()].map((t) => {
+      const effect: StageEffect = {
         stage: t.stage,
         runs: t.runs,
         changed: t.changed,
@@ -959,8 +977,15 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         blocksOut: t.blocksOut,
         durationMs: t.durationMs,
         reductionFraction: t.bytesIn > 0 ? 1 - t.bytesOut / t.bytesIn : null,
-      }),
-    ),
+      };
+      if (t.inputTokensCount > 0) {
+        (effect as StageEffect).inputTokens = t.inputTokensSum;
+      }
+      if (t.outputTokensCount > 0) {
+        (effect as StageEffect).outputTokens = t.outputTokensSum;
+      }
+      return Object.freeze(effect);
+    }),
   );
   const changedStages = byStage.filter((s) => s.changed > 0).map((s) => s.stage);
 
