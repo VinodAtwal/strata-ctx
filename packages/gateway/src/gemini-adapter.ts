@@ -55,9 +55,9 @@ import { runId, sha256 } from '@strata-ctx/core-types';
  *
  * | Wire | Canonical | Loss |
  * |---|---|---|
- * | `functionCall.args` (a Struct) | `ContentBlock.text` (JSON) | structured only as text; a stage that rewrites the text leaves a value that no longer parses, and egress then sends `{}` |
+ * | `functionCall.args` (a Struct) | `ContentBlock.text` (JSON) | structured only as text; a stage that rewrites the text leaves a value that no longer parses, and egress then sends a `GEMINI_STRUCT_LOSS` marker naming the cause and never the content |
  * | `functionCall.id` | `ContentBlock.id` | kept when present; absent (the common case) it is filled with the function name, which is the correlation key Gemini actually uses |
- * | `functionResponse.response` (a Struct) | `ContentBlock.text` (JSON) | as `args` above |
+ * | `functionResponse.response` (**not** a Struct) | `ContentBlock.text` (a `GEMINI_STRUCT_LOSS` Struct) | **the content is gone.** Gemini's `response` holds only objects, and a string/array/number response cannot be carried at all. Ingress records it as a `GEMINI_STRUCT_LOSS` Struct at severity `error`, so `truncate` retains the fact of the loss, and egress forwards the marker. It is deliberately not forwarded as `{}`: `{}` reads as "the tool returned nothing", which is a claim about the tool rather than about this adapter |
  * | `inlineData.data` (base64 bytes) | `ContentBlock.text` (the mime type) | **the bytes are gone.** The canonical model has no binary field. Egress emits a `fileData` pointer when the block kept a `fileUri`, and a visible `[image]` placeholder otherwise -- never an empty `inlineData`, which is a part the provider rejects and would turn a lossy adapter into a failed request (N5: fail toward more context) |
  * | `thoughtSignature` | -- | dropped, exactly as the Anthropic adapter drops `thinking.signature`. Proposal in the A-10 report: `ContentBlock` needs a provider-opaque field |
  * | `systemInstruction.role` | -- | dropped. The provider ignores it on this field |
@@ -182,11 +182,65 @@ const tryParse = (text: string): { ok: true; value: unknown } | { ok: false } =>
  */
 const encodeStruct = (v: unknown): string => (isRecord(v) ? JSON.stringify(v) : '{}');
 
+/**
+ * Stable prefix on every "this did not survive" marker, so a transcript can be
+ * grepped for losses rather than inferred from their absence.
+ */
+const STRUCT_LOSS = 'GEMINI_STRUCT_LOSS';
+
+const jsonTypeName = (v: unknown): string =>
+  v === null ? 'null' : Array.isArray(v) ? 'an array' : `a ${typeof v}`;
+
+/**
+ * The canonical `text` for a Gemini Struct field, and what to do when the field
+ * is not one.
+ *
+ * `encodeStruct` collapses a non-object to `'{}'`, which is right for *identity*
+ * -- two calls with unrepresentable args get one identity rather than two --
+ * but wrong for the bytes. `{}` says the tool returned nothing, and that is a
+ * claim about the tool rather than about this adapter: a `response` that is a
+ * JSON array, a string or a number arrives here and used to egress as an empty
+ * success. The model could not tell an empty result from a dropped one, and the
+ * artifact store might hold the real content with nothing pointing at it.
+ *
+ * So a non-object becomes a Struct carrying `error`, which is the convention
+ * canonical already reads: the block is filed severity `error`, and `truncate`
+ * retains error severity where it would have discarded an empty object as
+ * unremarkable. That is the argument for a visible failure over an accurate one
+ * -- an accurate `{}` here is a value that reads as success.
+ *
+ * The marker names the JSON type and nothing else. A tool result can hold a
+ * credential, and an error path is exactly where that content ends up in logs.
+ */
+const structPayload = (v: unknown, what: string): string =>
+  isRecord(v)
+    ? JSON.stringify(v)
+    : JSON.stringify({
+        error: `${STRUCT_LOSS}: Gemini ${what} holds only objects, and this one was ${jsonTypeName(v)}; its content was not forwarded`,
+      });
+
+/**
+ * The canonical `text` of a tool block, and back again.
+ *
+ * A Struct has no home in `ContentBlock`, so `args` and `response` are carried
+ * as their JSON encoding. The encoding is exact for a given body, so an
+ * untouched block round-trips. A block a lossy stage rewrote -- head+tail
+ * truncation, a summary, a pointer stub -- no longer parses, and that is a loss
+ * this adapter can see, so it states it rather than emitting `{}` and letting
+ * the model read emptiness as an answer.
+ */
 const decodeStruct = (text: string | undefined): Record<string, unknown> => {
   if (text === undefined || text === '') return {};
   const parsed = tryParse(text);
-  if (!parsed.ok) return {};
-  return isRecord(parsed.value) ? parsed.value : {};
+  if (!parsed.ok) {
+    return {
+      error: `${STRUCT_LOSS}: the ${text.length}-char tool text no longer parses as JSON, so it was not forwarded`,
+    };
+  }
+  if (isRecord(parsed.value)) return parsed.value;
+  return {
+    error: `${STRUCT_LOSS}: the tool text is ${jsonTypeName(parsed.value)}, and this response field holds only objects, so it was not forwarded`,
+  };
 };
 
 /**
@@ -319,7 +373,7 @@ const toBlock = (part: unknown, state: WalkState): ContentBlock => {
       // Recorded even when the name is missing, so a response below is measured
       // against the same key the call would have had.
       if (name !== undefined) state.calls.add(name);
-      const payload = encodeStruct(call['args']);
+      const payload = structPayload(call['args'], 'functionCall.args');
       const resolved = name ?? '';
       return {
         type: 'tool_use',
@@ -335,7 +389,7 @@ const toBlock = (part: unknown, state: WalkState): ContentBlock => {
     const response = part['functionResponse'];
     if (isRecord(response)) {
       const name = str(response['name']);
-      const payload = encodeStruct(response['response']);
+      const payload = structPayload(response['response'], 'functionResponse.response');
       const resolved = name ?? '';
       // Gemini has no `is_error` flag on a tool result, so an error is a
       // convention: a Struct carrying an `error` key. Missing the flag is not
@@ -346,7 +400,12 @@ const toBlock = (part: unknown, state: WalkState): ContentBlock => {
       // contract can carry it; today the canonical model has no way to say
       // "this result failed" other than a severity it was not designed to
       // interpret from provider folklore.
-      const failed = isRecord(response['response']) && 'error' in response['response'];
+      // A non-Struct response lost its content on the way in, so it is a failed
+      // result even when the wire Struct carried no `error` key. Filing it as clean
+      // would let truncate discard it as unremarkable -- a silently dropped tool
+      // result is the case this adapter has to be most careful about.
+      const failed =
+        !isRecord(response['response']) || 'error' in response['response'];
       // A response with no earlier call is either a truncated history or an
       // injected result. It is kept -- dropping a block the client sent is the
       // one thing a proxy must not do -- and marked `warn` so it is countable

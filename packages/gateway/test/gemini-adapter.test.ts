@@ -407,14 +407,71 @@ test('malformed parts degrade one block at a time instead of failing the turn', 
   assert.equal(blocks[5]?.meta.severity, undefined);
 });
 
-test('a functionResponse whose response is not a Struct still produces a tool_result', () => {
+test('a functionResponse whose response is not a Struct is a recorded loss, not an empty object', () => {
   const c = toCanonical(
     { ...base, contents: [{ role: 'user', parts: [asPart({ functionResponse: { name: 'f', response: 'oops' } })] }] },
     NOW,
   );
   const b = nonSystem(c)[0]?.content[0];
   assert.equal(b?.type, 'tool_result');
-  assert.equal(b?.text, '{}');
+  // Was `{}`, which asserted the tool had returned nothing. Gemini's `response`
+  // holds only objects, so a string response cannot be carried at all, and the
+  // block has to say so -- otherwise an agent reads an empty result as an answer
+  // and the artifact store may hold the real content with nothing pointing at it.
+  assert.notEqual(b?.text, '{}');
+  assert.match(b?.text ?? '', /"error":"GEMINI_STRUCT_LOSS/);
+  assert.match(b?.text ?? '', /was a string/);
+  // The content must not appear in the marker: this is an error path, and tool
+  // results are exactly where credentials live.
+  assert.doesNotMatch(b?.text ?? '', /oops/);
+});
+
+test('a non-Struct response is filed severity error so truncate cannot drop the fact', () => {
+  const c = toCanonical(
+    { ...base, contents: [{ role: 'user', parts: [asPart({ functionResponse: { name: 'f', response: ['a', 'b'] } })] }] },
+    NOW,
+  );
+  const b = nonSystem(c)[0]?.content[0];
+  assert.equal(b?.meta.severity, 'error');
+  assert.match(b?.text ?? '', /was an array/);
+});
+
+test('egress states a loss instead of sending an empty object', () => {
+  // The other half: text a lossy stage rewrote no longer parses. Egress used to
+  // answer `{}`, which is indistinguishable from a tool that returned nothing.
+  const original = { output: 'a.ts', rows: [1, 2, 3] };
+  const c = toCanonical(
+    { ...base, contents: [{ role: 'user', parts: [asPart({ functionResponse: { name: 'f', response: original } })] }] },
+    NOW,
+  );
+  const block = nonSystem(c)[0]?.content[0];
+  assert.ok(block !== undefined);
+  // Stand in for head+tail truncation, which leaves exactly this: valid-looking
+  // JSON that stops mid-string.
+  (block as { text: string }).text = '{"output":"a.ts","rows":[1,2,';
+
+  const out = fromCanonical(c, { ...base, contents: [] });
+  const part = out.contents[0]?.parts[0];
+  const response = part !== undefined && 'functionResponse' in part ? part.functionResponse.response : undefined;
+  assert.ok(response !== undefined && 'error' in response, `expected a loss marker, got ${JSON.stringify(response)}`);
+  assert.match(String(response.error), /no longer parses as JSON/);
+  assert.doesNotMatch(String(response.error), /rows/, 'the marker must not echo the lost content');
+});
+
+test('an untouched Struct still round-trips byte-identically', () => {
+  const response = { output: 'a.ts', exitCode: 0 };
+  const c = toCanonical(
+    { ...base, contents: [{ role: 'user', parts: [asPart({ functionResponse: { name: 'f', response } })] }] },
+    NOW,
+  );
+  const b = nonSystem(c)[0]?.content[0];
+  assert.equal(b?.text, JSON.stringify(response));
+  // `warn`, not `error`: this fixture has no earlier functionCall, so the block
+  // is an orphan and that is a pre-existing verdict. What matters here is that
+  // the new non-Struct rule did not promote a clean result to a failure.
+  assert.notEqual(b?.meta.severity, 'error');
+  const part = fromCanonical(c, { ...base, contents: [] }).contents[0]?.parts[0];
+  assert.deepEqual(part, { functionResponse: { name: 'f', response } });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -524,10 +581,12 @@ test('a canonical tool-role turn is emitted as a user content of functionRespons
   assert.equal(out.contents[0]?.role, 'user');
 });
 
-test('a tool_result whose text was rewritten by a lossy stage degrades to an empty struct', () => {
-  // Truncate does head+tail on a tool_result, so its text stops parsing. The
-  // only honest answer is `{}`; sending a half-parsed struct the model never
-  // produced would be worse.
+test('a tool_result whose text was rewritten by a lossy stage states the loss', () => {
+  // Truncate does head+tail on a tool_result, so its text stops parsing. This
+  // used to assert `{}`, on the reasoning that a half-parsed struct would be
+  // worse. But `{}` is not "worse", it is *wrong*: it tells the model the tool
+  // returned nothing, which is a claim about the tool, and the model has no way
+  // to tell an empty result from content the gateway dropped on the floor.
   const c = toCanonical(
     { ...base, contents: [{ role: 'user', parts: [{ functionResponse: { name: 'f', response: { output: 'x' } } }] }] },
     NOW,
@@ -540,7 +599,12 @@ test('a tool_result whose text was rewritten by a lossy stage degrades to an emp
     })),
   };
   const out = fromCanonical(truncated, { ...base, contents: [] });
-  assert.deepEqual(out.contents[0]?.parts[0], { functionResponse: { name: 'f', response: {} } });
+  const part = out.contents[0]?.parts[0];
+  const response = part !== undefined && 'functionResponse' in part ? part.functionResponse.response : undefined;
+  assert.ok(response !== undefined && 'error' in response, 'the loss must be visible in the response');
+  assert.match(String(response.error), /GEMINI_STRUCT_LOSS/);
+  assert.match(String(response.error), /no longer parses as JSON/);
+  assert.notDeepEqual(response, {}, 'the old empty-object answer is exactly what this replaces');
 });
 
 /* -------------------------------------------------------------------------- */

@@ -113,7 +113,7 @@ F2-6,F,Evals,Maturity assessment: evidence-backed distance to a production produ
 F2-7,F,Evals,Live campaign unrun: no provider credential on any machine,ext,1d,-,5,"G1,G2",todo
 G-8,G,Telemetry,Surface cache invalidation and token-category savings,agent,1,-,4,-,done
 G-9,G,Telemetry,Per-stage token accounting needs a core-types addition,par,1.5,G-8,5,-,done
-B-15,B,Context pipeline,B-3 pointerization blocked: Gemini egresses a pointer stub as an empty response,par,2,-,5,-,todo
+B-15,B,Context pipeline,Gemini stated a non-Struct or unparseable loss instead of sending an empty object,agent,1,B-3,5,-,done
 C-8,C,Gist engine,Gist eviction stays deferred: trigger and safety order recorded,seq,3,-,4,-,done
 H-9,H,Output compress,Stream H compression stays deferred: trigger recorded,seq,2,-,4,-,done
 J-12,J,Dev infra,Fail the gate when the uncalled-export count rises (needs owner approval),par,0.5,-,5,-,done
