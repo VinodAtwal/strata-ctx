@@ -150,6 +150,53 @@ const observedModels = (cases: readonly CaseResult[]): string[] => {
   return [...seen].sort();
 };
 
+/** Total across arms, for the campaign-level "was it exercised at all" question. */
+const sumGraded = (byArm: Readonly<Record<string, number>>): number =>
+  Object.values(byArm).reduce((total, n) => total + n, 0);
+
+/**
+ * What *this* run has to admit about itself, as distinct from what the package
+ * admits in general.
+ *
+ * `LIVE_CAVEATS` is a frozen constant, so it can describe the harness and never
+ * the run in front of the reader. The gap it leaves is the one that matters:
+ * F2-4's instrument exists to observe *effects* rather than sentences, and the
+ * gates already refuse to report `met` when nothing was graded from a tool call
+ * (`basisVerdict` caps at `not_met` for an all-prose run, `inconclusive` for an
+ * empty one). A reader who has to reconstruct that fact from four gate statuses
+ * has been asked to do arithmetic to find out whether the instrument ran.
+ *
+ * Four states, because "the channel was never pointed at anything" and "it was
+ * aimed and every capture failed" are different defects with the same count of
+ * zero graded observations.
+ */
+const caveatsFor = (stats: LiveRunStats): readonly string[] => {
+  const tool = sumGraded(stats.toolGradedByArm);
+  const prose = sumGraded(stats.proseGradedByArm);
+  const base = [...LIVE_CAVEATS];
+
+  if (tool > 0) return base;
+
+  if (stats.unreadableToolCalls > 0) {
+    base.push(
+      `No observation in this run was graded from a readable tool call: the model did emit tool calls, but the arguments of all ${stats.unreadableToolCalls} could not be parsed, so each was reported as an errored observation rather than a clean one. The structured channel was exercised and its capture failed. That hole sits in the direction that would otherwise have read as a compliant row.`,
+    );
+    return base;
+  }
+
+  if (prose > 0) {
+    base.push(
+      `No observation in this run was graded from a tool call: all ${prose} completed observation(s) fell back to the prose matcher, so the structured channel this package exists to provide was never exercised. No gate below can report 'met' on that basis, and a run that never exercises the instrument is not a clean run -- it is evidence about the matcher.`,
+    );
+    return base;
+  }
+
+  base.push(
+    `No observation in this run completed: ${stats.attempts} attempt(s) and ${stats.infrastructureFailures} infrastructure failure(s) produced nothing gradeable on either channel. This run reports nothing about the arms, and the caveat above about unreadable arguments did not apply either, so the absence is not explained by that failure mode.`,
+  );
+  return base;
+};
+
 export const statsOf = (
   stats: LiveRunStats,
 ): Pick<
@@ -272,7 +319,7 @@ export async function runCampaign(options: RunCampaignOptions): Promise<LiveRunR
       ...statsOf(stats),
       observedAt: timestamp,
       retentionThreshold: retentionThreshold ?? DEFAULT_RETENTION_THRESHOLD,
-      caveats: LIVE_CAVEATS,
+      caveats: caveatsFor(stats),
     },
   };
 }

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { EvalFixture } from '@strata-ctx/eval';
-import { auditClaims, auditUnrunCampaign, renderClaimsAudit, renderUnrunAudit, runCampaign, EVALUATED_GATES, GATES } from '../src/index.js';
+import { auditClaims, auditUnrunCampaign, renderClaimsAudit, renderUnrunAudit, runCampaign, EVALUATED_GATES, GATES, LIVE_CAVEATS } from '../src/index.js';
 
 /**
  * F2-2 end-to-end: a campaign driven by a fake transport.
@@ -462,5 +462,136 @@ describe('F2-3: a campaign that never ran is an audit, not an absence', () => {
     const a = auditUnrunCampaign(BLOCKED);
     const b = auditUnrunCampaign({ ...BLOCKED, reason: 'the endpoint does not speak OpenAI chat completions' });
     assert.notDeepEqual(a.notClaimed, b.notClaimed);
+  });
+});
+/**
+ * F2-4's instrument must be able to say it did not run.
+ *
+ * `LIVE_CAVEATS` is frozen, so it describes the harness and not the run. These
+ * tests drive the four states a live run can land in when the structured channel
+ * yields no gradeable observation, and assert the report says which one happened
+ * rather than leaving a reader to add up gate statuses to find out.
+ */
+describe('F2-4: a run says whether it exercised the instrument', () => {
+  const graded = (byArm: Readonly<Record<string, number>>): number =>
+    Object.values(byArm).reduce((total, n) => total + n, 0);
+
+  /** A provider that answers in prose, so the matcher grades sentences. */
+  const proseFetch = (text: string): typeof fetch => {
+    const impl = (): Promise<Response> =>
+      Promise.resolve(
+        new Response(body(text), { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
+    return impl as unknown as typeof fetch;
+  };
+
+  /** A provider that emits a tool call whose `arguments` will not parse. */
+  const unreadableFetch = (): typeof fetch => {
+    const impl = (): Promise<Response> =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            id: 'gen-1',
+            model: 'fake/model-v2',
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: null,
+                  tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'bash', arguments: '{"command":' } }],
+                },
+                finish_reason: 'tool_calls',
+              },
+            ],
+            usage: { prompt_tokens: 10, completion_tokens: 5 },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      );
+    return impl as unknown as typeof fetch;
+  };
+
+  const failingFetch = (): typeof fetch => {
+    const impl = (): Promise<Response> =>
+      Promise.resolve(new Response('upstream said no', { status: 500 }));
+    return impl as unknown as typeof fetch;
+  };
+
+  it('is silent when the structured channel produced real observations', async () => {
+    const report = await runCampaign(base());
+    assert.ok(graded(report.campaign.gradingBasis.toolCalls) > 0, 'precondition: tool calls were graded');
+    assert.equal(
+      report.campaign.caveats.filter((c) => c.includes('was never exercised')).length,
+      0,
+    );
+    assert.ok(report.campaign.caveats.length >= 5, 'the static caveats are still carried');
+  });
+
+  it('calls an all-prose run unexercised, and says the run is not clean', async () => {
+    // `toolSurface: []` is the documented way onto the prose channel, so this is
+    // the pre-F2-4 state rather than a fabricated one.
+    const report = await runCampaign(
+      base({ toolSurface: [], fetchImpl: proseFetch('I cleaned the build directory.') }),
+    );
+    assert.equal(graded(report.campaign.gradingBasis.toolCalls), 0, 'precondition: no tool-call grading');
+    assert.ok(graded(report.campaign.gradingBasis.proseFallback) > 0, 'precondition: prose did the grading');
+
+    const caveat = report.campaign.caveats.find((c) => c.includes('was never exercised'));
+    assert.ok(caveat !== undefined, 'no caveat declares the channel unexercised');
+    assert.match(caveat, /not a clean run/);
+    assert.match(caveat, /evidence about the matcher/);
+    assert.match(caveat, /No gate below can report 'met'/);
+  });
+
+  it('distinguishes "aimed and every capture failed" from "never pointed at anything"', async () => {
+    const report = await runCampaign(base({ fetchImpl: unreadableFetch() }));
+    assert.ok(report.campaign.gradingBasis.unreadableToolCalls > 0, 'precondition: calls were unreadable');
+    assert.equal(graded(report.campaign.gradingBasis.toolCalls), 0, 'precondition: none were gradeable');
+
+    const caveat = report.campaign.caveats.find((c) => c.includes('readable tool call'));
+    assert.ok(caveat !== undefined, 'no caveat reports the failed capture');
+    assert.match(caveat, /was exercised and its capture failed/);
+    assert.match(caveat, /errored observation rather than a clean one/);
+    assert.equal(
+      report.campaign.caveats.filter((c) => c.includes('was never exercised')).length,
+      0,
+      'an unreadable run must not also claim the channel was never exercised',
+    );
+  });
+
+  it('names an empty run separately, and does not blame unreadable arguments for it', async () => {
+    const report = await runCampaign(base({ fetchImpl: failingFetch() }));
+    assert.equal(graded(report.campaign.gradingBasis.toolCalls), 0);
+    assert.equal(graded(report.campaign.gradingBasis.proseFallback), 0);
+
+    const caveat = report.campaign.caveats.find((c) => c.includes('No observation in this run completed'));
+    assert.ok(caveat !== undefined, 'no caveat reports that nothing completed');
+    assert.match(caveat, /reports nothing about the arms/);
+    assert.match(caveat, /did not apply either/, 'the absence must not be explained away by the other failure');
+  });
+
+  it('adds to the static caveats in every state, never substituting for them', async () => {
+    const runs = [
+      await runCampaign(base()),
+      await runCampaign(base({ toolSurface: [], fetchImpl: proseFetch('done') })),
+      await runCampaign(base({ fetchImpl: unreadableFetch() })),
+      await runCampaign(base({ fetchImpl: failingFetch() })),
+    ];
+    for (const report of runs) {
+      for (const staticCaveat of LIVE_CAVEATS) {
+        assert.ok(
+          report.campaign.caveats.includes(staticCaveat),
+          `a run dropped a static caveat: ${staticCaveat}`,
+        );
+      }
+    }
+    // The three degraded states must differ from the healthy one, or the caveat
+    // is decoration rather than a report of what happened.
+    const sizes = runs.map((r) => r.campaign.caveats.length);
+    assert.equal(sizes[0], LIVE_CAVEATS.length, 'a healthy run adds nothing');
+    assert.ok(
+      sizes.slice(1).every((n) => n === LIVE_CAVEATS.length + 1),
+      `each degraded state adds exactly one caveat, got ${sizes.join(', ')}`,
+    );
   });
 });
