@@ -250,7 +250,7 @@ refactor.
 
 | Package | Purpose |
 |---|---|
-| [`core-types`](packages/core-types) | Canonical, provider-neutral model every package compiles against. **Frozen**: public surface hash-locked in `contract.lock.json` (114 exports, digest `0a3c0fea6360e6d9`); CI fails on drift. Zero runtime deps except `zod`. |
+| [`core-types`](packages/core-types) | Canonical, provider-neutral model every package compiles against. **Frozen**: public surface hash-locked in `contract.lock.json`; CI fails on drift. Live count and digest via `npm run status`. Zero runtime deps except `zod`. |
 | [`gateway`](packages/gateway) | Local HTTP/SSE proxy: routing, ingress/egress adapters (`anthropic`, `openai-compat`, `gemini`, `mock`), config loader/validator/hot-reload, credential handling, token estimation, health/status. |
 | [`pipeline`](packages/pipeline) | Tier 0–2 operators: dedupe, truncate, pointer-ize, severity, triage, recency, trigger, self-gist, cache-prefix, plus the fail-open runner and the canonical stage order. |
 | [`gist`](packages/gist) | Gist engine: schema v1, assembly, the compaction transaction, content-addressed artifact store (fsync-before-evict), memory tiers, reversibility, offline consolidation. |
@@ -560,64 +560,92 @@ Benjamini–Hochberg FDR control across the suite family. Underpowered cases mus
 
 ## Project status
 
-From `docs/tasks.csv`, the queue of record: **96 of 101 tasks are marked done** (5 `todo`). The
-contract is frozen at `core-types@1.0.0` (digest `0a3c0fea6360e6d9`, 114 exports, drift-checked in
-CI).
+**Current numbers come from the repo, not from this file:**
 
-| Item | State |
+```bash
+npm run status    # board state, contract digest, wiring totals
+```
+
+Do not trust a status paragraph — including this one — for a count. An earlier revision of this
+README quoted a contract digest and export count from a much older commit and a board total that
+had drifted by thirty tasks. `npm run status` reads all three from source.
+
+**Verdict: pre-production / limited readiness.** Correct where wired, inert where unwired,
+unobserved where blocked. The full evidence-backed assessment — including what each claim rests on
+and what the wiring scan cannot tell you — is in [`docs/maturity.md`](docs/maturity.md).
+
+| Area | State |
 |---|---|
-| Frozen contract, gateway + 4 adapters, SSE passthrough | **done** |
-| Pipeline Tiers 0–2 operators (dedupe, truncate, pointer-ize, triage, severity, recency, trigger, self-gist, cache-prefix) | **done as operators**; not wired into the gateway request path |
-| Gist engine, compaction transaction, artifact store, reversibility, memory tiers | **done** |
-| Governance: pin buffer, byte-equality, policy store, violations, type guard | **done** |
-| Security: redaction, ACL, gist safety, retention/purge, locality assertion | **done** |
-| Telemetry: cost engine, gross/net savings, `strata status` | **done** |
-| Output compression: TOON/TRON, classifier, directives | **done** |
-| Integrations: MCP server, Claude Code/Gemini/Aider/Cline/Roo/Copilot/OpenCode, surface-check | **done** |
+| Contract (`core-types`) | **Frozen.** Unbreaking it is a deliberate, standalone commit. |
+| Gateway + provider adapters (Anthropic, Gemini, openai-compat, Ollama, mock), SSE passthrough | **done** — adapters round-trip through the canonical model, and the two that used to silently drop a payload now state the loss instead |
+| Pipeline Tier 0–2 operators | **wired into the gateway request path** (`runTier0`, called from the server) |
+| Governance: pin buffer, byte-equality, policy store, violations | **done**, and type-level protected from lossy stages |
+| Security: redaction, ACL, gist safety, retention/purge | **done**; GC reachable only via an uncalled purge handler |
+| Telemetry: cost engine, gross/net savings, `strata status` | **done**; all 12 event types surfaced |
+| Integrations: MCP server, Claude Code / Gemini CLI / Aider / Cline / Roo / Copilot / OpenCode | **done** |
 | `strata-ctx` executable: `hook --check`, `hook run`, `mcp serve`, `status` | **done** |
-| Live governance: OpenCode plugin and destructive-command floor, verified against a real agent | **done** |
 | Canary probes + scheduler | **done** |
-| Eval harness + statistics/grading + suites E1, E2, E3, E5, E6 | **done (offline / injected subjects)** |
-| `B-9` Ollama Tier 3 narration | **done** — double opt-in; wired to the request path behind a profile, governance-stripped before narration |
-| `F1-4` corpus curation (3 repos + licensing) | **todo** — needs a repo selection and licensing clearance from you |
-| `F1-8` Suite E4 coding-task A/B | **todo** — depends on F1-4 |
-| `F2-1`–`F2-3` live A/B runner, report generator, full campaign | **todo** — an upstream credential is available and one free model answers; a defensible result still needs a stable model or heavy replication, because free endpoints rate-limit and vary |
+| Eval harness, statistics, grading, suites E1–E6 | **done, offline with injected subjects** |
+| Output compression (TOON/TRON) | **measured, deliberately held** — real saving on 2 of 3 hosts, not wired |
+| Gist engine: eviction + recovery | **built, not wired.** The only code that deletes data; recovery landed first, on purpose |
+| B-3 pointerization | **dead gate** — stage runs and succeeds while doing nothing |
+| Live A/B campaign | **never run.** No provider credential, so all 12 claims remain `unsupported` |
 
-Be precise about the compression claim: the operator tasks are done, but `CHANGELOG.md` states
-plainly that **nothing compresses end-to-end yet** and the honest current claim is "context is
-preserved and measured". The remaining work is the wiring plus the externally blocked items above.
+Be precise about the compression claim. The operators are built and measured; end-to-end
+compression is not enabled on the request path. The honest current claim is **"context is
+preserved and measured"**, not "context is compressed" — see `CHANGELOG.md` and
+[`docs/maturity.md`](docs/maturity.md).
+
+**The three things that would most change this picture**, in order of evidence gained per unit of
+work: wire `gist` eviction together with its recovery (the highest safety cost and the only
+destructive path); open B-3 by adding a real file-subject producer; and supply a provider
+credential, which unblocks the entire live-evaluation track at once.
 
 ## Documentation
 
-| Doc | Contents |
+Start here, then follow the routing table in [`AGENTS.md`](AGENTS.md) §0.
+
+| Doc | Read it when you want |
 |---|---|
-| [`docs/spec.md`](docs/spec.md) | Requirements, non-goals, success criteria, glossary |
-| [`docs/architecture.md`](docs/architecture.md) | Canonical model, pipeline order, topology, the compaction transaction |
-| [`docs/integrations.md`](docs/integrations.md) | Three integration tiers, per-agent feasibility, hooks, MCP, configs |
-| [`docs/development.md`](docs/development.md) | Ten workstreams, parallelism rules, four waves, Definition of Done, scope-cut ladder |
-| [`docs/evaluation.md`](docs/evaluation.md) | Three-arm A/B methodology, statistics, 12 gates, 6 suites, limitations |
-| [`docs/decisions.md`](docs/decisions.md) | Design decision log (ADRs), risks, open questions |
-| [`docs/tasks.csv`](docs/tasks.csv) | Machine-readable board — import into Linear/Jira/Tracker |
-| [`AGENTS.md`](AGENTS.md) | **Operational contract for contributors and coding agents** — TypeScript/lint rules, file-ownership boundaries, isolation rules, the dependency map, the request path, Definition of Done, and the improvement loop |
+| [`docs/quickstart.md`](docs/quickstart.md) | **New here.** Clone, install, build, run, and the gate explained |
+| [`docs/architecture.md`](docs/architecture.md) | The canonical model, topology, pipeline order, compaction transaction |
+| [`docs/spec.md`](docs/spec.md) | What the product promises, non-goals, success criteria |
+| [`docs/operations.md`](docs/operations.md) | Running it: distribution model, defaults, observability, what degrades silently |
+| [`docs/integrations.md`](docs/integrations.md) | The three integration tiers, per-agent feasibility, hooks, MCP, configs |
+| [`docs/evaluation.md`](docs/evaluation.md) | How claims are measured: three-arm A/B, statistics, the negative control, limits |
+| [`docs/testing-plan.md`](docs/testing-plan.md) | What each eval row can and cannot test |
+| [`docs/wiring-ledger.md`](docs/wiring-ledger.md) | Which package wires which capability, and the named inert subsystems |
+| [`docs/maturity.md`](docs/maturity.md) | Honest readiness assessment, evidence-backed, with its own limits stated |
+| [`docs/corpus.md`](docs/corpus.md) | The task corpus and what a claim from it may say |
+| [`docs/decisions.md`](docs/decisions.md) | Design decision log, risk register, open questions |
+| [`docs/tasks.csv`](docs/tasks.csv) | The machine-readable board — the only place work is queued |
+| [`AGENTS.md`](AGENTS.md) | **Working here?** The operational contract: scope, verification, forbidden patterns |
+| [`learning.md`](learning.md) | What past mistakes taught us — append to it when something surprises you |
 | [`CHANGELOG.md`](CHANGELOG.md) | Unreleased state, versioning policy, release process |
+
+[`docs/development.md`](docs/development.md) and [`docs/quickstart.md`](docs/quickstart.md) §9-11
+are **historical**: they record the workstream/wave plan and the original distribution decision.
+Read them for history, not for instructions to execute.
 
 ## Contributing / development workflow
 
-- **Read [`AGENTS.md`](AGENTS.md) first.** It is the operational contract: strict TypeScript settings,
-  the file-ownership boundaries, the isolation rules for parallel agents, and the Definition of Done.
-  [`docs/development.md`](docs/development.md) holds the workstreams, waves, and scope-cut ladder.
-- **Plan of record:** the work is queued only in `docs/tasks.csv`. A task not on the board is not
-  scheduled.
-- **Verification before finishing:** scoped typecheck (`tsc -p tsconfig.check.json --noEmit`, which is
-  the only pass that sees test files), `eslint`, and your own package's tests by exact path. The root
-  `npm run check` is serial and belongs to the integrator after merges.
-- **Isolation (from `AGENTS.md` §7.1):** run only the test files you own by exact path — never
-  `npm test` or a glob; leave no scratch files in the repo (use `/tmp`); touch only the files you
-  were assigned; report a shared-file change instead of making it.
-- **Independence:** don't run `npm install`, `tsc --build`, or git operations in a parallel agent;
-  they serialize against other work.
-- **Committing:** do not commit unless explicitly asked. CI runs four lanes — typecheck, tests,
-  contract, and a selfcheck that proves the contract gate *can* fail.
+**Read [`AGENTS.md`](AGENTS.md) first** — it is the operational contract, and §0 is a routing table
+("I want to do X → read Y, these rules bind you").
+
+- **State comes from commands, not prose.** `npm run status` for board/contract/wiring, `npm run
+  check` for the gate. If you find a count hardcoded in a doc, that is a defect — see `AGENTS.md` §11.
+- **Scope.** Default to the two files you were given. Barrels, root config, `core-types/**` and
+  `docs/tasks.csv` are integrator-owned.
+- **Verification.** Scoped `tsc -p tsconfig.check.json --noEmit` (the only pass that sees test
+  files), `eslint`, and your own package's tests by exact path. Root `npm run check` is serial and
+  belongs to the integrator.
+- **Prove the test can fail.** Revert the fix and watch it go red. A test never seen failing is a
+  test never verified.
+- **Isolation (from `AGENTS.md` §5), when running with other agents:** run only the test files you
+  own, by exact path — never `npm test` or a glob; leave no scratch files in the repo (use `/tmp`);
+  touch only the files you were assigned; report a shared-file change instead of making it.
+- **Committing.** Do not commit unless explicitly asked. CI runs the same `npm run check` plus a
+  contract diff and a selfcheck that proves the contract gate *can* fail.
 
 ## Naming
 

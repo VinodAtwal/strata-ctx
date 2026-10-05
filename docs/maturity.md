@@ -1,78 +1,207 @@
 # Maturity assessment (evidence-backed)
 
-*Falsifier:* If any claim here cannot be grounded in a reachable code path or a recorded measurement, it is opinion and does not ship. Every claim carries a `file:line` citation or is explicitly marked unevidenced.
+*Falsifier:* if a claim here cannot be grounded in a reachable code path or a recorded
+measurement, it is opinion and does not ship. Every claim names the file or gate that grounds it,
+or is explicitly marked unevidenced.
+
+**Numbers in this file come from `npm run status`** (`scripts/wiring-inventory.ts`). They are not
+restated here by hand, because a restated number rots silently — an earlier revision of this file
+carried three different totals for the same quantity and classified a reachable package as
+unreachable. Where a figure matters to the argument it is named inline and marked as measured-at
+that revision.
+
+---
 
 ## 1) Verdict up front
 
-This repo is **technically correct but operationally immature.** The green suite proves correctness, but reachability and evidence do not — of 1101 runtime exports, 152 are wired and **949 are unwired**, of which 384 sit inside reachable packages and need a declared reason, and 565 are inherited from packages no entry root reaches. Three subsystems are deliberately deferred, and the eval-live instrument has never run against a real model. The product's maturity is not a single defensible percentage; the honest verdict is **pre-production / limited readiness**: correct where wired, inert where unwired, and unobserved where blocked.
+**Technically correct but operationally immature.** The green suite proves correctness. It does not
+prove reachability or evidence. Most runtime exports are unwired; of those, the ones inside
+*reachable* packages are the ones that mean a package grew something nobody calls. Three
+subsystems are deliberately deferred, and the live instrument has never run against a real model.
 
-Note the `inherited` half is the weak half of that figure and should not be read as 565 pieces of dead product code: `eval` (349), `eval-live` (35), `testing` (50), `canary` (28), `governance` (36) and `output-compress` (60) have no entry root, so **every** export they declare is inherited by construction, wired or not. The 384 `local` figure is the one that means a reachable package grew something nobody calls. A ratchet now holds both numbers still — `Gate 4` in `packages/testing/test/wiring-ratchet.test.ts`, which fails if the local total moves in *either* direction and names the per-package breakdown when it does.
+The honest verdict is **pre-production / limited readiness**: correct where wired, inert where
+unwired, unobserved where blocked. No single percentage is defensible.
 
-The basis: wiring ledger limits itself (§6) and explicitly marks "wired" vs "runs" as different [`docs/wiring-ledger.md:244-266`](docs/wiring-ledger.md#L244-L266); deferred subsystems are named with concrete gates [`docs/wiring-ledger.md:165-214`](docs/wiring-ledger.md#L165-L214); F2-4 is open by design (cannot distinguish refusal from use in live grader, reverted fix) [`docs/testing-plan.md:53-69`](docs/testing-plan.md#L53-L69); eval-live reports only `unsupported` with no provider credential [`docs/testing-plan.md:76-88`](docs/testing-plan.md#L76-L88); operations notes internal-only distribution and reproducibility constraints [`docs/operations.md:1-120`](docs/operations.md#L1-L120); core-types frozen at 120 exports (digest 2abea9eb56758454) [`AGENTS.md:24`](../AGENTS.md#L24); F2-5 confound declared in live caveats rather than rewriting scenario [`docs/testing-plan.md:71-74`](docs/testing-plan.md#L71-L74).
+**`inherited` is the weak half of the figure** and should not be read as dead product code.
+`eval`, `eval-live`, `testing`, `canary`, `governance`, `output-compress` and `gist` have no entry
+root, so *every* export they declare is inherited by construction, wired or not. The `local`
+figure is the one that means a reachable package grew something nobody calls. Both are held still
+by a ratchet — `packages/testing/test/wiring-ratchet.test.ts` (`Gate 4`), which fails if the local
+total moves in *either* direction and names the per-package breakdown.
 
-## 2) Capability inventory (reachable vs not, with evidence)
+**Basis:** wiring-ledger limits itself (§6) and separates "wired" from "runs"; deferred subsystems
+are named with concrete gates (§5); the live-grader confound is declared rather than papered over
+(`docs/testing-plan.md`); operations records internal-only distribution and the reproducibility
+constraint; the contract freeze is `AGENTS.md` §1 and `packages/core-types/contract.lock.json`.
 
-Condensed by wiring ledger (runtime exports 1101; wired 152; unwired 949; unwired inside reachable packages 384; inherited from unreachable packages 565), measured by `node --import tsx scripts/wiring-inventory.ts`.
+---
 
-| Package (reachable from roots) | Wired vs exported (runtime) | Reachability evidence | Evidence quality |
-|---|---|---|---|
-| `cli` | part of reachable set [`docs/wiring-ledger.md:204-207`](docs/wiring-ledger.md#L204-L207); bin entry `packages/cli/src/index.ts` [`docs/wiring-ledger.md:36`](docs/wiring-ledger.md#L36) | Entry root via workspace `bin`/script-derived roots. | Correctness evidenced by tests; production caller set = CLI entry chain (69 reachable files). Reachability mechanical, not asserted. |
-| `core-types` (frozen, 120 exports, digest 2abea9eb56758454) [`AGENTS.md:24`](../AGENTS.md#L24); contract check [`AGENTS.md:133-146`](../AGENTS.md#L133-L146) | 0 deps [`AGENTS.md:89-96`](../AGENTS.md#L89-L96); types only do not appear as runtime values in wiring scan [`docs/wiring-ledger.md:38-42`](docs/wiring-ledger.md#L38-L42) | Canonical model: reachability is by type references (erased) — runtime wiring counts runtime values only. | High structural evidence (contract.lock.json, digest, 120 exports frozen). Not a source of uncalled runtime code. |
-| `gateway` | in reachable set [`docs/wiring-ledger.md:204-207`](docs/wiring-ledger.md#L204-L207); 72 of 383 unwired rows are `gateway` [`docs/wiring-ledger.md:210-212`](docs/wiring-ledger.md#L210-L212); credential resolution mostly unwired with inline path [`docs/wiring-ledger.md:214-240`](docs/wiring-ledger.md#L214-L240) | Server entry present; many helpers (credentials/redaction/keyring) not called (e.g. `resolveCredential`, `applyCredentials` never referenced outside own file). | Correctness tested in package; evidence of effect limited where production bypasses the helper layer. |
-| `integrations` | reachable set [`docs/wiring-ledger.md:204-207`](docs/wiring-ledger.md#L204-L207); 126/383 unwired [`docs/wiring-ledger.md:210-212`](docs/wiring-ledger.md#L210-212) | Host integrations exist (Claude Code hooks, Gemini CLI, OpenCode, etc.) [`AGENTS.md:89-96`](../AGENTS.md#L89-L96); wiring shows large surface unwired relative to reachable files. | Capability exists as code; reachability depends on which host/integration path is active. Tests only for many symbols. |
-| `pipeline` | reachable set [`docs/wiring-ledger.md:204-207`](docs/wiring-ledger.md#L204-L207); 51/383 unwired [`docs/wiring-ledger.md:210-212`](docs/wiring-ledger.md#L210-212); B-3 split across wired call site and unwired helper [`docs/wiring-ledger.md:194-214`](docs/wiring-ledger.md#L194-L214) | Tiers 0-2 operators wired into pipeline stages [`AGENTS.md:89-96`](../AGENTS.md#L89-96). | Strong for wired stages; dead gate for `B-3` (pointerize runs but does nothing because no `kind: 'file'` producer). |
-| `security` | reachable set [`docs/wiring-ledger.md:204-207`](docs/wiring-ledger.md#L204-207); 52/383 unwired [`docs/wiring-ledger.md:210-212`](docs/wiring-ledger.md#L210-212); retention/gc paths: `ArtifactStore.remove` called via `planGc` only from purge request handler which nothing calls [`docs/wiring-ledger.md:171-180`](docs/wiring-ledger.md#L171-L180) | Redaction/entropy/ACL present. GC/retention reachable only via uncalled handler. | Mixed: redaction widely referenced; deletion path unobserved. |
-| `telemetry` | reachable set [`docs/wiring-ledger.md:204-207`](docs/wiring-ledger.md#L204-207); 50/383 unwired [`docs/wiring-ledger.md:210-212`](docs/wiring-ledger.md#L210-212); now surfaces all 12 event types; `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty (verified fact). | Metrics/cost engine/CLI dashboard present [`AGENTS.md:89-96`](../AGENTS.md#L89-96); `strata status` aggregates but cannot answer "what did you do/refuse" without reading JSONL [`docs/operations.md:10-20`](docs/operations.md#L10-20). | Measurable surface exists; adoption/observability incomplete for operator-facing "actionable refusal" story [`docs/operations.md:165-190`](docs/operations.md#L165-190). |
+## 2) Capability inventory
 
-**Unreachable packages (inherited unwired):** `canary` 28, `core-types` 32, `eval` 349, `eval-live` 35, `gist` 7, `governance` 36, `output-compress` 60, `testing` 50 — total 564. These are honest counts (no entry root reaches the package); `eval`/`eval-live` hold 384 exports and are wired separately (harness), not via product entry roots.
+Condensed by the wiring ledger, measured by `node --import tsx scripts/wiring-inventory.ts`, and
+pinned by `packages/testing/test/wiring-ledger.test.ts` (`Gates 1-3`). Live totals: `npm run status`.
 
-**Wiring notes (limits):** "wired" means a direct reference in a reachable file counts as caller per scan rules; false positives possible for `value`/bare `import` strength, false negatives possible for callbacks/registries/strings; ledger states "runs only through F which G:line calls" cases explicitly [`docs/wiring-ledger.md:244-266`](docs/wiring-ledger.md#L244-L266). A self-reference is not wiring; file boundaries matter (not package). These limits mean the 152/1101 ratio is mechanical, not infallible — any claim that relies on "uncalled => inert" must check the specific row's reason.
+| Package | Reachability | Evidence quality |
+|---|---|---|
+| `cli` | Entry root via workspace `bin` | Correctness tested; production caller set is the CLI entry chain. Reachability mechanical, not asserted. |
+| `core-types` | **Reachable** (imported by every package) | High structural evidence — the frozen lock and digest. Not a source of uncalled runtime code: it is types, and types are erased, so a type-only package legitimately shows few runtime exports in a runtime-value scan. |
+| `gateway` | Server entry present; **many helpers uncalled** — `resolveCredential` and `applyCredentials` are referenced only inside their own file | Correctness tested in-package. Evidence of *effect* is limited exactly where production bypasses the helper layer (see §4). |
+| `integrations` | Host integrations exist (Claude Code hooks, Gemini CLI, OpenCode, MCP) | Capability exists as code; which paths are live depends on the host actually in use. Large surface, much of it unwired. |
+| `pipeline` | Tier 0-2 operators wired into the stage chain | Strong for wired stages. One stage is a **dead gate** (B-3, §3.3) — it runs and succeeds while doing nothing. |
+| `security` | Redaction/entropy/ACL widely referenced; **GC and retention reachable only via an uncalled handler** | Mixed. Redaction is exercised; the deletion path is unobserved. |
+| `telemetry` | Surfaces all 12 event types, `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty | Measurable surface exists. Adoption and refusal-observability are incomplete — `strata status` aggregates but cannot answer "what did you refuse" without reading JSONL (`docs/operations.md` Factor 4/6). |
 
-## 3) The three deferred subsystems (what user loses if shipped today)
+**Wiring-limits, stated plainly.** "Wired" means a direct reference from a reachable file counts as
+a caller. False positives are possible (`value`/bare-import strength); false negatives are possible
+(callbacks, registries, string references). A self-reference is not wiring. File boundaries matter,
+not package boundaries. **These limits mean the wired/exported ratio is mechanical, not infallible** —
+any claim resting on "uncalled ⇒ inert" must check that row's declared reason in
+`docs/wiring-ledger.md` §6 rather than trusting the ratio.
 
-1. **`gist` (7 exports, unreachable; only code that deletes data)** [`docs/wiring-ledger.md:165-192`](docs/wiring-ledger.md#L165-L192). `runCompactionTransaction` (`packages/gist/src/transaction.ts:323`) drops messages; only runs if `raw_recoverable` is asserted (`transaction.ts:152`); `recoverTurns` (`packages/gist/src/reversibility.ts:64`) restores. Neither runs outside `packages/gist/test/`. `ArtifactStore.remove` (`packages/security/src/store.ts:702`) called via `planGc` (`packages/security/src/retention.ts:282`) only from purge request handler which nothing calls. *Loss:* deletion is entirely untested in production paths; recovery and the `raw_recoverable` guard would need to land in the same change before enabling. Unsafe to wire in isolation.
+---
 
-   **Eviction is blocked on two independent stop conditions, and recovery landed without it** (`3b23f34`). `LossyStage.run` is synchronous (`core-types/src/guards.ts`) while `runCompactionTransaction` is async, so making eviction reachable is a §1 contract change; and every host that injects the stage would need a further cross-stream edge (§12.1). Recovery is now a superset of `recoverTurns` — `recoverEvictedMessages` looks the run up by identity, which fixed a case where a turn ending in a tool result lost that result (`recoverTurns` returns a turn window and missed the trailing tool result: five evicted messages, four recovered). It is exported and uncalled.
+## 3) The three deferred subsystems (what a user loses today)
 
-   **The MCP path cannot deliver recovery even though it looks wired.** `createStrataMcpServer` *is* reached from `packages/cli/src/index.ts:312` via `strata-ctx mcp serve`, but that binds `createInMemoryContext()` — a per-process `Map` — while eviction writes to `ArtifactStore` on disk. `get_artifact` therefore resolves nothing on the CLI path. Fixing this needs either a task/turn index in `ArtifactStore` or a split of `ContextMemory`; neither is a mechanical change.
+### 3.1 `gist` — the only code that deletes data
 
-2. **`output-compress` (60 exports, unreachable; held by decision 2026-10-05)** [`docs/wiring-ledger.md:230-252`](docs/wiring-ledger.md#L230-L252). `applyOutputCompression` (`packages/output-compress/src/compress.ts:340`) only called by its own tests/barrel — no production caller. Measured through the real adapter egress on a 40-row corpus: **Anthropic −28%** request tokens (1224→878), **OpenAI-compatible −29%** (1060→757), **Gemini 0%** (845→845) because normal Gemini results arrive wrapped as `{output: [...]}` and the classifier vetoes object-shaped payloads. Governance and pinned text pass through unchanged. *Decision:* **held** — the saving is real on two of three hosts, but wiring it adds a fourth cross-stream edge (§12.1) and `MACHINE_FORMATS` is unvalidated against real model output. Held rather than deleted so the measurement is available to whoever revisits it. *Loss:* responses are not compressed by this path.
+**Unreachable.** `runCompactionTransaction` (`packages/gist/src/transaction.ts`) drops messages, and
+only when `raw_recoverable` is asserted; `recoverTurns` / `recoverEvictedMessages`
+(`packages/gist/src/reversibility.ts`) restore. Neither runs outside `packages/gist/test/`.
+Separately, `ArtifactStore.remove` (`packages/security/src/store.ts`) is reachable only via
+`planGc`, which is called only from a purge request handler that nothing calls.
 
-3. **B-3 pointerization (reachable call site, dead gate)** [`docs/wiring-ledger.md:194-214`](docs/wiring-ledger.md#L194-L214). `pointerizeBlocks` is called at `packages/pipeline/src/truncate.ts:326` (stage runs/succeeds), but `isFileRead` requires `meta.subject.kind === 'file'` and no reachable producer sets that (adapters build `{kind:'other', ref}`). Declared in `DEAD_GATES` as `B-3-file-subject` with producer `/kind:\s*'file'/`; `isFileRead` moved to `UNWIRED_OPERATORS` under ruling. *Loss:* pointerization effect is inert despite stage executing — behavior unchanged, "success" is a no-op. This is the archetype for "wired but doesn't run".
+**Recovery landed without eviction.** `3b23f34` added `recoverEvictedMessages`, a superset of
+`recoverTurns`: it looks the run up by identity, which fixed a case where a turn ending in a tool
+result lost that trailing result (`recoverTurns` returns a turn *window* — five evicted messages,
+four recovered). It is exported and uncalled.
 
-   **Now blocked rather than merely waiting.** An adapter that *did* classify file reads was attempted and stopped on a stop-condition. Gemini emits a tool result as `functionResponse: {name, response: decodeStruct(b.text)}` (`gemini-adapter.ts:511-513`), and `decodeStruct` returns `{}` for anything that is not a JSON object (`:185-190`). A pointer stub is plain text, so it is not JSON: a pointerized Gemini read would egress as an **empty** response while the artifact store kept the bytes with nothing pointing at them. Anthropic (`:175-181`) and OpenAI-compat (`:612-618`) egress the stub verbatim and would have been fine, so shipping two of three hosts would have made pointerization host-dependent. This is pre-existing and fail-closed — a head+tail truncated Gemini read already egresses as `{}` — but pointerization would be the first case where the loss is *designed*. Fixing the egress changes Gemini's documented loss table and is a wider change than B-3.
+**Eviction is blocked on wiring, not on a port shape.** It was long recorded as needing an async
+`LossyStage.run` — a §1 contract change. Checked against the call graph, that premise is wrong:
+`runCompactionTransaction` is invoked only from gist's own tests, `TUNNEL_AFTER_TIER0` only from a
+test, and `runPipeline` — the generic runner that accepts caller-supplied stages — has no
+production callers. There is no eviction waiting on an async port; there is no eviction in the
+pipeline at all. Until something calls the tunnel, there is no evidence for which seam is right.
+(`61ef8ae`)
 
-## 4) Evidence quality (measured vs asserted vs none)
+**The MCP path cannot deliver recovery even though it looks wired.**
+`createStrataMcpServer` *is* reached from `packages/cli/src/index.ts` via `strata-ctx mcp serve`,
+but that binds `createInMemoryContext()` — a per-process `Map` — while eviction writes to
+`ArtifactStore` on disk. `get_artifact` therefore resolves nothing on the CLI path. Fixing this
+needs a task/turn index in `ArtifactStore` or a split of `ContextMemory`; neither is mechanical.
 
-**Measured (instrumented/observable):** Telemetry surfaces all 12 event types; `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty (verified fact). `strata status` aggregates (budget/compactions/pins/savings/violations) [`docs/operations.md:10-20`](docs/operations.md#L10-20). CLI entry reachable.
+*Loss:* deletion is entirely unobserved in production. Recovery and the `raw_recoverable` guard
+must land in the same change before eviction is enabled. Unsafe to wire in isolation.
 
-**Asserted by tests only:** majority of operators — repo requires ≥1 negative test per operator (§4 in AGENTS), determinism, fail-open, telemetry emission, etc. [`AGENTS.md:151-181`](../AGENTS.md#L151-L181). Wiring ledger enforces declarative reasons for 383 unwired rows and counts for unreachable packages (Gates 1-2); dead gates (Gate 3) require literal producer pattern [`docs/wiring-ledger.md:77-148`](docs/wiring-ledger.md#L77-L148). The ledger's own limitations are explicitly stated (§6) — this is an assertion of mechanical checkability, not proof of runtime effect.
+### 3.2 `output-compress` — measured, and deliberately held
 
-**No evidence (unobserved):** `packages/eval-live` has never run against a real model; no provider credential exists on this machine. All 12 claims remain `unsupported` [`docs/testing-plan.md:76-88`](docs/testing-plan.md#L76-L88); F2-7 marked `exec: ext` (blocker is credential). G1–G12: scenario floors/observations are defined in eval, but live campaign execution is blocked; `MIN_CLAIM_OBSERVATIONS` etc. exist as metrics definitions (eval packages read-only here) without runtime observations from live arm. `Gist` eviction/recovery never observed outside own tests [`docs/wiring-ledger.md:165-180`](docs/wiring-ledger.md#L165-L180). `output-compress` never observed in production paths [`docs/wiring-ledger.md:192-198`](docs/wiring-ledger.md#L192-198). B-3 effect never observed (no file-subject producers) despite stage running [`docs/wiring-ledger.md:194-214`](docs/wiring-ledger.md#L194-214). Credential redaction/keyring paths not invoked by production (inline env-var path used) [`docs/wiring-ledger.md:214-240`](docs/wiring-ledger.md#L214-L240).
+**Unreachable.** `applyOutputCompression` (`packages/output-compress/src/compress.ts`) is called
+only by its own tests and barrel.
 
-**Critical grading caveat:** F2-4 is **open and deliberately so** — live grader cannot distinguish a refusal from a use; attempted fix reverted because it under-detected real breaches. E1 grades "the prohibited effect appearing in a tool call, never a judgement about prose", but the live arm grades prose (`result.completion.content`, no structured tool-call channel). `detectViolations` token-match nature creates confound [`docs/testing-plan.md:53-69`](docs/testing-plan.md#L53-L69). F2-5: E1's constraint `hard-audit-logging-stays-on` contains the marker `disabled` inside its own constraint text. **The offline oracle was fixed** (3001ccc) by matching a marker that its own constraint supplied as a whole argument value rather than by containment, with the resulting false negative declared per run in `E1OracleAudit.narrowedMarkerConstraintIds` and a lint that rejects a scenario whose only detection would be an embedded match. The scenario text was not rewritten. The confound nonetheless **remains live in the eval-live arm**, which still substring-matches prose (`live-arm.ts:918`) and therefore still has no way to grade a tool call [`docs/testing-plan.md:71-74`](docs/testing-plan.md#L71-L74). These are declared unknowns, not hidden.
+Measured through the real adapter egress on a 40-row corpus: **Anthropic −28%** request tokens,
+**OpenAI-compatible −29%**, **Gemini 0%** — normal Gemini results arrive wrapped as
+`{output: [...]}`, which the classifier vetoes as object-shaped. Governance and pinned text pass
+through unchanged.
 
-## 5) Operational readiness (grounded in docs/operations.md)
+*Decision:* **held.** The saving is real on two of three hosts, but wiring it adds a fourth
+cross-stream edge and `MACHINE_FORMATS` is unvalidated against real model output. Held rather than
+deleted so the measurement survives for whoever revisits it.
 
-- **Internal-only distribution (settled):** packages `private: true`, `file:` deps correct for local workspace; `npm publish` not the goal [`docs/operations.md:22-70`](docs/operations.md#L22-70). This is decision, not defect.
-- **Reproducibility consequences:** checkout is distribution. Fresh clone requires documented sequence (git clone, `npm ci`, `npm run build`, `npm run check`) [`docs/operations.md:48-84`](docs/operations.md#L48-L84). `node_modules` and `dist` gitignored; `strata status` exists but refusal observability incomplete [`docs/operations.md:10-20,165-190`](docs/operations.md#L10-20,L165-L190).
-- **Known defect recorded:** `.gitignore` unanchored `telemetry/` pattern historically matched `packages/telemetry/` (whole package could be invisible to git); fix is to anchor to data dir and `git add` package; after restoring must run `npm ci` again (workspace symlink) [`docs/operations.md:86-120`](docs/operations.md#L86-L120).
-- **Release workflow note:** `.github/workflows/release.yml` still has publish jobs; with `private: true` train becomes empty — integrator-owned, reported rather than changed here [`docs/operations.md:210-235`](docs/operations.md#L210-L235).
-- **Operator observability gap:** "every refusal is actionable" requires refusal messages name knob to change or file:line; not fully satisfied across all cases [`docs/operations.md:165-190`](docs/operations.md#L165-L190). `strata status` aggregates but doesn’t expose per-request “what did you do/refuse” without reading JSONL [`docs/operations.md:10-20`](docs/operations.md#L10-20).
-- **No live provider credential:** campaign execution blocked (F2-7 `exec: ext`), so live claim observations absent [`docs/testing-plan.md:76-88`](docs/testing-plan.md#L76-L88).
+### 3.3 B-3 pointerization — the archetype for "wired but doesn't run"
 
-## 6) Shortest path to the next stage (evidence gained per unit of work)
+**Reachable call site, dead gate.** `pointerizeBlocks` is called from
+`packages/pipeline/src/truncate.ts`, so the stage runs and reports success — but `isFileRead`
+requires `meta.subject.kind === 'file'` and no reachable producer sets it (adapters build
+`{kind: 'other', ref}`). Declared in `DEAD_GATES` as `B-3-file-subject` with a literal producer
+pattern; `isFileRead` sits in `UNWIRED_OPERATORS` under ruling.
 
-Ordered by evidence gained per unit of work; each specifies what must be true.
+**This one used to be a data-loss trap, and no longer is.** An adapter that classified file reads
+was attempted and stopped on a stop-condition: Gemini emits a tool result through
+`functionResponse: {name, response: decodeStruct(b.text)}`, and `decodeStruct` returned `{}` for
+anything that was not a JSON object. A pointer stub is plain text, so it is not JSON — a
+pointerized Gemini read would have egressed **empty** while the artifact store kept the bytes with
+nothing pointing at them. `5c45f13` replaced that collapse with an explicit `GEMINI_STRUCT_LOSS`
+marker, filed at severity `error`, so `truncate` retains the fact of the loss instead of tidying it
+away. Anthropic and openai-compat egress the stub verbatim and were never affected. The blocker is
+now only the missing `kind: 'file'` producer, which is a real gap and a small one.
 
-1. **Make `gist` safely connectable (highest evidence gain, highest safety cost).** Produce single change that wires `gist` + recovery together: enable `recoverTurns` path and ensure `raw_recoverable` guard is satisfied by production producer before any eviction. *Must be true:* recovery tested end-to-end against a real gist state; `runCompactionTransaction` never runs unless recovery available; Gate 2 count for `gist` updated with reasons; no deletion without reconstructability. (Evidence: moves deletion from unobserved/inert to observed/safe.) [`docs/wiring-ledger.md:165-192`](docs/wiring-ledger.md#L165-L192)
+---
 
-2. **Open B-3 by adding a real `kind: 'file'` producer** (small code surface, high discriminative power). Find/create the path that sets `meta.subject.kind === 'file'` in reachable adapters/pipeline input; verify `isFileRead` becomes effective and stage behavior changes (no longer no-op). *Must be true:* dead gate `B-3-file-subject` disappears (Gate 3 fails if pattern still declared but producer exists); behavior observable. [`docs/wiring-ledger.md:194-214`](docs/wiring-ledger.md#L194-L214)
+## 4) Evidence quality
 
-3. **Enable credential resolution path (or declare the production path explicitly)** (clarifies security model). Replace inline env-var header construction in server with `applyCredentials`/`resolveCredential` flow, or add explicit rationale + tests proving redaction of sensitive headers via the intended path. *Must be true:* credentials/redaction/keyring symbols become wired by real calls (or Gate 1 rows updated only if genuinely deferred with falsifiable reason and tests for bypass). [`docs/wiring-ledger.md:214-240`](docs/wiring-ledger.md#L214-L240)
+**Measured / observable.** Telemetry surfaces all 12 event types and
+`EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` is empty. `strata status` aggregates
+budget/compactions/pins/savings/violations. The CLI entry is reachable.
 
-4. **Wire `output-compress` to a real production stage** (if needed). Connect `applyOutputCompression` into actual response path; add integration tests asserting compression occurs. *Must be true:* moves from unreachable/unobserved to reachable+observed; affects user-visible output. [`docs/wiring-ledger.md:192-198`](docs/wiring-ledger.md#L192-L198)
+**Asserted by tests only.** The majority of operators: ≥1 negative test per operator,
+determinism, fail-open, telemetry emission (`AGENTS.md` §8). The wiring ledger enforces declared
+reasons for unwired rows (`Gates 1-2`) and requires a literal producer pattern for dead gates
+(`Gate 3`). That is a mechanical checkability claim, **not** proof of runtime effect.
 
-5. **Address operations gaps** (low risk, improves readiness): anchor `.gitignore` rule for telemetry data (`/telemetry/`), document post-restore `npm ci`, and improve refusal messages to name knob or file:line per acceptance [`docs/operations.md:86-120,165-190`](docs/operations.md#L86-L120,L165-L190). (Evidence: reproducibility + actionable refusals, measurable without external credentials.)
+**No evidence (unobserved).** `packages/eval-live` has never run against a real model; no provider
+credential exists, so all 12 claims remain `unsupported` and `F2-7` is `exec: ext`. `gist`
+eviction and recovery have never been observed outside their own tests. `output-compress` has
+never been observed in a production path. B-3's effect has never been observed despite the stage
+running. Credential redaction/keyring paths are not invoked by production, which uses an inline
+env-var path.
 
-> Note: Live eval observations require provider credential (F2-7) — cannot be created in-repo without external access; evidence gain depends on external env. Grading confounds (F2-4, F2-5) are better addressed by documenting limits and/or redesigning live arm to use structured tool-call channel (design change) than by heuristic widening.
+**Critical grading caveat.** The live grader cannot distinguish a *refusal* from a *use*. E1 grades
+"the prohibited effect appearing in a tool call, never a judgement about prose", but the live arm
+grades prose (`result.completion.content`, no structured tool-call channel), and `detectViolations`
+is token-match. An attempted fix was reverted because it under-detected real breaches. Separately,
+E1's `hard-audit-logging-stays-on` constraint contains the marker `disabled` inside its own
+constraint text; the offline oracle was fixed to match a marker supplied as a whole argument value
+rather than by containment, with the false negative declared per run and a lint rejecting a
+scenario whose only detection would be an embedded match. The scenario text was not rewritten.
+**The confound remains live in the eval-live arm.** These are declared unknowns, not hidden.
+
+---
+
+## 5) Operational readiness
+
+Grounded in `docs/operations.md`.
+
+- **Internal-only distribution — settled, not a defect.** Packages are `private: true`, `file:`
+  deps are correct for a local workspace, and publishing is not the goal.
+- **Reproducibility.** The checkout *is* the distribution. A fresh clone needs a documented
+  sequence (`git clone` → `npm ci` → `npm run build` → `npm run check`). `node_modules` and `dist`
+  are gitignored, so a missing install leaves `git status` clean.
+- **A real defect this repo paid for, now fixed.** An unanchored `telemetry/` pattern in
+  `.gitignore` matched `packages/telemetry/` at any depth, so the whole package was invisible to
+  git: a clean clone had one fewer package, `tsc --build` failed, and `git status` stayed green
+  throughout because gitignored files are invisible to it. The rule is now anchored and the
+  package is tracked. The reusable lessons — anchor data-directory patterns; restore-then-`npm ci`
+  because files do not recreate a workspace symlink; verify with `git ls-files`, not `git status` —
+  are kept in `docs/operations.md` §"The reproducibility constraint that cost us a day".
+- **Release workflow.** `.github/workflows/release.yml` still carries publish jobs, which are inert
+  while every package is `private: true`. Integrator-owned; reported, not changed.
+- **Refusal observability.** "Every refusal is actionable" requires the message to name the knob to
+  change or a `file:line`. Not satisfied across all cases.
+- **No live credential.** Campaign execution is blocked on `F2-7`.
+
+---
+
+## 6) Shortest path to the next stage
+
+Ordered by evidence gained per unit of work. Each item states what must be true.
+
+1. **Wire `gist` + recovery as one change.** Highest evidence gain, highest safety cost.
+   *Must be true:* recovery tested end-to-end against real gist state; eviction cannot run unless
+   recovery is available; the `raw_recoverable` guard is satisfied by a production producer; no
+   deletion without reconstructability. Moves deletion from unobserved to observed-and-safe.
+2. **Open B-3 by adding a real `kind: 'file'` producer.** Small code surface, high
+   discriminative power — it converts a stage that reports success while doing nothing into one
+   with an observable effect. *Must be true:* the `B-3-file-subject` dead gate disappears, and
+   behaviour is observably different.
+3. **Use the credential path or declare the inline path explicitly.** Replaces inline env-var
+   header construction with `applyCredentials` / `resolveCredential`, or adds a rationale plus tests
+   proving redaction through the intended path. *Must be true:* the credential symbols are wired by
+   real calls, or the Gate-1 rows carry a falsifiable deferral reason.
+4. **Resolve the MCP context/store split** so recovery is deliverable on the CLI path at all.
+   Prerequisite for anything above being observable to a user.
+5. **Improve refusal messages** to name the knob or a `file:line`. Low risk, measurable, needs no
+   credential.
+
+> Live-eval observations require a provider credential and cannot be created in-repo. Evidence gain
+> there depends on the external environment. The grading confounds are better addressed by
+> redesigning the live arm to grade a structured tool-call channel than by widening a token-match
+> heuristic.

@@ -79,11 +79,10 @@ That is not hypothetical. See the next section.
 
 **Cloning without installing has no clean failure mode.** With a registry, a missing
 install is recoverable: `npm install <pkg>` fetches it. Here there is nothing to fetch.
-Measured on a fresh clone at `ba9b67f` with no `node_modules`: `npm run typecheck` and
-`npm run lint` fail with `sh: tsc: command not found` and `sh: eslint: command not
-found`, and `npm run test` enumerates 97 files and fails all 97 with
-`Cannot find package 'tsx'`. The gate does report failure rather than a false green,
-which is the behaviour it was written to guarantee — but "97 files failed to load"
+On a clone with no `node_modules`, `npm run typecheck` and `npm run lint` fail with
+`command not found`, and every file the gate enumerates fails to load with
+`Cannot find package 'tsx'`. The gate reports failure rather than a false green,
+which is the behaviour it was written to guarantee — but "every file failed to load"
 reads like a broken repository when the diagnosis is one missing command. Because
 `node_modules/` and `dist/` are both gitignored, `git status` is clean and nothing in
 the tree records that install never happened. The same shape appears when a package is
@@ -91,37 +90,25 @@ added after the last install: the workspace symlink is created by `npm ci` and n
 else creates it, so every consumer of the new package fails with `TS2307` and there is
 no registry to satisfy them from.
 
-## Known defect at `ba9b67f`: `packages/telemetry` is not in git
+## The reproducibility constraint that cost us a day
 
-This belongs here rather than in the quickstart alone, because it is the sharpest
-available demonstration of the reproducibility consequence above.
+This section used to describe a live defect: `packages/telemetry` was excluded by an unanchored
+`telemetry/` pattern in `.gitignore`, so a clean clone had 13 packages instead of 14,
+`tsc --build` failed with `TS5083`, and the gate enumerated 97 test files against a full tree's 104.
+`git status` reported clean throughout, because gitignored files are invisible to it by default —
+the working tree stayed green locally the whole time and the omission surfaced on someone else's machine.
 
-`.gitignore` has an unanchored `telemetry/` pattern, intended to keep local telemetry
-data out of the tree. Unanchored means "at any depth", so it also matches
-`packages/telemetry/` — the whole WS-G source package. Its 18 source files, including
-`package.json` and `tsconfig.json`, exist in a developer's checkout and do not exist
-in the repository:
+**It is fixed** (the rule is anchored `/telemetry/`, and the package is tracked). Kept because the
+failure mode is the reusable part, not the incident:
 
-```
-$ git ls-files packages/telemetry | wc -l
-0
-```
-
-A clean clone therefore has 13 packages instead of 14, and `tsc --build` fails at
-`TS5083` / `TS6053` on the missing `packages/telemetry/tsconfig.json`. The test gate
-enumerates 97 files against a full tree's 104, precisely the 7 dropped
-`packages/telemetry/test/*.test.ts` files. `git status` reports clean, because
-gitignored files are invisible to it by default — so the omission is invisible to the
-entire normal loop, and the working tree stays green locally the whole time.
-
-Fix: anchor the rule (`/telemetry/`) so it matches a data directory rather than the
-package, then `git add` the package. Both are root-level, integrator-owned changes.
-
-One consequence worth carrying forward independently of this bug: after restoring the
-package you must run `npm ci` **again**. Restoring files does not create the
-`node_modules/@strata-ctx/telemetry` symlink, and without it every consumer fails with
-`TS2307` while `dist/index.d.ts` sits right there looking correct. That is the
-"workspace is the distribution" constraint failing in its most confusing possible way.
+- **An unanchored `.gitignore` pattern matches at any depth.** `telemetry/` matches
+  `packages/telemetry/`. Anchor data-directory rules with a leading `/`.
+- **The workspace is the distribution.** Restoring files by any means does not create the
+  `node_modules/@strata-ctx/*` symlink, and without it every consumer fails with `TS2307` while
+  `dist/index.d.ts` sits right there looking correct. Re-run `npm ci` after restoring a package.
+- **Check the clone, not the checkout.** `git status` cannot see what `.gitignore` hides. Verify with
+  `git ls-files <pkg> | wc -l`, or clone to a scratch dir and build.
+- **A green local tree is not evidence a clean clone builds.** See `docs/quickstart.md` §6.
 
 ## Factor 1: time to first governed request
 

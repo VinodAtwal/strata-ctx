@@ -1,5 +1,8 @@
 # Testing plan — wave 4
 
+> The falsifiers below are still live and still bind: each row states what would have to be
+> observed for the claim to fail. The *wave-4 sequencing* is historical.
+
 Written before the work, so that each row's *falsifier* is fixed before anyone
 writes the code that satisfies it. A plan written afterwards describes whatever
 was built.

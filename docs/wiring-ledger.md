@@ -449,7 +449,7 @@ row, which is the blast radius §6 warns about, for a gain nobody can point at.
 **Adding an operator and calling it moves the total by zero.** That is the row
 that decides the whole design. A gate that fired on it would be taxing the one
 behaviour §1 asks for, and it would be muted within a week — the fate
-AGENTS.md §10 records for the `TOOL_ALIASES` checker, which reported six working
+AGENTS.md §9 records for the `TOOL_ALIASES` checker, which reported six working
 tools as unserveable until someone noticed the names went through a resolver.
 
 **A bare import is not a reachability edge, and that surprised the probe.** Adding

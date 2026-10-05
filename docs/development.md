@@ -1,5 +1,11 @@
 # Development — Workstreams, Parallelism & Roadmap
 
+> **Historical.** This is the plan as written before the work: ten workstreams, four waves, a
+> milestone ladder, and staffing. Those waves are complete — see `npm run status` for live board
+> state. Keep it for the reasoning (why the parallelism was shaped that way, what the scope-cut
+> ladder was for), not as instructions to execute. The rules that still bind are in
+> [`../AGENTS.md`](../AGENTS.md) §5 and §8.
+
 *[Spec](spec.md) · [Architecture](architecture.md) · [Integrations](integrations.md) · [Evaluation](evaluation.md) · [Decisions](decisions.md)*
 
 ---

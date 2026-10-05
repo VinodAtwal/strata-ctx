@@ -148,20 +148,17 @@ mutates the tree on purpose: it appends an export to
 and asserts it passes again. A gate that cannot fail is not a gate. If you change
 anything in `core-types` or in `scripts/check-contract.mjs`, run that lane locally.
 
-Reference numbers at commit `ba9b67f`, Node 20.12.1, macOS:
+Don't trust a sample transcript for the current numbers — it will be behind the day
+you read it. Run the gates:
 
-```
-# tests 3641
-# suites 570
-# pass 3640
-# fail 0
-# skipped 1
-contract unchanged: 120 exports, digest 2abea9eb56758454, frozen at 1.0.0
+```bash
+npm run status    # board, contract digest, wiring totals
+npm run check     # and the live test counts
 ```
 
 ### Integration: the checks you should not run mid-development
 
-`AGENTS.md` §7.2 is the integrator's sequence, at the end of a batch of work, not the
+`AGENTS.md` §5 (integration) is the integrator's sequence, at the end of a batch of work, not the
 per-edit loop:
 
 1. `git status` for stray scratch files, and delete them.
@@ -388,17 +385,17 @@ the usual escape hatches are gone.
 
 ### Cloning without installing does not fail cleanly
 
-Measured on a fresh clone at `ba9b67f` with no `node_modules`:
+On a clone with no `node_modules` (every case below verified on a real fresh clone):
 
 | Command | Result |
 | --- | --- |
 | `npm run typecheck` | `sh: tsc: command not found` |
 | `npm run lint` | `sh: eslint: command not found` |
-| `npm run test` | 97 files enumerated, **97 failed**, `# pass 0 / # fail 97`, every one `Cannot find package 'tsx'` |
+| `npm run test` | every enumerated file fails to load with `Cannot find package 'tsx'`, `# pass 0` |
 
 The gate does the right thing — it reports failure rather than a false green, which is
 the failure mode it was written to eliminate. But the shape of the output matters:
-"97 files failed to load" is easy to misread as "the repo is broken", when the actual
+"every file failed to load" is easy to misread as "the repo is broken", when the actual
 diagnosis is one missing command. `git status` will be clean, because `node_modules/`
 and `dist/` are both gitignored and there is no artifact of a missing install in the
 tree. If you see `ERR_MODULE_NOT_FOUND` for `tsx`, `typescript`, or any
@@ -441,44 +438,7 @@ point a new hire at. The onboarding path is this document plus `AGENTS.md`, and 
 to stay accurate by hand. Which is the argument for treating a clean-clone install and
 gate run as a thing worth doing deliberately rather than assuming.
 
-## 11. Known issue at `ba9b67f`: `packages/telemetry` is not in git
-
-**A clean clone does not currently build.** Recorded here because the next person to
-clone will hit it, and because the symptom points at the wrong thing.
-
-`.gitignore` contains an unanchored `telemetry/` pattern, intended to keep local
-telemetry data out of the tree. An unanchored pattern matches at any depth, so it also
-matches `packages/telemetry/` — the entire WS-G source package, including its
-`package.json`, `src/`, `test/` and `tsconfig.json`. Those 18 source files are present
-in a developer's checkout and absent from the repository:
-
-```
-$ git ls-files packages/telemetry | wc -l
-0
-```
-
-Consequences, all observed:
-
-- A clean clone has 13 packages instead of 14, and `tsc --build` fails with
-  `TS5083: Cannot read file '.../packages/telemetry/tsconfig.json'` and
-  `TS6053: File '.../packages/telemetry' not found`, because `tsconfig.json` and
-  `packages/integrations/tsconfig.json` both reference it.
-- The test gate enumerates 97 files in a clean clone against 104 in a full tree —
-  precisely the 7 `packages/telemetry/test/*.test.ts` files that git is dropping.
-- `git status` reports a clean tree, because gitignored files are invisible to it by
-  default. Nothing in the normal loop surfaces this.
-
-The fix is to anchor the ignore rule so it matches a data directory rather than the
-package, for example `/telemetry/` (plus the existing `*.jsonl` and
-`packages/*/.eslintcache` rules), and then `git add` the package. Both are
-root-level changes and integrator-owned.
-
-Until it is fixed, a clean-clone verification needs
-`packages/telemetry/` restored from a full checkout **and a second `npm ci`** —
-without that second install the workspace symlink is never created, and every
-consumer of the package fails with `TS2307`.
-
-## 12. Where things are
+## 11. Where things are
 
 | Path | What it is |
 | --- | --- |
