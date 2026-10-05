@@ -120,7 +120,7 @@ J-12,J,Dev infra,Fail the gate when the uncalled-export count rises (needs owner
 D-11,D,Gateway,Dedupe orphaned tool_result when two same-named tool calls collide,agent,1,-,5,-,done
 B-16,B,Context pipeline,Anthropic egress sent tool_use input as {} instead of reading the arguments back out of text,agent,1,-,5,-,done
 B-17,B,Context pipeline,Property-test tool-pair atomicity over generated transcripts,agent,1,-,5,-,done
-C-13,C,Gist engine,Gist eviction needs an async LossyStage.run port,ext,1,C-8,5,-,todo
+C-13,C,Gist engine,Eviction blocked on wiring not on the port: no production caller reaches the stage tunnel,agent,1,C-8,5,-,todo
 C-14,C,Gist engine,MCP recovery unreachable: in-memory context over a disk artifact store,ext,1,C-8,5,-,todo
 C-15,C,Gist engine,recoverEvictedMessages closes the eviction-to-recovery gap,agent,1,C-8,5,-,done
 D-12,D,Gateway,Never drop the severe half of a tool pair during dedupe,agent,1,D-11,5,-,done
