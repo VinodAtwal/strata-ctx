@@ -63,6 +63,41 @@ import { pricingFreshness } from './pricing.js';
  * no reason, so the report says "unexplained" and stops -- naming a cause would
  * be a claim the log does not support.
  *
+ * ## An estimate is not a measurement, and the report has to say so
+ *
+ * G-9 put `inputTokens` / `outputTokens` on `StageTelemetry` (a frozen
+ * contract change, digest `2abea9eb56758454`). The producer fills them from
+ * `estimateTokens` and labels them where it writes them
+ * (`pipeline/src/order.ts:273-287`). That label reaches the source reader and
+ * nobody else: `--json` handed an operator a field named `inputTokens` holding
+ * a character count, with nothing anywhere to say so. The producer's own module
+ * doc is the rule being violated -- `core-types/src/tokens.ts:9-11`: "we do not
+ * know the provider's tokenizer ... Any published token or dollar figure must
+ * come from the provider's own `usage` field, never from here."
+ *
+ * So the fix is in how the report *names and renders* the figures, and the two
+ * halves have to hold together. A field called `estimatedInputTokens` cannot be
+ * misread by a script author who never opens this file; a `basis` field nobody
+ * renders fixes nothing, because the only reader of a `strata status` screen is
+ * a person looking at it. Both are here, and they are not independent: the
+ * renamed fields carry the basis in the name, `StageSummary.basis` carries it
+ * for a `--json` consumer that wants to switch on it, and the rendered NOTE is
+ * generated from the one constant those two agree on, so the prose cannot drift
+ * away from the field names.
+ *
+ * ## What the report refuses to invent
+ *
+ * `StageTelemetry` has no basis discriminator and the contract is frozen, so
+ * the report cannot *read* the basis off a record -- it can only state the one
+ * basis the log supports, and refuse to name a second. That is why
+ * `StageTokenBasis` has one member: `'provider'` would be a claim no record in
+ * this format can currently support, which is the same defect as `cache`
+ * inventing a reason for an invalidation. A single-member union is also the
+ * only version of this that fails loudly when it goes stale -- a future writer
+ * that reports provider usage into the same field cannot widen this type
+ * without editing this file, at the same point where someone has to decide
+ * whether a contract discriminator is needed first.
+ *
  * ## No network, no clock
  *
  * The report is a pure function of (records, options). `now` is an option, not
@@ -198,6 +233,14 @@ export interface ViolationSummary {
  * `changed` is a *count of records*, not a flag. A stage fires once per request
  * and can decline to act on some of them, so collapsing it to a boolean
  * reports a stage that ran and did nothing as one that works.
+ *
+ * The two `estimated*` fields are named for their basis rather than left as
+ * `inputTokens`/`outputTokens`, because the name is the part every reader of
+ * `--json` actually sees, including the scripts that will never open this file.
+ * The wire fields keep their contract names (`core-types/src/telemetry.ts:19-20`);
+ * only the report's own shape is spelled out. The `*EstimateRecords` counts say
+ * how much of the stage's history those sums cover, because a sum over half the
+ * records is not the stage's effect -- see `StageSummary`.
  */
 export interface StageEffect {
   readonly stage: string;
@@ -210,8 +253,12 @@ export interface StageEffect {
   readonly durationMs: number;
   /** 1 - bytesOut/bytesIn. null when nothing entered the stage. */
   readonly reductionFraction: number | null;
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
+  /** Absent when no record of this stage carried an input estimate. */
+  readonly estimatedInputTokens?: number;
+  readonly estimatedOutputTokens?: number;
+  /** Records of this stage that carried each estimate. Complete, not capped. */
+  readonly inputEstimateRecords: number;
+  readonly outputEstimateRecords: number;
 }
 
 export interface StageSummary {
@@ -232,6 +279,32 @@ export interface StageSummary {
   /** First-seen order, so the listing follows the log rather than the alphabet. */
   readonly byStage: readonly StageEffect[];
   readonly changedStages: readonly string[];
+  /**
+   * Present only when some stage record carried a token figure, for the same
+   * reason `byStage`'s `estimated*` fields are optional: "the log held no token
+   * figures" and "the log said the stages cost zero tokens" are different facts
+   * and a log full of pre-G-9 records can only support the first.
+   */
+  readonly basis?: StageTokenBasis;
+  /**
+   * Summed across every stage. This is the one number here with no per-stage
+   * equivalent, and it is a sum of N independent estimates of an overlapping
+   * context rather than a quantity: each stage re-measures the whole context on
+   * its way past, so the same tokens are counted once per stage. It is rendered
+   * with the record count it covers and a NOTE that says what it is not, and it
+   * is folded from the same tallies as `byStage` rather than accumulated a
+   * second time, so the total and the listing cannot disagree.
+   */
+  readonly estimatedInputTokens?: number;
+  readonly estimatedOutputTokens?: number;
+  /**
+   * Stage records that carried each estimate, out of `count`. The coverage
+   * counts are the load-bearing half of the token figure: a partial log would
+   * otherwise read as a complete one, which is the "silence and nothing
+   * happened look identical" trap this section exists to avoid.
+   */
+  readonly inputEstimateRecords?: number;
+  readonly outputEstimateRecords?: number;
 }
 
 export interface ErrorRecord {
@@ -409,6 +482,48 @@ const MAX_ERRORS_LISTED = 10;
  */
 const MAX_CACHE_RUNS_LISTED = 10;
 const MAX_TOKEN_CATEGORIES_LISTED = 10;
+
+/**
+ * The basis every per-stage token figure in this report is on.
+ *
+ * One member, on purpose, and the narrowness is the feature. `StageTelemetry`
+ * (frozen, digest `2abea9eb56758454`) carries `inputTokens`/`outputTokens` with
+ * no discriminator, so there is nothing on a record for the report to read a
+ * basis off. Asserting one basis is therefore the most the log supports;
+ * asserting two would put a `'provider'` state in the type that no record in
+ * this format can currently produce, which is the defect `cache
+ * .unexplainedInvalidations` avoids by refusing to name a cause
+ * `CacheTelemetry` does not carry.
+ *
+ * The direction the error would run matters to that decision. A figure labelled
+ * `estimated` that turns out to have been measured is over-caution, and the
+ * operator loses a little precision on a number they were told to distrust. The
+ * reverse -- the same field read as a provider measurement and quietly priced
+ * off -- is the B-3 shape this repo has already paid for twice.
+ *
+ * TODO(contract owner): a `basis` discriminator on `StageTelemetry`, needed the
+ * day a writer reports `usage.input_tokens` from a provider response into these
+ * fields. That is a contract change and a second digest bump, so it is an
+ * integrator decision, not a drive-by edit. This union is where it lands: the
+ * compiler will not let `'provider'` appear without someone editing here.
+ */
+type StageTokenBasis = 'estimated';
+
+const STAGE_TOKEN_BASIS: StageTokenBasis = 'estimated';
+
+/**
+ * The rendered caveat, generated from the constant above rather than typed
+ * beside it.
+ *
+ * `formatStatus` prints this under the stages section, and the strings it is
+ * built from are the same words the `estimated*` field names use, so a
+ * disagreement between what a consumer reads in `--json` and what an operator
+ * reads on the terminal is a type error here rather than something to notice
+ * in review. Citing the estimator is the other half: `chars/4 + 3 per block` is
+ * the arithmetic (`core-types/src/tokens.ts:17-20`), and an operator who
+ * disagrees with the number can see what produced it.
+ */
+const STAGE_TOKEN_ESTIMATOR = 'chars/4 + 3 tokens per block (core-types/src/tokens.ts:17-20)';
 
 /** Accumulator behind one `StageEffect`, before it is frozen into the report. */
 interface StageTally {
@@ -929,7 +1044,7 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
     // finding that gets missed on the days it is most relevant.
     warnings.push(
       `BUDGET: ${overBudget} of ${requests} request(s) exceeded the ${options.contextLimit}-token context ` +
-        `limit; peak input was ${peakInputTokens} tokens (${((peakInputTokens / options.contextLimit) * 100).toFixed(1)}% of the limit)`,
+        `limit; estimated peak input was ${peakInputTokens} tokens (${((peakInputTokens / options.contextLimit) * 100).toFixed(1)}% of the limit)`,
     );
   }
   if (breakevenFailures > 0) {
@@ -977,13 +1092,28 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         blocksOut: t.blocksOut,
         durationMs: t.durationMs,
         reductionFraction: t.bytesIn > 0 ? 1 - t.bytesOut / t.bytesIn : null,
+        // The coverage counts ride on every stage effect, estimated figure or
+        // not: a stage with no estimates needs to say its count is zero rather
+        // than omit the field, or "this stage is not token-accounted" and "this
+        // report does not carry token accounting" become the same report.
+        inputEstimateRecords: t.inputTokensCount,
+        outputEstimateRecords: t.outputTokensCount,
       };
-      const withIn = t.inputTokensCount > 0 ? { ...base, inputTokens: t.inputTokensSum } : base;
-      const effect = t.outputTokensCount > 0 ? { ...withIn, outputTokens: t.outputTokensSum } : withIn;
+      const withIn = t.inputTokensCount > 0 ? { ...base, estimatedInputTokens: t.inputTokensSum } : base;
+      const effect = t.outputTokensCount > 0 ? { ...withIn, estimatedOutputTokens: t.outputTokensSum } : withIn;
       return Object.freeze(effect);
     }),
   );
   const changedStages = byStage.filter((s) => s.changed > 0).map((s) => s.stage);
+
+  // Folded from the tallies rather than accumulated in the record loop, so the
+  // cross-stage figure and the per-stage listing are the same numbers read two
+  // ways. A second accumulator here could drift from `byStage` and nothing in
+  // the suite would see it.
+  const stageInputTokensSum = [...stageTallies.values()].reduce((n, t) => n + t.inputTokensSum, 0);
+  const stageOutputTokensSum = [...stageTallies.values()].reduce((n, t) => n + t.outputTokensSum, 0);
+  const stageInputTokenRecords = [...stageTallies.values()].reduce((n, t) => n + t.inputTokensCount, 0);
+  const stageOutputTokenRecords = [...stageTallies.values()].reduce((n, t) => n + t.outputTokensCount, 0);
 
   // A log that recorded the refusal but not the gist record still has to yield
   // a reason, because "one eviction was skipped" with an empty reason list is
@@ -1126,6 +1256,28 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
       reductionFraction: stageRecords > 0 && stageBytesIn > 0 ? 1 - stageBytesOut / stageBytesIn : null,
       byStage,
       changedStages: Object.freeze(changedStages),
+      // Absent, not zero, when no record carried a figure. A log written before
+      // G-9 says nothing about per-stage tokens, and reporting that as
+      // `estimatedInputTokens: 0` would be the "silence and nothing happened
+      // look identical" conflation in its purest form: the stages were not free,
+      // they were unmeasured.
+      ...(stageInputTokenRecords > 0 || stageOutputTokenRecords > 0
+        ? {
+            basis: STAGE_TOKEN_BASIS,
+            ...(stageInputTokenRecords > 0
+              ? {
+                  estimatedInputTokens: stageInputTokensSum,
+                  inputEstimateRecords: stageInputTokenRecords,
+                }
+              : {}),
+            ...(stageOutputTokenRecords > 0
+              ? {
+                  estimatedOutputTokens: stageOutputTokensSum,
+                  outputEstimateRecords: stageOutputTokenRecords,
+                }
+              : {}),
+          }
+        : {}),
     }),
     errors: Object.freeze({
       total: errorTotal,
@@ -1219,7 +1371,27 @@ function countMap(m: Readonly<Record<string, number>>): string {
 function stageList(byStage: readonly StageEffect[]): string[] {
   return byStage.map((s) => {
     const acted = s.changed > 0 ? `${s.changed}/${s.runs} changed` : `0/${s.runs} changed`;
-    return `${s.stage} ${acted}, ${s.bytesIn} -> ${s.bytesOut} bytes, ${s.blocksIn} -> ${s.blocksOut} block(s)`;
+    const line = `${s.stage} ${acted}, ${s.bytesIn} -> ${s.bytesOut} bytes, ${s.blocksIn} -> ${s.blocksOut} block(s)`;
+    if (s.estimatedInputTokens === undefined && s.estimatedOutputTokens === undefined) return line;
+    // Announced only when coverage is partial. A stage whose every record
+    // carried the figure needs no count, and printing one on all seven lines
+    // would train the eye to skip the one line where the count matters. Only
+    // directions the report carries a figure for are announced: a direction with
+    // no figure at all is already absent from the line, and "output on 0 of 1
+    // record(s)" beside a report that never claimed an output figure is the
+    // absence of a measurement announced as a measurement of the absence.
+    const gaps: string[] = [];
+    if (s.estimatedInputTokens !== undefined && s.inputEstimateRecords < s.runs) {
+      gaps.push(`input on ${s.inputEstimateRecords} of ${s.runs} record(s)`);
+    }
+    if (s.estimatedOutputTokens !== undefined && s.outputEstimateRecords < s.runs) {
+      gaps.push(`output on ${s.outputEstimateRecords} of ${s.runs} record(s)`);
+    }
+    const est =
+      s.estimatedInputTokens !== undefined && s.estimatedOutputTokens !== undefined
+        ? `, est. ${s.estimatedInputTokens} -> ${s.estimatedOutputTokens} token(s)`
+        : `, est. ${s.estimatedInputTokens ?? s.estimatedOutputTokens} token(s)`;
+    return `${line}${est}${gaps.length > 0 ? ` [estimate covers ${gaps.join('; ')}]` : ''}`;
   });
 }
 
@@ -1265,8 +1437,15 @@ export function formatStatus(report: StatusReport): string {
   out.push('');
   out.push('budget');
   out.push(`  requests        ${b.requests}`);
-  out.push(`  last input      ${b.lastInputTokens} token(s)`);
-  out.push(`  peak input      ${b.peakInputTokens} token(s) (${pctf(b.peakUtilization)} of window)`);
+  // `request_in.inputTokens` is marked `est.` for a structural reason rather
+  // than a guess about a writer: the record is emitted at ingress
+  // (`gateway/src/server.ts:499`) carrying `state.tokenEstimate`, before any
+  // provider has answered, so no provider-reported figure can reach this field.
+  // Labelling only the per-stage figures would have left the report asserting
+  // exactly what this change removes -- one section saying "estimate", the
+  // next saying "tokens" for the same arithmetic.
+  out.push(`  last input      ${b.lastInputTokens} est. token(s)`);
+  out.push(`  peak input      ${b.peakInputTokens} est. token(s) (${pctf(b.peakUtilization)} of window)`);
   if (b.overBudget > 0) out.push(`  over budget     ${b.overBudget} request(s) exceeded the window`);
 
   // "what happened to my context", as distinct from "what did it cost". Every
@@ -1284,6 +1463,37 @@ export function formatStatus(report: StatusReport): string {
       `  bytes           ${st.bytesIn} -> ${st.bytesOut} (${pctf(st.reductionFraction)} removed), ` +
         `${st.blocksIn} -> ${st.blocksOut} block(s)`,
     );
+    // Rendered only when the log actually holds token figures. A pre-G-9 log
+    // gets no token line and no caveat, for the same reason the cache section
+    // is gated on `ca.records > 0`: printing "0 estimated tokens" over a log
+    // that never estimated anything reports the absence of a measurement as a
+    // measurement, and a NOTE on every run is the caveat nobody reads.
+    if (st.basis !== undefined) {
+      const figures =
+        st.estimatedInputTokens !== undefined && st.estimatedOutputTokens !== undefined
+          ? `input ${st.estimatedInputTokens}, output ${st.estimatedOutputTokens}`
+          : `${st.estimatedInputTokens !== undefined ? 'input' : 'output'} ${
+              st.estimatedInputTokens ?? st.estimatedOutputTokens
+            }`;
+      out.push(
+        `  est. tokens     ${figures}, summed over ` +
+          `${Math.max(st.inputEstimateRecords ?? 0, st.outputEstimateRecords ?? 0)} of ${st.count} ` +
+          `stage record(s) -- basis: ${st.basis}`,
+      );
+      // The overlap sentence is not decoration. Every stage re-estimates the
+      // whole context on its way past, so the sum above counts the same tokens
+      // once per stage: an operator reading it as "this run cost N tokens" is
+      // reading a quantity that does not exist, and it is the reading a bare
+      // number invites. Two lines, generated from the estimator constant so the
+      // prose cannot drift from the `estimated*` field names.
+      out.push(
+        `  NOTE            estimated from characters, ${STAGE_TOKEN_ESTIMATOR}; not provider-reported`,
+      );
+      out.push(
+        '                  usage, and summed over stages that each measure the whole context, so it is',
+      );
+      out.push('                  not a request size, not a billing figure and not a cost');
+    }
     if (st.changed === 0) {
       out.push('  nothing was compressed: every stage that ran reported no change');
     }

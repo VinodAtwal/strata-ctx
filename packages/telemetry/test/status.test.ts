@@ -17,7 +17,7 @@ import {
   parseStatusArgs,
   runStatusCli,
 } from '../src/index.js';
-import type { StatusIo, StatusReport } from '../src/index.js';
+import type { StatusIo, StatusReport, StrataTelemetryEvent } from '../src/index.js';
 
 import {
   NOW,
@@ -1170,6 +1170,215 @@ describe('G-8 token-category savings: where the tokens went', () => {
     const text = formatStatus(r);
     assert.ok(text.includes('no savings records yet'), text);
     assert.equal(text.includes('input_saved'), false, text);
+  });
+});
+
+describe('G-9 per-stage tokens are reported as estimates, not as measurements', () => {
+  const estimated = (over: Partial<Extract<StrataTelemetryEvent, { type: 'stage' }>> = {}) =>
+    stage({ inputTokens: 320, outputTokens: 300, ...over });
+
+  /**
+   * The stages section alone. A whole-report `includes('est.')` would fail on
+   * the budget section's own estimate marking, which is correct and is asserted
+   * separately below -- so the assertion has to be scoped to the section it is
+   * about rather than loosened until it passes.
+   */
+  const stagesSection = (records: Parameters<typeof buildStatus>[0]): string => {
+    const text = formatStatus(buildStatus(records));
+    const start = text.indexOf('stages (');
+    if (start === -1) return '';
+    return text.slice(start, text.indexOf('\ncompactions', start));
+  };
+
+  it('names the basis in the field, so a --json reader cannot mistake it for usage', () => {
+    // The defect this row closes. `pipeline/src/order.ts:273-287` fills these
+    // two fields from `estimateTokens` and says so where it writes them; the
+    // reader is a `--json` consumer, not the pipeline's author, and a field
+    // named `inputTokens` carrying a character count is a plausible number that
+    // is wrong. The wire names are frozen at digest 2abea9eb56758454, so the
+    // report's own names are where the basis has to live.
+    const r = buildStatus(recordsOf([estimated()]));
+    const effect = r.stages.byStage[0];
+    assert.equal(effect?.estimatedInputTokens, 320);
+    assert.equal(effect?.estimatedOutputTokens, 300);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(effect ?? {}, 'inputTokens'),
+      false,
+      'the unlabelled spelling is gone from the report, so nothing reads as a measurement',
+    );
+    assert.equal(r.stages.basis, 'estimated', 'and the basis is a datum, not only prose');
+  });
+
+  it('renders the caveat, because a field nobody renders fixes nothing', () => {
+    // The operator reads the terminal, not the source. An estimate that reaches
+    // --json with a good name and never reaches `strata status` has fixed the
+    // reader who was already reading carefully and left the one who was not.
+    const text = formatStatus(buildStatus(recordsOf([estimated()])));
+    assert.match(text, /est\. tokens /, text);
+    assert.match(text, /basis: estimated/, text);
+    assert.match(text, /NOTE .*not provider-reported/, text);
+    assert.match(text, /dedupe .*est\. 320 -> 300 token\(s\)/, text);
+  });
+
+  it('says the arithmetic, so a reader who disagrees can see what produced the number', () => {
+    const text = formatStatus(buildStatus(recordsOf([estimated()])));
+    assert.match(text, /chars\/4/, text);
+    assert.match(text, /tokens\.ts/, text);
+  });
+
+  it('refuses to print a token figure for a log that never estimated one', () => {
+    // Absent, not zero. A pre-G-9 log has stage records and no token fields, and
+    // "0 estimated tokens" over it reports the absence of a measurement as a
+    // measurement -- the stages were not free, they were unmeasured.
+    const r = buildStatus(recordsOf([stage(), stage({ stage: 'truncate' })]));
+    assert.equal(r.stages.count, 2);
+    assert.equal(r.stages.basis, undefined, 'no basis is asserted for figures that do not exist');
+    assert.equal(r.stages.estimatedInputTokens, undefined);
+    assert.equal(r.stages.estimatedOutputTokens, undefined);
+    assert.equal(r.stages.byStage[0]?.estimatedInputTokens, undefined);
+    assert.equal(r.stages.byStage[0]?.inputEstimateRecords, 0, 'but the count of records carrying one is a real zero');
+    const section = stagesSection(recordsOf([stage(), stage({ stage: 'truncate' })]));
+    assert.equal(section.includes('est. tokens'), false, section);
+    assert.equal(section.includes('est.'), false, 'no estimate line and no NOTE either');
+    assert.equal(section.includes('NOTE'), false, section);
+    assert.ok(section.includes('dedupe 1/1 changed'), section);
+  });
+
+  it('separates a stage that was never estimated from one that was estimated', () => {
+    // The discrimination, not the negative: two logs that differ in exactly one
+    // respect -- whether the record carried a token field -- have to give
+    // opposite verdicts on what the report can claim.
+    const unestimated = buildStatus(recordsOf([stage({ stage: 'triage' })]));
+    const estimatedLog = buildStatus(recordsOf([stage({ stage: 'triage', inputTokens: 500, outputTokens: 480 })]));
+    assert.equal(unestimated.stages.byStage[0]?.inputEstimateRecords, 0);
+    assert.equal(estimatedLog.stages.byStage[0]?.inputEstimateRecords, 1);
+    assert.equal(estimatedLog.stages.byStage[0]?.estimatedInputTokens, 500);
+    assert.notEqual(formatStatus(unestimated), formatStatus(estimatedLog));
+  });
+
+  it('announces partial coverage instead of summing a fraction of the log', () => {
+    // One estimated record out of three is not "the stage saw 320 tokens". The
+    // coverage count is the load-bearing half of the figure, and a report that
+    // showed the sum without it would read as complete -- the same shape as the
+    // capped lists that have to say they were capped.
+    const r = buildStatus(recordsOf([estimated(), stage({}), stage({})]));
+    const effect = r.stages.byStage[0];
+    assert.equal(effect?.runs, 3);
+    assert.equal(effect?.inputEstimateRecords, 1);
+    assert.equal(r.stages.inputEstimateRecords, 1);
+    assert.equal(r.stages.count, 3, 'and the denominator is the whole log, not the estimated part');
+    const text = formatStatus(r);
+    assert.match(text, /1 of 3 stage record\(s\)/, text);
+    assert.match(text, /\[estimate covers input on 1 of 3 record\(s\)/, text);
+  });
+
+  it('does not announce a gap in a direction it holds no figure for', () => {
+    // `inputTokens` and `outputTokens` are independent optional fields, so a
+    // record can carry one. Saying "output on 0 of 1 record(s)" beside a report
+    // that never claimed an output figure states the absence of a measurement
+    // as a measurement of the absence.
+    const r = buildStatus(recordsOf([stage({ inputTokens: 320 })]));
+    assert.equal(r.stages.estimatedInputTokens, 320);
+    assert.equal(r.stages.estimatedOutputTokens, undefined);
+    const text = formatStatus(r);
+    assert.match(text, /est\. 320 token\(s\)/, text);
+    assert.equal(text.includes('estimate covers output'), false, text);
+    assert.equal(text.includes('input 320, output'), false, text);
+  });
+
+  it('carries the coverage count on a stage that has no figures, so zero is stated', () => {
+    const r = buildStatus(recordsOf([stage({ stage: 'triage' }), estimated({ stage: 'pin' })]));
+    const triage = r.stages.byStage.find((s) => s.stage === 'triage');
+    assert.equal(triage?.inputEstimateRecords, 0);
+    assert.equal(triage?.outputEstimateRecords, 0);
+    assert.equal(triage?.estimatedInputTokens, undefined);
+    const text = formatStatus(r);
+    assert.equal(text.includes('triage 1/1 changed, 1000 -> 900 bytes, 10 -> 8 block(s), est.'), false, text);
+  });
+
+  it('sums across stages, and says that the sum is not a quantity', () => {
+    // Each stage re-estimates the whole context on its way past, so the same
+    // tokens are counted once per stage. A bare total reads as one measured
+    // figure; the record count it covers and the NOTE are what make it a sum of
+    // N overlapping estimates rather than a run's token usage.
+    const r = buildStatus(
+      recordsOf([
+        estimated({ stage: 'dedupe', inputTokens: 320, outputTokens: 300 }),
+        estimated({ stage: 'truncate', inputTokens: 300, outputTokens: 180 }),
+      ]),
+    );
+    assert.equal(r.stages.estimatedInputTokens, 620, 'the arithmetic is still done, and still complete');
+    assert.equal(r.stages.estimatedOutputTokens, 480);
+    assert.equal(r.stages.inputEstimateRecords, 2);
+    const text = formatStatus(r);
+    assert.match(text, /input 620, output 480/, text);
+    assert.match(text, /not a request size/, text);
+    assert.match(text, /each measure the whole context/, text);
+    assert.equal(
+      text.includes('620 token(s)'),
+      false,
+      'no bare total anywhere: the number never appears without its coverage and its basis',
+    );
+  });
+
+  it('folds the cross-stage total from the same tallies as the per-stage listing', () => {
+    // Two accumulators would be free to disagree and nothing would see it. This
+    // is the property that makes the total safe to print at all.
+    const records = recordsOf([
+      estimated({ stage: 'dedupe', inputTokens: 100, outputTokens: 90 }),
+      estimated({ stage: 'dedupe', inputTokens: 200, outputTokens: 180 }),
+      estimated({ stage: 'triage', inputTokens: 50, outputTokens: 40 }),
+    ]);
+    const r = buildStatus(records);
+    const listed = r.stages.byStage.reduce((n, s) => n + (s.estimatedInputTokens ?? 0), 0);
+    const listedOut = r.stages.byStage.reduce((n, s) => n + (s.estimatedOutputTokens ?? 0), 0);
+    assert.equal(r.stages.estimatedInputTokens, listed);
+    assert.equal(r.stages.estimatedOutputTokens, listedOut);
+    assert.equal(r.stages.inputEstimateRecords, 3);
+    assert.equal(
+      r.stages.byStage.reduce((n, s) => n + s.inputEstimateRecords, 0),
+      r.stages.inputEstimateRecords,
+      'and the coverage counts fold the same way',
+    );
+  });
+
+  it('keeps the token figures off a log with no stage records', () => {
+    const r = buildStatus(recordsOf([requestIn(), pin()]));
+    assert.equal(r.stages.count, 0);
+    assert.equal(r.stages.basis, undefined);
+    const text = formatStatus(r);
+    assert.match(text, /UNMEASURED/, text);
+    assert.equal(text.includes('est. tokens'), false, text);
+  });
+
+  it('marks the budget section too, because request_in carries an estimate as well', () => {
+    // `request_in.inputTokens` is `state.tokenEstimate` (gateway/src/server.ts:499)
+    // emitted at ingress, so it is an estimate by construction rather than by
+    // inference -- and a report that says "estimate" under `stages` while
+    // printing bare "token(s)" under `budget` has told the operator the same
+    // arithmetic is measured in one place and guessed in the other.
+    const text = formatStatus(
+      buildStatus(recordsOf([requestIn({ inputTokens: 150_000 }), stage()]), { contextLimit: 100_000 }),
+    );
+    assert.match(text, /last input\s+150000 est\. token\(s\)/, text);
+    assert.match(text, /peak input\s+150000 est\. token\(s\)/, text);
+    assert.match(text, /estimated peak input was 150000 tokens/, text);
+  });
+
+  it('reports a per-stage estimate over repeat firings without letting them add up silently', () => {
+    // Two firings of one stage, both estimated: the sum is the stage's own
+    // history and the coverage count says so.
+    const r = buildStatus(
+      recordsOf([
+        estimated({ stage: 'compact', inputTokens: 1000, outputTokens: 900 }),
+        estimated({ stage: 'compact', inputTokens: 1200, outputTokens: 1100 }),
+      ]),
+    );
+    const compact = r.stages.byStage.find((s) => s.stage === 'compact');
+    assert.equal(compact?.runs, 2);
+    assert.equal(compact?.estimatedInputTokens, 2200);
+    assert.equal(compact?.inputEstimateRecords, 2, 'full coverage needs no announcement');
+    assert.equal(formatStatus(r).includes('estimate covers'), false);
   });
 });
 
