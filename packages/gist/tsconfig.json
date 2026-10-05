@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "rootDir": "src", "outDir": "dist", "downlevelIteration": true, "esModuleInterop": true },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../core-types" }, { "path": "../security" }]
+  "references": [{ "path": "../core-types" }, { "path": "../security" }, { "path": "../telemetry" }]
 }

@@ -11,6 +11,7 @@
   "types": "./dist/index.d.ts",
   "dependencies": {
     "@strata-ctx/core-types": "1.0.0",
-    "@strata-ctx/security": "file:../security"
+    "@strata-ctx/security": "file:../security",
+    "@strata-ctx/telemetry": "file:../telemetry"
   }
 }
