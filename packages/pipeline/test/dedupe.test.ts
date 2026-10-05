@@ -1,11 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import type { NonGovernanceMessage } from '@strata-ctx/core-types';
+import type { NonGovernanceBlock, NonGovernanceMessage } from '@strata-ctx/core-types';
+import { sha256 } from '@strata-ctx/core-types';
 
 import { dedupeMessages, mergeAdjacentSameRole } from '../src/index.js';
 
-import { lines, message, toolResult, unsubjected } from './fixtures.js';
+import { block, lines, message, meta, toolResult, unsubjected } from './fixtures.js';
 
 const texts = (messages: readonly NonGovernanceMessage[]): string[] =>
   messages.flatMap((m) => m.content.map((b) => b.text ?? ''));
@@ -186,6 +187,227 @@ describe('B-1 dedupe: transcript hygiene', () => {
       message('user', [unsubjected('a user utterance'), toolResult({ ref: 'x', text: 'a' })]),
     ]);
     assert.equal(report.untiered, 1);
+  });
+});
+
+describe('B-1 dedupe: the pairing invariant', () => {
+  // For every pair that was complete in the input, the output holds both halves
+  // or neither. Anthropic rejects a request whose `tool_use` ids do not pair, and
+  // dedupe is the only Tier 0 stage that deletes a block outright.
+  const toolUse = (over: {
+    readonly id: string;
+    readonly ref: string;
+    readonly text?: string;
+    readonly severity?: 'error' | 'fatal';
+    readonly supersededBy?: string;
+  }): NonGovernanceBlock => {
+    const text = over.text ?? 'call';
+    return block({
+      type: 'tool_use',
+      text,
+      id: over.id,
+      toolName: 'Read',
+      meta: meta({
+        subject: { kind: 'other', ref: over.ref },
+        tier: 'tool_state',
+        bytes: text.length,
+        sha256: sha256(`use:${over.id}:${over.ref}`),
+        ...(over.severity === undefined ? {} : { severity: over.severity }),
+        ...(over.supersededBy === undefined ? {} : { supersededBy: over.supersededBy }),
+      }),
+    });
+  };
+
+  /** The result half, keyed on the id -- what `anthropic-adapter.ts` now stamps. */
+  const result = (over: {
+    readonly id: string;
+    readonly text: string;
+    readonly severity?: 'error' | 'fatal';
+    readonly digest?: string;
+  }): NonGovernanceBlock =>
+    block({
+      type: 'tool_result',
+      text: over.text,
+      id: over.id,
+      meta: meta({
+        subject: { kind: 'other', ref: over.id },
+        tier: 'tool_state',
+        bytes: over.text.length,
+        sha256: over.digest ?? sha256(`result:${over.id}:${over.text}`),
+        ...(over.severity === undefined ? {} : { severity: over.severity }),
+      }),
+    });
+
+  const idsOf = (messages: readonly NonGovernanceMessage[], type: 'tool_use' | 'tool_result'): string[] =>
+    messages.flatMap((m) => m.content.filter((b) => b.type === type).map((b) => b.id ?? ''));
+
+  it('co-drops the result with a droppable call rather than dropping the call alone', () => {
+    const { messages, report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_01', text: 'contents of a' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'contents of a' })]),
+    ]);
+
+    assert.deepEqual(idsOf(messages, 'tool_use'), ['toolu_02']);
+    assert.deepEqual(idsOf(messages, 'tool_result'), ['toolu_02']);
+    assert.equal(report.dropped, 2, 'both halves are counted, not just the decided one');
+  });
+
+  it('labels the co-dropped result by its bytes, not by the reason the call was dropped', () => {
+    // Same call made twice, same file: the call is a `duplicate`, and the result
+    // is not -- its block hash covers `tool_use_id`, so the two are not the same
+    // bytes and the later read supersedes the earlier one.
+    const { report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_01', text: 'contents of a' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'contents of a' })]),
+    ]);
+
+    const byRef = new Map(report.drops.map((d) => [d.ref, d.reason]));
+    assert.equal(byRef.get('Read\u0000{"file_path":"/a.ts"}'), 'duplicate', 'the call really was made twice');
+    assert.equal(byRef.get('toolu_01'), 'superseded', 'the earlier result is not the same bytes');
+    assert.equal(report.byReason.superseded_by_flag, 0);
+    assert.equal(report.byReason.duplicate, 1);
+    assert.equal(report.byReason.superseded, 1);
+  });
+
+  it('labels the co-dropped result `duplicate` when it really is byte-identical', () => {
+    // The only way a pair's two results can be byte-identical is a producer that
+    // keys the result on something other than the call id -- a `sha256` fixture
+    // stands in for it, because that is the same shape a byte-equality producer
+    // emits.
+    const digest = sha256('same result');
+    const { report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_01', text: 'a', digest })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'a', digest })]),
+    ]);
+
+    assert.equal(report.byReason.duplicate, 2);
+    assert.equal(report.byReason.superseded, 0);
+  });
+
+  it('never propagates superseded_by_flag to a half the producer did not flag', () => {
+    const { report } = dedupeMessages([
+      message('assistant', [
+        toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}', supersededBy: 'v2' }),
+      ]),
+      message('user', [result({ id: 'toolu_01', text: 'contents of a' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'contents of a' })]),
+    ]);
+
+    const flagged = report.drops.find((d) => d.ref === 'toolu_01');
+    assert.equal(flagged?.reason, 'superseded', 'the flag named a version, not this block');
+    assert.equal(report.byReason.superseded_by_flag, 1);
+    assert.equal(report.byReason.superseded, 1);
+  });
+
+  it('refuses the drop when the id cannot say which half answers which', () => {
+    // Gemini's shape: `functionResponse` has no id, so the adapter fills the
+    // correlation key with the function name and two calls to one function share
+    // it. Which response belonged to which call is unrecoverable, so nothing is
+    // deleted.
+    const { messages, report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'Read', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('assistant', [toolUse({ id: 'Read', ref: 'Read\u0000{"file_path":"/b.ts"}' })]),
+      message('user', [result({ id: 'Read', text: 'a' }), result({ id: 'Read', text: 'b' })]),
+    ]);
+
+    assert.equal(report.dropped, 0);
+    assert.deepEqual(idsOf(messages, 'tool_use'), ['Read', 'Read']);
+    assert.deepEqual(idsOf(messages, 'tool_result'), ['Read', 'Read']);
+  });
+
+  it('keeps a failed read and its call when the same path is later read successfully', () => {
+    // The severity guarantee (`decide`) is about one block; across a pair only
+    // the result is severe, so the pair is what has to be kept.
+    const { messages, report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_01', text: 'ENOENT: no such file', severity: 'error' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'export const a = 1' })]),
+    ]);
+
+    assert.deepEqual(idsOf(messages, 'tool_result'), ['toolu_01', 'toolu_02']);
+    assert.equal(report.dropped, 0);
+    assert.equal(report.retainedHighSeverity, 1, 'only the severe block is counted');
+    assert.ok(
+      messages.flatMap((m) => m.content).some((b) => b.text?.includes('ENOENT')),
+      'the error the model must see is still in the transcript',
+    );
+  });
+
+  it('co-drops a failed read whose later twin also failed', () => {
+    // Same path, same error, twice: the surviving result is equally severe, so
+    // the guarantee is satisfied by the copy that stays and the bytes are freed.
+    const { messages, report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_01', text: 'ENOENT', severity: 'error' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'ENOENT', severity: 'error' })]),
+    ]);
+
+    assert.deepEqual(idsOf(messages, 'tool_result'), ['toolu_02']);
+    assert.equal(report.dropped, 2);
+    assert.equal(report.retainedHighSeverity, 0);
+  });
+
+  it('still drops a call that has no result to orphan', () => {
+    // The pending call at the tail of a turn. Nothing answers it, so nothing can
+    // be orphaned and the ordinary decision stands.
+    const { messages, report } = dedupeMessages([
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+    ]);
+
+    assert.deepEqual(idsOf(messages, 'tool_use'), ['toolu_02']);
+    assert.equal(report.dropped, 1);
+  });
+
+  it('still dedupes a bare result that has no call in the transcript', () => {
+    // No counterpart in the input means nothing can be orphaned, so a result
+    // keyed on its own subject keeps the behaviour it has always had. This is
+    // the branch that keeps every existing result-dedupe test meaningful.
+    const { messages, report } = dedupeMessages([
+      message('user', [toolResult({ ref: 'a.ts', kind: 'file', version: 'v1', text: 'old' })]),
+      message('user', [toolResult({ ref: 'a.ts', kind: 'file', version: 'v2', text: 'new' })]),
+    ]);
+
+    assert.deepEqual(texts(messages), ['new']);
+    assert.equal(report.byReason.superseded, 1);
+  });
+
+  it('leaves a pair alone when the call and the result share an identity', () => {
+    // The Gemini defect in operator form: one subject for both halves means the
+    // result reads as a newer version of the call, and dropping the result would
+    // leave the call unanswerable. The pairing pass is what stops that.
+    const shared = 'Read';
+    const use = toolUse({ id: shared, ref: shared });
+    const res = result({ id: shared, text: 'contents of a' });
+    const { messages, report } = dedupeMessages([
+      message('assistant', [use]),
+      message('user', [res]),
+      message('assistant', [toolUse({ id: shared, ref: shared })]),
+      message('user', [result({ id: shared, text: 'contents of a' })]),
+    ]);
+
+    assert.equal(report.dropped, 0, 'a result is never the winner over the call it answers');
+    assert.equal(idsOf(messages, 'tool_use').length, 2);
+    assert.equal(idsOf(messages, 'tool_result').length, 2);
+  });
+
+  it('is deterministic: the same input gives the same report bytes', () => {
+    const build = () => [
+      message('assistant', [toolUse({ id: 'toolu_01', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_01', text: 'contents of a' })]),
+      message('assistant', [toolUse({ id: 'toolu_02', ref: 'Read\u0000{"file_path":"/a.ts"}' })]),
+      message('user', [result({ id: 'toolu_02', text: 'contents of b' })]),
+    ];
+    assert.equal(JSON.stringify(dedupeMessages(build()).report), JSON.stringify(dedupeMessages(build()).report));
   });
 });
 

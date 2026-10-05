@@ -218,6 +218,47 @@ const blockMeta = (
 /** `subject.kind` is a closed union and no shared tool-name table exists. See the A-10 report. */
 const toolSubject = (ref: string): BlockSubject => ({ kind: 'other', ref });
 
+/**
+ * `functionCall` identity: the *call*, not the function's name.
+ *
+ * The wire part is `{ functionCall: { id?, name, args? } }`, so a call is
+ * identified by `name` together with `args`. This file used to stamp
+ * `ref: name` for the call and the *same* `ref: name` for its
+ * `functionResponse`, which is worse than the Anthropic adapter's version of the
+ * same mistake: the two halves of one Gemini pair shared one identity, so dedupe
+ * read the response as a newer version of the call and deleted the call, and
+ * then deleted the *other* call too. Measured on a two-`Read` turn: both calls
+ * dropped, both responses orphaned, `byReason.duplicate: 3`.
+ *
+ * `encodeStruct` is the projection the block is already hashed and text-carried
+ * with (`blockMeta`, and the loss table above), so the identity cannot disagree
+ * with the bytes. It collapses a non-Struct `args` to `'{}'`, which is the same
+ * collapse the canonical `text` makes -- two calls with non-Struct arguments
+ * that differ get one identity, and the loser's args are unrepresentable in the
+ * canonical model either way (B-15, `decodeStruct`).
+ *
+ * `id` is not in the key because Gemini usually has none
+ * (`GeminiFunctionCall.id`, above) and this adapter fills it with the name; using
+ * it would make every call distinct in the good case and collide in the bad one.
+ */
+const toolUseSubject = (name: string, args: unknown): BlockSubject => ({
+  kind: 'other',
+  ref: `${name}\u0000${encodeStruct(args)}`,
+});
+
+/**
+ * `functionResponse` identity: the `name`, which is the only correlation Gemini
+ * carries (the module header, "Results ride in a `user` turn"; `GeminiFunctionResponse`
+ * has no `id` field). Deliberately different from `toolUseSubject` so a call and
+ * its own answer are never the same subject -- and deliberately not richer than
+ * `name`, because there is nothing on the wire to make it richer.
+ *
+ * The consequence is that two calls to the same function in one turn are
+ * indistinguishable, so `enforcePairAtomicity` in the pipeline refuses to drop
+ * either rather than guess which response belonged to which call.
+ */
+const toolResultSubject = (name: string): BlockSubject => ({ kind: 'other', ref: name });
+
 /* -------------------------------------------------------------------------- */
 /* Ingress                                                                     */
 /* -------------------------------------------------------------------------- */
@@ -286,7 +327,7 @@ const toBlock = (part: unknown, state: WalkState): ContentBlock => {
         ...(resolved === '' ? {} : { id: str(call['id']) ?? resolved, toolName: resolved }),
         cacheControl: null,
         meta: blockMeta(payload, state.origin, 'tool_state', false, {
-          ...(resolved === '' ? {} : { subject: toolSubject(resolved) }),
+          ...(resolved === '' ? {} : { subject: toolUseSubject(resolved, call['args']) }),
         }),
       };
     }
@@ -322,7 +363,7 @@ const toBlock = (part: unknown, state: WalkState): ContentBlock => {
         // what dedupe, triage and gist assembly key off. The Anthropic adapter
         // can read the role and get the right answer; Gemini cannot.
         meta: blockMeta(payload, 'tool', 'tool_state', false, {
-          ...(resolved === '' ? {} : { subject: toolSubject(resolved) }),
+          ...(resolved === '' ? {} : { subject: toolResultSubject(resolved) }),
           ...(severity === undefined ? {} : { severity }),
         }),
       };

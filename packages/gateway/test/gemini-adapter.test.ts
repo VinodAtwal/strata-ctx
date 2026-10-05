@@ -160,7 +160,56 @@ test('functionCall becomes a tool_use filed as tool_state with the name as corre
   assert.equal(b?.id, 'run_shell_command');
   assert.equal(b?.meta.tier, 'tool_state');
   assert.equal(b?.meta.origin, 'assistant');
-  assert.deepEqual(b?.meta.subject, { kind: 'other', ref: 'run_shell_command' });
+  // Name *and* args. Keyed on the name alone, every `run_shell_command` in a turn
+  // was one subject, so dedupe read a `functionResponse` as a newer version of the
+  // call and deleted the call -- which is the same orphan the Anthropic adapter
+  // had, reached one step further. See `toolUseSubject` in the adapter.
+  assert.deepEqual(b?.meta.subject, { kind: 'other', ref: 'run_shell_command\u0000{"command":"ls"}' });
+});
+
+test('two calls of one function with different args are different subjects', () => {
+  // Gemini parallel-calls a function by name, with no id on either half. Identity
+  // therefore has to come from the args, or a turn that calls the same function
+  // twice is one subject and the second call deletes the first.
+  const c = toCanonical(
+    {
+      ...base,
+      contents: [
+        {
+          role: 'model',
+          parts: [
+            { functionCall: { name: 'run_shell_command', args: { command: 'ls' } } },
+            { functionCall: { name: 'run_shell_command', args: { command: 'ls -la' } } },
+          ],
+        },
+      ],
+    },
+    NOW,
+  );
+  const [a, b] = nonSystem(c).flatMap((m) => m.content);
+  assert.equal(a?.meta.subject?.ref, 'run_shell_command\u0000{"command":"ls"}');
+  assert.equal(b?.meta.subject?.ref, 'run_shell_command\u0000{"command":"ls -la"}');
+  assert.notEqual(a?.meta.subject?.ref, b?.meta.subject?.ref);
+});
+
+test('a functionCall and its functionResponse never share a subject', () => {
+  // GeminiFunctionResponse has no id, so its only correlation key is the name and
+  // that is what the result is keyed on. Giving the call that same ref would make
+  // the answer read as a newer version of the call.
+  const c = toCanonical(
+    {
+      ...base,
+      contents: [
+        { role: 'model', parts: [{ functionCall: { name: 'run_shell_command', args: { command: 'ls' } } }] },
+        { role: 'user', parts: [{ functionResponse: { name: 'run_shell_command', response: { output: 'a.ts' } } }] },
+      ],
+    },
+    NOW,
+  );
+  const [call, res] = nonSystem(c).flatMap((m) => m.content);
+  assert.equal(call?.meta.subject?.ref, 'run_shell_command\u0000{"command":"ls"}');
+  assert.equal(res?.meta.subject?.ref, 'run_shell_command');
+  assert.notEqual(call?.meta.subject?.ref, res?.meta.subject?.ref);
 });
 
 test('a tool_result records the tool as its origin even though Gemini files it under user', () => {

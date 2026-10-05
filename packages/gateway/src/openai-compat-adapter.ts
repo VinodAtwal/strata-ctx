@@ -364,8 +364,42 @@ function toBlock(spec: BlockSpec): ContentBlock {
   };
 }
 
-/** Tool identity, for the dedupe and supersession keys. Mirrors the Anthropic adapter. */
-const toolSubject = (ref: string): BlockSubject => ({ kind: 'other', ref });
+/**
+ * `tool_calls` identity: the *call*, not the function's name.
+ *
+ * The wire block is `{ id, type, function: { name, arguments } }`, so a call is
+ * identified by `name` together with `arguments`. This adapter used to stamp
+ * `ref: name` for the call, which made every `read_file` in a turn one subject
+ * (`other\0read_file`): dedupe dropped the loser and left the loser's result
+ * behind, because a `role: tool` message is keyed on `tool_call_id`
+ * (`toolResultSubject`) and so never co-dropped. A `tool_result` with no
+ * `tool_use` is a request `/v1/chat/completions` rejects.
+ *
+ * `subject.kind` stays `'other'`: it is a closed union and no shared tool-name
+ * table exists in this repo to classify a call by (see the A-10 report).
+ *
+ * `arguments` is a **JSON string** and is used verbatim, for the reason
+ * `toolUseBlock` gives: re-serialising it would make every tool call in a cached
+ * prefix a cache miss. The cost is that two byte-different encodings of the same
+ * document are two identities, so a drop is missed. Missing a drop costs bytes;
+ * making one wrongly costs a rejected request, so the direction is right.
+ *
+ * `id` is deliberately not in the key: it is unique per call, so keying on it
+ * would make every call its own subject and dedupe would never fire for
+ * `tool_use` at all. `id` pairs a call with its result, which is its actual job.
+ */
+const toolUseSubject = (call: OpenAiCompatToolCall): BlockSubject => ({
+  kind: 'other',
+  ref: `${call.function.name}\u0000${call.function.arguments}`,
+});
+
+/**
+ * `role: tool` identity: the `tool_call_id`, which is the field the format pairs
+ * on (`OpenAiCompatMessage.tool_call_id`), falling back to `name` for the
+ * pre-`tool_calls` spelling. Never the same shape as `toolUseSubject`: a result
+ * that shared its call's subject would read as a newer version of the call.
+ */
+const toolResultSubject = (resultId: string): BlockSubject => ({ kind: 'other', ref: resultId });
 
 const tierFor = (type: ContentBlock['type'], role: Role): Tier => {
   if (type === 'tool_use' || type === 'tool_result') return 'tool_state';
@@ -448,7 +482,7 @@ const toolUseBlock = (
     cacheable: false,
     id: call.id,
     toolName: call.function.name,
-    subject: toolSubject(call.function.name),
+    subject: toolUseSubject(call),
     // Surfaced rather than normalised away: `warn` is the benign end of the
     // severity scale, so a tool call whose arguments are not JSON is *more* likely
     // to be retained by truncate, which is the fail-toward-more-context direction
@@ -480,7 +514,7 @@ export function toCanonical(req: OpenAiCompatRequest, now = Date.now()): Context
           tier: 'tool_state',
           cacheable: false,
           ...(resultId === undefined ? {} : { id: resultId }),
-          ...(resultId === undefined ? {} : { subject: toolSubject(resultId) }),
+          ...(resultId === undefined ? {} : { subject: toolResultSubject(resultId) }),
         }),
       );
     } else {

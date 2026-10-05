@@ -62,6 +62,60 @@ test('tool results are filed as tool_state and errors carry severity', () => {
   assert.equal(b?.id, 't1');
 });
 
+test('a tool_use is identified by name and input, not by name alone', () => {
+  // The Messages API declares `tool_use` as `{ id, name, input }`, so the call is
+  // `name` + `input`. Keyed on `name`, every `Read` in a turn was one subject and
+  // dedupe dropped one of them, orphaning its `tool_result`.
+  const twoCalls = toCanonical({
+    ...base,
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/a.ts' } },
+          { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/repo/b.ts' } },
+        ],
+      },
+    ],
+  });
+  const [a, b] = firstUser(twoCalls.messages)?.content ?? [];
+  assert.notEqual(a?.meta.subject?.ref, b?.meta.subject?.ref, 'different files are different subjects');
+  assert.equal(a?.meta.subject?.ref, 'Read\u0000{"file_path":"/repo/a.ts"}');
+
+  // Two identical calls are the same subject, which is what makes a repeated read
+  // dedupeable at all.
+  const repeated = toCanonical({
+    ...base,
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/a.ts' } },
+          { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/repo/a.ts' } },
+        ],
+      },
+    ],
+  });
+  const [c] = firstUser(repeated.messages)?.content ?? [];
+  assert.equal(c?.meta.subject?.ref, 'Read\u0000{"file_path":"/repo/a.ts"}');
+});
+
+test('a tool_use and its tool_result never share a subject', () => {
+  // If they did, the result would read as a newer version of the call and dedupe
+  // would drop the call out from under it -- which is exactly the orphan.
+  const c = toCanonical({
+    ...base,
+    messages: [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/repo/a.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'contents' }] },
+    ],
+  });
+  const [call, res] = c.messages.filter((m) => m.role !== 'system').flatMap((m) => m.content);
+  assert.equal(call?.meta.subject?.ref, 'Read\u0000{"file_path":"/repo/a.ts"}');
+  assert.equal(res?.meta.subject?.ref, 't1');
+  assert.notEqual(call?.meta.subject?.ref, res?.meta.subject?.ref);
+});
+
 test('cache_control survives the round trip', () => {
   const c = toCanonical({
     ...base,

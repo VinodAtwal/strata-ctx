@@ -1,5 +1,6 @@
 import type {
   BlockMeta,
+  BlockSubject,
   ContentBlock,
   ContextState,
   Message,
@@ -39,15 +40,58 @@ export type AnthropicContentBlock =
 const tierFor = (type: ContentBlock['type']): Tier =>
   type === 'tool_use' || type === 'tool_result' ? 'tool_state' : 'episodic';
 
+/**
+ * `tool_use` identity: the *call*, not the callee's name.
+ *
+ * The wire block is `{ type: 'tool_use'; id: string; name: string; input: unknown }`
+ * (the union member declared above), so a call is fully identified by `name`
+ * together with `input`. This file used to stamp `ref: block.name`, which made
+ * every `Read` in a turn the same identity (`other\0Read`): a `Read` of
+ * `/repo/a.ts` and a `Read` of `/repo/b.ts` became one subject, dedupe dropped
+ * the loser as a duplicate, and the loser's `tool_result` survived with no
+ * `tool_use` to answer it -- which the Messages API rejects.
+ *
+ * `JSON.stringify` over `input` is the same projection the block is already
+ * hashed and text-projected with (`meta.sha256` and `textOf` below), so the
+ * identity cannot disagree with the bytes. A client that varies its JSON key
+ * order between two identical calls gets two identities and no drop, which is
+ * the safe direction. `?? null` because `JSON.stringify(undefined)` is
+ * `undefined` and this feeds a template; the same guard as Gemini's
+ * `encodeStruct` at gemini-adapter.ts:183.
+ *
+ * `id` is deliberately *not* in the key: it is a correlation token, unique per
+ * call, so keying on it would make every call a distinct subject and dedupe
+ * would never fire for tool_use at all. `id` pairs a call with its result
+ * (dedupe.ts `pairIndex`), which is the job it is actually for.
+ */
+const toolUseSubject = (name: string, input: unknown): BlockSubject => ({
+  kind: 'other',
+  ref: `${name}\u0000${JSON.stringify(input ?? null)}`,
+});
+
+/**
+ * `tool_result` identity: the `tool_use_id`, which is what the wire block carries
+ * and what distinguishes one call's result from another's. Kept distinct from
+ * `toolUseSubject` on purpose: if the two halves shared a subject, the result
+ * would read as a *newer version* of the call and the call would be dropped out
+ * from under it.
+ */
+const toolResultSubject = (toolUseId: string): BlockSubject => ({
+  kind: 'other',
+  ref: toolUseId,
+});
+
 const metaFor = (
   block: AnthropicContentBlock,
   cacheable: boolean,
   origin: BlockMeta['origin'],
 ): BlockMeta => {
   const subject =
-    block.type === 'tool_result' || block.type === 'tool_use'
-      ? { kind: 'other' as const, ref: block.type === 'tool_use' ? block.name : block.tool_use_id }
-      : undefined;
+    block.type === 'tool_use'
+      ? toolUseSubject(block.name, block.input)
+      : block.type === 'tool_result'
+        ? toolResultSubject(block.tool_use_id)
+        : undefined;
   return {
     origin,
     sha256: sha256(JSON.stringify(block)),

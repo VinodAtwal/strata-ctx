@@ -194,8 +194,51 @@ test('a tool call carries its id, name and arguments', () => {
   assert.equal(b?.id, 'call_1');
   assert.equal(b?.toolName, 'read_file');
   assert.equal(b?.meta.tier, 'tool_state');
-  assert.deepEqual(b?.meta.subject, { kind: 'other', ref: 'read_file' });
   assert.equal(b?.meta.cacheable, false, 'the conversational tail is not the gateway prefix');
+  // Name *and* arguments. Keyed on the name alone, every `read_file` in a turn was
+  // one subject, so dedupe dropped a call and left its `tool_call_id`-keyed result
+  // behind -- a `tool_result` with no `tool_use`, which the format rejects. See
+  // `toolUseSubject` in the adapter. The arguments string is carried verbatim,
+  // spaces and all, for the byte-equality reason `toolUseBlock` gives.
+  assert.deepEqual(b?.meta.subject, {
+    kind: 'other',
+    ref: 'read_file\u0000{ "path" : "a.ts" }',
+  });
+});
+
+test('two calls of one function with different arguments are different subjects', () => {
+  const c = toCanonical(
+    {
+      ...base,
+      messages: [
+        ...base.messages,
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            { id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{ "path" : "a.ts" }' } },
+            { id: 'call_2', type: 'function', function: { name: 'read_file', arguments: '{ "path" : "b.ts" }' } },
+          ],
+        },
+      ],
+    },
+    NOW,
+  );
+  const [a, b] = c.messages[2]?.content ?? [];
+  assert.equal(a?.meta.subject?.ref, 'read_file\u0000{ "path" : "a.ts" }');
+  assert.equal(b?.meta.subject?.ref, 'read_file\u0000{ "path" : "b.ts" }');
+  assert.notEqual(a?.meta.subject?.ref, b?.meta.subject?.ref);
+});
+
+test('a tool call and its tool result never share a subject', () => {
+  // The call is name + arguments, the result is `tool_call_id`. Keyed on the name,
+  // both halves collapsed into one subject and dedupe deleted the call.
+  const c = toCanonical(conversation, NOW);
+  const call = c.messages[2]?.content[0];
+  const res = c.messages[3]?.content[0];
+  assert.equal(call?.meta.subject?.ref, 'read_file\u0000{ "path" : "a.ts" }');
+  assert.equal(res?.meta.subject?.ref, 'call_1');
+  assert.notEqual(call?.meta.subject?.ref, res?.meta.subject?.ref);
 });
 
 test('a role:tool message is a tool_result, not a text block', () => {
