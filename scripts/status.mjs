@@ -148,5 +148,5 @@ console.log(`  gate       npm run check      typecheck + lint + tests + contract
 console.log('             npm test           test gate alone');
 console.log('             npm run contract:check\n');
 
-console.log(`  Agent rules: AGENTS.md §1 (contract) §5 (git) §6 (workflow) §9 (forbidden)`);
+console.log(`  Agent rules: AGENTS.md §1 (contract) §4 (git) §5 (parallelism) §6 (forbidden) §8 (done)`);
 console.log('');

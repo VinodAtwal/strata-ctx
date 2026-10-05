@@ -368,6 +368,60 @@ describe('the board reader', () => {
     }
   });
 
+  test('every est_ed is a bare number, because no code reads it and nothing enforced it', () => {
+    // Seven rows had drifted: three carried a "d" suffix ("1d", "1.5d") and four
+    // wrote "1.0"/"2.0" where the other 125 rows write "1"/"2". Nothing parses
+    // this column -- it is human-read only -- which is exactly why it drifted: a
+    // convention with no enforcer is a convention that dies. The unit is already
+    // in the column name, so the suffix was redundant as well as wrong.
+    //
+    // It asserts on parsed cells and never writes the board back, on purpose. The
+    // first version of this normalization re-serialized each row it touched,
+    // which stripped the quotes from "A-3,A-4" and turned ten fields into twelve.
+    // See the sibling test's note: a raw comma count cannot tell a quoted "G1,G2"
+    // from an unquoted extra field.
+    const board = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'docs', 'tasks.csv'),
+      'utf8',
+    );
+    const split = (line: string): string[] => {
+      const cells: string[] = [];
+      let cur = '';
+      let quoted = false;
+      for (let i = 0; i < line.length; i += 1) {
+        const ch = line[i]!;
+        if (quoted) {
+          if (ch === '"') {
+            if (line[i + 1] === '"') {
+              cur += '"';
+              i += 1;
+            } else {
+              quoted = false;
+            }
+          } else cur += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === ',') {
+          cells.push(cur);
+          cur = '';
+        } else cur += ch;
+      }
+      cells.push(cur);
+      return cells;
+    };
+
+    const lines = board.split(/\r?\n/).filter((l) => l.trim() !== '');
+    const estIdx = split(lines[0]!).indexOf('est_ed');
+    assert.notEqual(estIdx, -1, 'the board lost its est_ed column');
+
+    const offenders: string[] = [];
+    for (const line of lines.slice(1)) {
+      const cells = split(line);
+      const value = cells[estIdx] ?? '';
+      if (!/^\d+(\.\d*[1-9])?$/.test(value)) offenders.push(`${cells[0]}=${value}`);
+    }
+    assert.deepEqual(offenders, [], `non-canonical est_ed: ${offenders.join(' ')}`);
+  });
+
   test('the real board resolves a known row to a title that is not truncated', () => {
     // F2-0 previously carried "real upstream, with a governed refusal
     // assertion"; if a quoted-comma title ever returns, this reads back short.
