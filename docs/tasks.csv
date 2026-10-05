@@ -130,3 +130,4 @@ F2-9,F,Evals,A live run now reports whether it exercised the structured channel,
 H-10,H,Output compress,Wire output-compress after TOON and TRON are validated on real output,ext,1,H-9,5,-,todo
 J-13,J,Dev infra,Re-key the uncalled-export ratchet on local rather than the total,agent,1,J-12,5,-,done
 J-14,J,Dev infra,Declare the gist to telemetry dependency the code already had,agent,0.5,-,5,-,done
+F2-10,F,Evals,Board loader splits on commas so a quoted comma-title truncates,agent,0.5,-,5,-,todo
