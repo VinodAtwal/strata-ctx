@@ -25,7 +25,7 @@ import {
 } from '@strata-ctx/core-types';
 
 import { LOSSY_TIER0_STAGES, PIPELINE_STAGE_ORDER } from '../src/order.js';
-import { runPipeline } from '../src/runner.js';
+import { asStageCode, runPipeline } from '../src/runner.js';
 import type { PipelineRun, StageResult } from '../src/runner.js';
 
 /**
@@ -680,4 +680,55 @@ describe('A-14 runner: hygiene', () => {
 it('exports a runner whose default stage set is exactly the packaged Tier 0', () => {
   const run = runPipeline(realisticState(), { policy: PINNED_POLICY });
   assert.deepEqual(run.stagesRun, LOSSY_TIER0_STAGES.map((s) => s.name));
+});
+// ------------------------------------------------- P0-1: the cause is not dropped
+//
+// `asStageCode` is what the gateway reports lossy and total stage failures
+// with. Before this it ended in `return 'stage_threw'`, so four distinct causes
+// left this function as one code and the real condition was never reported. The
+// test is written as a falsification: it asserts the mapping is total and
+// injective, and then asserts the *property that actually broke* -- that no
+// code this function does not recognise is reported as one it does.
+
+describe('P0-1: asStageCode keeps causes distinct and never invents one', () => {
+  const KNOWN = [
+    'stage_threw',
+    'prefix_reordered',
+    'not_a_lossy_context',
+    'not_a_context_state',
+  ] as const;
+
+  it('maps each known cause to itself, so the four stay four', () => {
+    const mapped = KNOWN.map((code) => asStageCode(code));
+    assert.deepEqual(mapped, [...KNOWN]);
+    // Injective. Four causes, four codes: the property P0-1 was about.
+    assert.equal(new Set(mapped).size, KNOWN.length);
+  });
+
+  it('has no code: undefined is not a failure', () => {
+    // A stage that succeeded reports `undefined`. Mapping that to a failure
+    // code would turn every clean run into an error event.
+    assert.equal(asStageCode(undefined), undefined);
+  });
+
+  it('does not report an unrecognised cause as stage_threw', () => {
+    // The mutation this test exists to catch. The old code returned
+    // 'stage_threw' here, which is a different condition with a different fix:
+    // an operator following it would debug a stage that works.
+    assert.equal(asStageCode('something_order_ts_grew_a_new_code'), 'unrecognised_stage_code');
+    // And it must not be one of the four either, or the same lie in a new coat.
+    assert.ok(!KNOWN.includes(asStageCode('something_order_ts_grew_a_new_code') as never));
+  });
+
+  it('never returns undefined for a string, so a failure is never silently dropped', () => {
+    for (const code of [...KNOWN, '', 'null', 'undefined', 'STAGE_THREW']) {
+      const out = asStageCode(code);
+      assert.notEqual(out, undefined, `code ${JSON.stringify(code)} was dropped`);
+      assert.ok(typeof out === 'string' && out.length > 0);
+    }
+  });
+
+  it('is case-sensitive, so a renamed code surfaces rather than resolving by luck', () => {
+    assert.equal(asStageCode('Stage_Threw'), 'unrecognised_stage_code');
+  });
 });

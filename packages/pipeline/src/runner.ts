@@ -58,12 +58,34 @@ import type { Tier0Stage } from './stage.js';
  * governance-critical caller into fail-closed halting.
  */
 
-/** The machine-readable codes a stage result can carry. No message, no stack. */
+/**
+ * The machine-readable codes a stage result can carry. No message, no stack.
+ *
+ * One code per *actionable* condition, which is the property that makes the
+ * code worth having. A code that stands for two conditions is a code an operator
+ * has to disambiguate by hand from the `message`, and `message` is free text
+ * that nobody has ever written a dashboard against:
+ *
+ * - `stage_threw` -- the stage's `run` raised. The remedy is in the stage's own
+ *   implementation, or in `policy.pipeline.stages`, which is where an operator
+ *   can remove it from the run.
+ * - `prefix_reordered` -- the stage moved or rewrote a cacheable block inside
+ *   the provider's cached prefix. Distinct from a throw on purpose: this is
+ *   decisions R4, the one that destroys the cache economics, and it recurs
+ *   every turn because the offending input recurs every turn.
+ * - `not_a_lossy_context` / `not_a_context_state` -- the stage returned a
+ *   forged state. The stage's declared return type is a lie, which is a
+ *   different bug from the same signature raising.
+ * - `unrecognised_stage_code` -- `order.ts` produced a code this runner does not
+ *   know. Nothing ran wrongly; this runner's own vocabulary is out of date, and
+ *   that has to be visible rather than folded into `stage_threw`.
+ */
 export type StageErrorCode =
   | 'stage_threw'
   | 'prefix_reordered'
   | 'not_a_lossy_context'
-  | 'not_a_context_state';
+  | 'not_a_context_state'
+  | 'unrecognised_stage_code';
 
 /** One stage's run, sized for telemetry: identity, verdict, cost, verdict reason. */
 export interface StageResult {
@@ -134,17 +156,41 @@ const asTier0 = (stage: LossyStage): Tier0Stage<undefined> => ({
 
 /**
  * `runStageFailOpen` decides lossy failure with a `string` code; this runner
- * publishes a closed, typed set so telemetry sinks never have to guess. A code
- * this runner does not know still surfaces as `stage_threw` rather than being
- * dropped, so nothing is ever reported as "ok" by accident.
+ * publishes a closed, typed set so telemetry sinks never have to guess.
+ *
+ * Exported because the gateway reports the same conditions on the same
+ * vocabulary: `runTier0` hands back `StageRun.code` as a bare `string`, and the
+ * gateway has to narrow it somewhere. Two copies of this table would be two
+ * answers to "what codes exist", which is the defect P0-1 is about.
+ *
+ * ## Why `unrecognised_stage_code` exists
+ *
+ * The old version ended in `return 'stage_threw'`, on the reasoning that an
+ * unknown code "still surfaces rather than being dropped, so nothing is ever
+ * reported as ok by accident". True, and it is the whole problem: it surfaces a
+ * condition this file has never heard of *as a throw*, which is a different
+ * condition with a different fix. `order.ts` grows a code, every new failure
+ * silently becomes `stage_threw`, and an operator is sent to a stage that is
+ * working perfectly.
+ *
+ * Note the one reachable path that does not need a future `order.ts` change:
+ * this function is public, so a caller narrowing a `StageRun.code` it did not
+ * produce can hand it anything.
  */
-const asStageCode = (code: string | undefined): StageErrorCode | undefined => {
-  if (code === undefined) return undefined;
-  if (code === 'stage_threw' || code === 'prefix_reordered' || code === 'not_a_lossy_context') {
-    return code;
+export function asStageCode(code: string | undefined): StageErrorCode | undefined {
+  switch (code) {
+    case undefined:
+      return undefined;
+    case 'stage_threw':
+    case 'prefix_reordered':
+    case 'not_a_lossy_context':
+    case 'not_a_context_state':
+    case 'unrecognised_stage_code':
+      return code;
+    default:
+      return 'unrecognised_stage_code';
   }
-  return 'stage_threw';
-};
+}
 
 /**
  * The total-stage analog of `isLossyContext`. A `TotalStage` is lossless, so

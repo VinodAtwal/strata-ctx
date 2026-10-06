@@ -259,8 +259,6 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'pipeline/isTailProtected': 'recency.ts:118; the protection check is inlined in recencyTail',
   'pipeline/recencyTail': 'recency.ts:58; no reachable module reads a recency tail',
   'pipeline/retainTail': 'self-gist.ts:487; no reachable module retains a tail',
-  'pipeline/runPipeline':
-    'runner.ts:201; the gateway calls runTier0 (order.ts:211) at server.ts:448, so the seven-stage runner never runs',
   'pipeline/shouldSelfGist': 'self-gist.ts:965; no reachable module asks whether to self-gist',
   'pipeline/triggerFor': 'trigger.ts:160; the trigger is decided inline at the call site',
 
@@ -1018,10 +1016,13 @@ test('a test-only caller does not make an operator look wired, in the real tree'
   assert.equal(entry.wired, false);
   assert.equal(entry.confidence, 'none');
 
-  // runPipeline is called from packages/pipeline/test/runner.test.ts only.
-  const runner = ledger.entries.find((e) => e.name === 'runPipeline');
-  assert.ok(runner !== undefined);
-  assert.equal(runner.wired, false);
+  // diffCachePrefix is called from packages/pipeline/test/cache-prefix.test.ts
+  // only; runPipeline used to be the example here and stopped being one when
+  // C-13 wired the tunnel through it at server.ts:510.
+  const diff = ledger.entries.find((e) => e.name === 'diffCachePrefix');
+  assert.ok(diff !== undefined);
+  assert.equal(diff.wired, false);
+  assert.equal(diff.confidence, 'none');
 });
 
 test('a prose mention does not make an operator look wired, in the real tree', () => {

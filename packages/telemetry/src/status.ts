@@ -777,10 +777,15 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
         break;
       }
       case 'error': {
-        // Also retained. `stage_failed_open` and `artifact_write_refused` are
-        // the two codes docs/operations.md factor 5 names as degradation that
-        // nothing surfaces, and both arrive as `error` events; a switch that
-        // broke on them discarded the only record that the caller felt nothing.
+        // Also retained. Every code docs/operations.md factor 5 names as
+        // degradation arrives as an `error` event; a switch that broke on them
+        // discarded the only record that the caller felt nothing.
+        //
+        // `byStage` is only as good as the attribution it is fed, and until
+        // P0-1 every event here arrived as `stage: 'pin'` on `runId: 'unknown'`
+        // -- so these counts were a tally of which *code* fired and nothing
+        // else. The gateway now attributes each failure to the stage that
+        // raised, so the counts mean what the field says.
         errorTotal += 1;
         errorByCode[event.code] = (errorByCode[event.code] ?? 0) + 1;
         errorByStage[event.stage] = (errorByStage[event.stage] ?? 0) + 1;

@@ -1,16 +1,17 @@
 import { Server, type IncomingMessage, type RequestListener, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { Readable } from 'node:stream';
-import type { ContextState, PinDefect, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
+import type { ContextState, LossyStageName, PinDefect, StageName, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
 import {
   enforcePins,
+  type PinApplication,
   pinDrift,
   pinSetText,
   runId,
   sha256,
   StrataPolicySchema,
 } from '@strata-ctx/core-types';
-import { runTier0, type Tier0Result } from '@strata-ctx/pipeline';
+import { asStageCode, runPipeline, runTier0, type StageErrorCode, type Tier0Result } from '@strata-ctx/pipeline';
 import type { PendingArtifact } from '@strata-ctx/pipeline';
 import { ArtifactStore } from '@strata-ctx/security';
 import { DEFAULT_TAIL_BYTES, pipeSseUpstream } from './sse.js';
@@ -199,8 +200,223 @@ const sendJson = (
   res.end(JSON.stringify(body));
 };
 
-const fail = (d: Dispatcher, code: string, message: string, failedOpen: boolean): void => {
-  d.rt.opts.telemetry?.({ type: 'error', runId: 'unknown', stage: 'pin', code, message, failedOpen });
+/* ------------------------------------------------------------------ failures
+ *
+ * P0-1. Three things used to be wrong about every failure this file reported,
+ * and all three made `strata status`'s `errors.byStage` and `perRequest.byRun`
+ * unreadable:
+ *
+ * 1. `runId` was the literal `'unknown'` for every failure, so no error could be
+ *    joined to the run that produced it. It is now the run's real id, or the
+ *    `NO_RUN` sentinel when no run existed yet.
+ * 2. `stage` was the literal `'pin'` for every failure. A stage that threw, a
+ *    body that was too large, an unreachable upstream and a forced shutdown all
+ *    landed in the bucket of the one stage whose failure is a safety signal --
+ *    so `byStage.pin` counted things that had nothing to do with pinning, and
+ *    `byStage.truncate` was silently always zero.
+ * 3. The cause was flattened. `stage_threw`, `prefix_reordered` and
+ *    `not_a_lossy_context` all arrived as one `code` with the real cause stuffed
+ *    into `message`, where no dashboard can reach it.
+ *
+ * ## The sentinels, and why they are not `undefined`
+ *
+ * Two failures genuinely have no run and no stage: a request the gateway refuses
+ * before it can parse it, and a lifecycle event with no request at all. Inventing
+ * a value for either would put the lie back, so both are named:
+ *
+ * - `NO_RUN` says *there was no run*, where `'unknown'` claimed there was one and
+ *   the gateway had lost track of it. `EMPTY_STATE` above already mints
+ *   `runId('none')` for the same reason.
+ * - `NO_STAGE` is the honest part and the dishonest part, and it needs stating
+ *   plainly. `TelemetryEvent`'s `error.stage` is `StageName`, a closed
+ *   seven-member set in the frozen contract
+ *   (`packages/core-types/src/policy.ts` -- `StageNameSchema`), and it has no
+ *   member meaning "not a stage". `stage: 'unknown'` does not compile against
+ *   the frozen type, so a truthful sentinel is not available without unfreezing
+ *   the contract (AGENTS.md §1, §10).
+ *
+ *   `serialize` is the deliberate pick and it is a bucket, not a claim. It is the
+ *   one member of the set that names the gateway's own request/response plumbing
+ *   rather than a transform of the context, which is true of the four
+ *   request-refusal codes below and is the least misleading home for the
+ *   lifecycle codes. What it does *not* claim is that the egress adapter ran and
+ *   failed: `errors.byCode` is what separates the two populations in this
+ *   bucket, and `adapter_unavailable` -- which genuinely *is* a serialize-stage
+ *   failure -- reports its own condition there. **When `StageNameSchema` gains a
+ *   non-stage member, this constant is the only thing that changes.**
+ *
+ * ## What is deliberately not here
+ *
+ * A serialised exception. `code` is a closed set (below) and `StageErrorCode` is
+ * forwarded rather than rebuilt, so nothing a stage threw can become a code.
+ * `message` is composed from constants, a stage name, a provider name and a
+ * citation; the four codes that already quoted `detailOf(err)` keep doing so, in
+ * a `cause:` tail, because removing an operator's only view of the underlying
+ * error is a worse trade than keeping text that `telemetry/src/redact.ts` already
+ * scrubs on the way into every sink.
+ */
+
+/** The closed set of codes this file can emit. Anything else is a bug here. */
+type GatewayFailureCode = StageErrorCode | RequestFailureCode;
+
+/**
+ * Codes for conditions that are not a pipeline stage's fault. Each one is a
+ * single condition with a single remedy, which is the property the whole set is
+ * built for: two conditions under one code means an operator has to read prose to
+ * tell them apart, and prose is not a thing a monitor can count.
+ */
+type RequestFailureCode =
+  /** The provider this build routes to has no adapter registered. A build/config gap. */
+  | 'adapter_unavailable'
+  /** The client sent more than `MAX_BODY_BYTES`. Refused before parsing. */
+  | 'body_too_large'
+  /** The body is not JSON. The provider would reject it too. */
+  | 'bad_request'
+  /** The upstream could not be reached. No fail-open: there is nowhere to fail open to. */
+  | 'upstream_unreachable'
+  /** A `artifact://` pointer was not backed by bytes on disk. See `persistPending`. */
+  | 'artifact_write_refused'
+  /** The request pipeline raised; the original bytes went upstream unprocessed. */
+  | 'pipeline_failed_open'
+  /** An exception escaped the whole request handler. A bug in the gateway. */
+  | 'unhandled'
+  /** `shutdown()` was called. Lifecycle, not a request. */
+  | 'shutdown_started'
+  /** The drain budget expired and sockets were destroyed. Lifecycle, not a request. */
+  | 'shutdown_forced';
+
+/** See the block comment above: no run existed when this failed. */
+const NO_RUN = 'no-run';
+
+/** See the block comment above: no stage owns this. Retire when `StageNameSchema` allows. */
+const NO_STAGE: StageName = 'serialize';
+
+/**
+ * Where a failure happened and which run it belongs to.
+ *
+ * Mutable, and updated in place as a request advances, because the alternative is
+ * every intermediate function returning a pair nobody else needs. One object per
+ * request, created in the request wrapper -- deliberately not a field on
+ * `Dispatcher`, where two in-flight requests would write each other's
+ * attribution and a `by run` summary would be a coin toss.
+ */
+interface Attribution {
+  runId: string;
+  stage: StageName;
+}
+
+const attribute = (where: Attribution, stage: StageName, runId?: string): void => {
+  where.stage = stage;
+  if (runId !== undefined) where.runId = runId;
+};
+
+/**
+ * The attribution for an event that belongs to the process rather than to a
+ * request: both sentinels, said out loud.
+ *
+ * Frozen and shared, which is safe precisely because no request ever touches it
+ * -- `fail` only reads. The per-request `Attribution` is the opposite: mutable,
+ * one per request, never on the dispatcher.
+ */
+const LIFECYCLE: Attribution = Object.freeze({ runId: NO_RUN, stage: NO_STAGE });
+
+/**
+ * The one place an `error` event is emitted from.
+ *
+ * `where` is a parameter rather than something `fail` infers, because inference
+ * is what produced the bug: there is no honest default for either field, and a
+ * default that has to be overridden at every call site is a default that will be
+ * forgotten at the thirteenth.
+ */
+const fail = (
+  d: Dispatcher,
+  where: Attribution,
+  code: GatewayFailureCode,
+  message: string,
+  failedOpen: boolean,
+): void => {
+  d.rt.opts.telemetry?.({ type: 'error', runId: where.runId, stage: where.stage, code, message, failedOpen });
+};
+
+/**
+ * Where each remedy points.
+ *
+ * Every one of these is checked against the tree by
+ * `packages/gateway/test/server.test.ts` -- the file has to exist and the symbol
+ * has to still be declared in it -- because a citation that has rotted is worse
+ * than none. It sends an operator to the right file and the wrong function, and
+ * it looks right while doing it. The line number is here because
+ * `docs/operations.md` Factor 6 asks for a file *and line*; the symbol is here
+ * because AGENTS.md §9 records that line numbers rot, so the test asserts on the
+ * symbol and the line is only ever the hint.
+ */
+const REMEDY = {
+  bodyCeiling: { at: 'packages/gateway/src/server.ts:133', symbol: 'MAX_BODY_BYTES' },
+  jsonParse: { at: 'packages/gateway/src/server.ts:651', symbol: 'JSON.parse(body.text)' },
+  upstreamFetch: { at: 'packages/gateway/src/server.ts:539', symbol: 'upstream = await fetch' },
+  adapterResolution: { at: 'packages/gateway/src/routing.ts:137', symbol: 'resolveAdapter' },
+  lossyFailOpen: { at: 'packages/pipeline/src/order.ts:144', symbol: 'runStageFailOpen' },
+  totalFailOpen: { at: 'packages/pipeline/src/runner.ts:229', symbol: 'isolateTotal' },
+  ingressPipeline: { at: 'packages/gateway/src/server.ts:597', symbol: 'handleIngress' },
+  lastDefence: { at: 'packages/gateway/src/server.ts:1288', symbol: "'unhandled'" },
+  drainBudget: { at: 'packages/gateway/src/server.ts:1166', symbol: "'shutdown_forced'" },
+} as const;
+
+/** `file:line (symbol)` -- the shape operations.md Factor 6 asks for. */
+const cite = (anchor: { readonly at: string; readonly symbol: string }): string =>
+  `${anchor.at} (${anchor.symbol})`;
+
+const isLossyStageName = (stage: StageName): stage is LossyStageName => stage !== 'pin' && stage !== 'serialize';
+
+/**
+ * One message per cause, with the remedy in it.
+ *
+ * `docs/operations.md` Factor 6: "a refusal that does not name the knob that
+ * changes it is a dead end." `docs/maturity.md` records the same gap as unsatisfied
+ * across all cases. So every string here names either a config knob an operator
+ * can turn or the file and line to read -- and the stage is named in the prose,
+ * because `stage_failed_open` used to put the stage in the `code` and nothing
+ * else, which is a fact no monitor can group on.
+ *
+ * Two parts, and they are not interchangeable. The knob is what an operator with
+ * a running gateway acts on (`policy.pipeline.stages` removes a stage from the
+ * run without a rebuild). The citation is what a developer follows when the knob
+ * is not the answer.
+ */
+const stageFailureMessage = (stage: StageName, code: StageErrorCode): string => {
+  const where = isLossyStageName(stage) ? REMEDY.lossyFailOpen : REMEDY.totalFailOpen;
+  const what: Record<StageErrorCode, string> = {
+    stage_threw: `${stage} raised, so its output was discarded and its input went upstream unmodified: this context was NOT ${stage === 'truncate' ? 'truncated' : stage === 'dedupe' ? 'deduped' : stage === 'triage' ? 'triaged' : 'transformed'}`,
+    prefix_reordered: `${stage} moved a cacheable block inside the provider's cached prefix, so the prompt cache was destroyed for the rest of this prefix (decisions R4) and the stage was reverted`,
+    not_a_lossy_context: `${stage} returned something that is not a LossyContext, so its declared return type is wrong and its output was discarded`,
+    not_a_context_state: `${stage} returned something that is not a ContextState, so its declared return type is wrong and its output was discarded`,
+    unrecognised_stage_code: `${stage} failed with a cause this gateway does not recognise, so the real condition was not reported`,
+  };
+  return (
+    `${what[code]}. Remedy: drop "${stage}" from policy.pipeline.stages to stop it running, ` +
+    `or fix the stage; fail-open was decided in ${cite(where)}.`
+  );
+};
+
+/**
+ * The turn-level report: the pipeline raised and the original bytes went upstream.
+ *
+ * Deliberately one code rather than one per phase. The `stage` field already says
+ * which phase -- that is what it is for, and adding `parse_failed` /
+ * `tier0_failed` would be a second answer to a question the event already
+ * answers. What this code adds is the one thing the stage cannot: that the
+ * request was forwarded *unprocessed*, which is degradation the caller never
+ * sees.
+ */
+const pipelineFailureMessage = (err: unknown, stage: StageName): string => {
+  const scope = stage === NO_STAGE ? 'no stage owns this failure' : `it failed in "${stage}"`;
+  return (
+    `the request pipeline raised (${scope}), so the original request body was forwarded upstream ` +
+    `unprocessed and no pin or tier cap was applied to it. Remedy: read the stage named above -- the ` +
+    `ingress pipeline runs in ${cite(REMEDY.ingressPipeline)} -- and fix it, or set ` +
+    `policy.governance.pinning to "off" so the log stops implying a guarantee it did not apply. ` +
+    `(cause: ${detailOf(err)})`
+  );
 };
 
 /**
@@ -314,6 +530,7 @@ const forward = async (
   req: IncomingMessage,
   res: ServerResponse,
   d: Dispatcher,
+  where: Attribution,
   body: string,
   headers: Record<string, string>,
 ): Promise<void> => {
@@ -329,7 +546,21 @@ const forward = async (
     // Not a fail-open: there is no provider to fail open *to*. The context is
     // not lost, the request simply did not happen, and saying so is better than
     // a truncated response.
-    fail(d, 'upstream_unreachable', detailOf(err), false);
+    //
+    // `where.runId` is the request's real run when Tier 0 got far enough to mint
+    // one, and `NO_RUN` when it did not -- either is a fact, where the old
+    // `'unknown'` was a guess that happened to be true of neither.
+    attribute(where, NO_STAGE);
+    fail(
+      d,
+      where,
+      'upstream_unreachable',
+      `the provider at ${d.rt.opts.upstream} could not be reached, so the request did not happen at all -- ` +
+        `the context is not lost, there is simply no answer. Remedy: check that the provider is up and ` +
+        `that GatewayOptions.upstream is the URL you meant; the fetch is at ${cite(REMEDY.upstreamFetch)}. ` +
+        `(cause: ${detailOf(err)})`,
+      false,
+    );
     sendJson(res, 502, { error: 'upstream_unreachable', detail: detailOf(err) });
     return;
   }
@@ -368,13 +599,28 @@ const handleIngress = async (
   req: IncomingMessage,
   res: ServerResponse,
   d: Dispatcher,
+  where: Attribution,
   sessionId: string,
 ): Promise<void> => {
   const adapter = d.rt.adapter;
   if (adapter === undefined) {
     // 501, not 404 and not 502: the route exists, the operator asked for a
     // provider this build has no adapter for, and that is fixable by config.
-    fail(d, 'adapter_unavailable', `no adapter registered for provider "${d.rt.provider}"`, false);
+    //
+    // `serialize` is the truthful stage here and not the NO_STAGE bucket: the
+    // egress adapter *is* the serialize stage, and it is missing. Nothing ran,
+    // so `runId` stays `NO_RUN`.
+    attribute(where, 'serialize');
+    fail(
+      d,
+      where,
+      'adapter_unavailable',
+      `this build routes provider "${d.rt.provider}" but no adapter is registered for it, so no request ` +
+        `in this provider's wire format can be served. Remedy: pass one in GatewayOptions.adapters, or ` +
+        `set GatewayOptions.provider to a provider this build has an adapter for; adapters are resolved ` +
+        `at ${cite(REMEDY.adapterResolution)}.`,
+      false,
+    );
     sendJson(res, 501, {
       error: 'adapter_unavailable',
       detail: `no adapter is registered for provider "${d.rt.provider}"`,
@@ -385,7 +631,18 @@ const handleIngress = async (
 
   const body = await readBody(req);
   if (!body.ok) {
-    fail(d, 'body_too_large', `request body exceeds ${MAX_BODY_BYTES} bytes`, false);
+    // Refused while reading, so no bytes of this request were ever interpreted.
+    attribute(where, NO_STAGE);
+    fail(
+      d,
+      where,
+      'body_too_large',
+      `the client sent more than the ${MAX_BODY_BYTES}-byte request ceiling, so the body was abandoned ` +
+        `mid-read and never parsed. Remedy: send a smaller request, or raise MAX_BODY_BYTES at ` +
+        `${cite(REMEDY.bodyCeiling)} -- it is 64 MiB because image-bearing requests are the only thing ` +
+        `expected to be large and they have not been measured yet (TODO(WS-A, A-7)).`,
+      false,
+    );
     sendJson(res, 413, { error: 'payload_too_large', limit: MAX_BODY_BYTES });
     return;
   }
@@ -396,7 +653,16 @@ const handleIngress = async (
   } catch (err) {
     // 400 and not 502: the provider would reject this too, and answering here
     // costs a round trip instead of a token spend.
-    fail(d, 'bad_request', `malformed JSON body: ${detailOf(err)}`, false);
+    attribute(where, NO_STAGE);
+    fail(
+      d,
+      where,
+      'bad_request',
+      `the request body is not JSON, so it was refused before any stage ran and never reached the ` +
+        `provider. Remedy: fix the client that sent it; the gateway parses the body at ` +
+        `${cite(REMEDY.jsonParse)}. (cause: ${detailOf(err)})`,
+      false,
+    );
     sendJson(res, 400, { error: 'bad_request', detail: 'request body is not valid JSON' });
     return;
   }
@@ -423,7 +689,14 @@ const handleIngress = async (
     // stays byte-identical for a given input either way.
     // TODO(WS-A, A-8): make the turn counter actually advance; nothing in
     // Wave 0 owns it yet.
+    //
+    // The stage is set *before* the call, not after: a `toCanonical` that raises
+    // is a `serialize` failure, and attributing it to the stage it was about to
+    // enter is the whole point of threading the context. The runId comes after,
+    // because `toCanonical` is what mints it -- before it, the truth is `NO_RUN`.
+    attribute(where, 'serialize');
     const before = adapter.toCanonical(parsed, Date.now());
+    where.runId = before.runId;
     blocksIn = before.messages.length;
 
     // Tier 0 (partition -> dedupe, truncate, triage -> restore) -> pin.
@@ -445,11 +718,21 @@ const handleIngress = async (
     // already the documented intent -- `order.ts` describes Tier 0 as running on
     // every outbound request -- and this request path was simply not honoring it.
     const durable = d.rt.opts.artifactRoot !== undefined;
+    // `NO_STAGE`, and deliberately not `dedupe`. `runTier0` isolates each of its
+    // three stages itself, so anything that reaches the catch below left the
+    // runner, not a stage -- and guessing one of the three would send an
+    // operator to a stage that worked. `NO_STAGE` says the truth and the code
+    // still says it was the pipeline.
+    attribute(where, NO_STAGE, before.runId);
     let tier0 = runTier0(before, d.rt.opts.policy, { durable });
     if (tier0.pending.length > 0) {
       // Tier 0 is synchronous, so the bytes it dropped are already out of the
       // messages and nothing has written them yet. Until this returns, the
       // state about to be published is a set of pointers to nothing.
+      //
+      // `truncate` is the truthful stage, not a guess: `pointer.ts` runs inside
+      // the truncate stage and `runTier0` is the only producer of `pending`.
+      attribute(where, 'truncate', before.runId);
       let refusal: string | undefined;
       try {
         const store = await d.rt.artifacts();
@@ -459,14 +742,15 @@ const handleIngress = async (
         refusal = `artifact store unavailable: ${e instanceof Error ? e.message : String(e)}`;
       }
       if (refusal !== undefined) {
-        d.rt.opts.telemetry?.({
-          type: 'error',
-          runId: before.runId,
-          stage: 'truncate',
-          code: 'artifact_write_refused',
-          message: refusal,
-          failedOpen: true,
-        });
+        fail(
+          d,
+          where,
+          'artifact_write_refused',
+          `${refusal}. Remedy: the pointer was not published and the read stayed inline, so no context was ` +
+            `lost -- check GatewayOptions.artifactRoot is a writable directory, or leave it unset to take ` +
+            `the byte cap instead of pointer-ization.`,
+          true,
+        );
         // Re-run rather than un-pointer-ize what came back: the cap stage has
         // already run, and putting the text back afterwards would leave an
         // oversized block past its cap with nothing downstream to catch it. A
@@ -476,15 +760,84 @@ const handleIngress = async (
         tier0 = runTier0(before, d.rt.opts.policy, { durable: false });
       }
     }
-    const applied = enforcePins(tier0.state, d.rt.opts.policy);
-    state = applied.state;
-    expected = applied.expected;
+    // The tunnel: everything after Tier 0 that this package does not own, run
+    // through the generic runner so the seam exists in production (C-13).
+    //
+    // `lossyStages: {}` is the load-bearing argument. Tier 0 already ran above,
+    // and `runPipeline` defaults to the full `LOSSY_TIER0_STAGES` registry when
+    // that field is absent -- so omitting it would run dedupe, truncate, and
+    // triage a second time over an already-restored state. That is not a
+    // duplicate costing tokens; a second truncate pass sees a context that has
+    // already been capped and could drop content the first pass deliberately
+    // kept. The empty registry means "no lossy stages", which is the truth: the
+    // tunnel contributes total stages only.
+    //
+    // `pin` is adapted from `enforcePins` because the two signatures disagree.
+    // `TotalStage.run` returns a `ContextState`; `enforcePins` returns a
+    // `PinApplication` that also carries `expected` and `inboundGovernance`,
+    // which the drift telemetry below needs. Rather than widen the frozen
+    // `TotalStage` port or add a second return channel to it, the adapter
+    // stashes the application on the way past. One implementation, two views --
+    // the same concession `runner.ts` makes when it projects `LossyStage` onto
+    // `Tier0Stage`.
+    //
+    // A pin that does not run is NOT allowed to pass silently, and the reason is
+    // specific to this stage. The other stages here may revert to their input
+    // because their input is a superset: a truncated context still holds the
+    // content, just uncapped. Reverting `pin` loses the constraint text the
+    // policy declares, so a request would go out missing a hard-safety pin
+    // while reporting success and `x-strata-pinned: 1`. It is not that the
+    // revert strips governance -- `isolateTotal` hands back pin's input, and
+    // `restoreHeld` has already put the inbound governance blocks back in it.
+    // What is missing is the pin, which is synthesized and exists nowhere else.
+    //
+    // Failing the turn instead of shipping it is not strictly better on content:
+    // the outer catch forwards the original bytes, which carry no pin either.
+    // It is better on honesty. The turn reports `pipeline_failed_open` with the
+    // real cause and sets `x-strata-fail-open: 1`, so an operator sees a broken
+    // pin instead of a request that quietly lost one. Without this guard the
+    // next line throws a TypeError on `pinned.expected` and lands in the same
+    // catch reporting "cannot read properties of undefined" -- which attributes
+    // a pin failure to something that is not the pin.
+    //
+    // `onStage` is what makes the cause reportable. `runPipeline` isolates the
+    // stage and keeps going, so without this hook a pin that failed open is
+    // indistinguishable from the turn-level catch below: one code, one stage,
+    // and the typed cause -- `stage_threw` vs `not_a_context_state` -- discarded.
+    // Two events for one failure is the right count, not double-counting: the
+    // stage event says which stage is broken and how, the turn event says the
+    // request went upstream with no pin on it. They have different remedies.
+    let pinned: PinApplication | undefined;
+    attribute(where, 'pin', before.runId);
+    const tunnel = runPipeline(tier0.state, {
+      policy: d.rt.opts.policy,
+      lossyStages: {},
+      totalStages: {
+        pin: {
+          name: 'pin',
+          run: (s) => {
+            pinned = enforcePins(s, d.rt.opts.policy);
+            return pinned.state;
+          },
+        },
+      },
+      onStage: (result) => {
+        const code = asStageCode(result.code);
+        if (code === undefined) return;
+        fail(d, where, code, stageFailureMessage(result.name, code), true);
+      },
+    });
+    if (pinned === undefined) {
+      throw new Error('pin stage did not run: enforcePins threw or the tunnel returned a non-ContextState');
+    }
+    state = tunnel.state;
+    expected = pinned.expected;
     tier0Run = tier0;
 
     // Drift is measured against what we sent last turn, not against policy: on
     // turn 1 nothing was sent, and "everything is missing" is not a finding.
     if (session.lastSent.length > 0) {
-      const drift = pinDrift(session.lastSent, applied.inboundGovernance);
+      const drift = pinDrift(session.lastSent, pinned.inboundGovernance);
       if (!drift.ok) {
         d.rt.opts.telemetry?.({
           type: 'violation',
@@ -536,11 +889,20 @@ const handleIngress = async (
         durationMs: stageRun.telemetry.durationMs,
         changed: stageRun.telemetry.changed,
       });
-      // A stage that failed open is reported with its code rather than as a
-      // normal saving: the context went upstream unmodified, so a report that
-      // counted it as a reduction would be claiming work that did not happen.
+      // A stage that failed open is reported with its cause, not flattened into
+      // one code: the context went upstream unmodified, so a report that counted
+      // it as a reduction would be claiming work that did not happen -- and a
+      // report that called three different failures `stage_failed_open` would be
+      // claiming a cause it does not know. `asStageCode` is the pipeline's own
+      // closed set, so `stage_threw`, `prefix_reordered` and `not_a_lossy_context`
+      // stay three counts here and a code this gateway has never heard of
+      // becomes `unrecognised_stage_code` rather than a throw.
       if (stageRun.failedOpen) {
-        fail(d, 'stage_failed_open', stageRun.code ?? stageRun.name, true);
+        const code = asStageCode(stageRun.code);
+        if (code !== undefined) {
+          attribute(where, stageRun.name, state.runId);
+          fail(d, where, code, stageFailureMessage(stageRun.name, code), true);
+        }
       }
     }
     if (tier0Run.prefixInvalidated) {
@@ -557,6 +919,10 @@ const handleIngress = async (
     // Tier 3. Opt-in twice over: the operator named a model in the config *and*
     // set `tokenCompression: 'local'`. `state` is the post-Tier-0 context, so the
     // span narrated is the one the next turn will actually be answered from.
+    //
+    // `compress` because that is this stage's slot in `PIPELINE_STAGE_ORDER` and
+    // a failure here has to be attributed to something that ran.
+    attribute(where, 'compress', state.runId);
     if (d.rt.opts.policy.pipeline.tokenCompression === 'local') {
       await runTier3({
         state,
@@ -571,15 +937,19 @@ const handleIngress = async (
       });
     }
 
+    attribute(where, 'serialize', state.runId);
     outbound = adapter.fromCanonical(state, parsed);
   } catch (err) {
     // Fail open, and fail open *properly*: the original bytes go upstream
     // untouched. Losing the user's context to save tokens is unacceptable, and a
     // gateway that 500s is a gateway the agent routes around.
-    fail(d, 'pipeline_failed_open', detailOf(err), true);
+    //
+    // `where` is whatever the request had reached, so this reports the stage that
+    // raised rather than the one that happened to be hardcoded.
+    fail(d, where, 'pipeline_failed_open', pipelineFailureMessage(err, where.stage), true);
     // The turn is not advanced: no canonical state was produced, so counting it
     // would leave the session claiming a turn that never happened.
-    await forward(req, res, d, body.text, { 'x-strata-fail-open': '1' });
+    await forward(req, res, d, where, body.text, { 'x-strata-fail-open': '1' });
     return;
   }
 
@@ -598,7 +968,7 @@ const handleIngress = async (
     changed: true,
   });
 
-  await forward(req, res, d, JSON.stringify(outbound), { 'x-strata-pinned': String(expected.length) });
+  await forward(req, res, d, where, JSON.stringify(outbound), { 'x-strata-pinned': String(expected.length) });
 };
 
 /**
@@ -627,6 +997,7 @@ const route = async (
   req: IncomingMessage,
   res: ServerResponse,
   d: Dispatcher,
+  where: Attribution,
 ): Promise<void> => {
   const match = matchRoute(req.method ?? 'GET', req.url);
 
@@ -656,7 +1027,7 @@ const route = async (
       handleStatus(res, d);
       return;
     case 'ingress':
-      await handleIngress(req, res, d, sessionIdOf(req));
+      await handleIngress(req, res, d, where, sessionIdOf(req));
       return;
   }
 };
@@ -785,10 +1156,19 @@ class GatewayHttpServer extends Server {
         resolve();
       };
       const timer = setTimeout(() => {
+        // A lifecycle event: there is no request and therefore no run, and no
+        // stage -- this is the process shutting down, not the pipeline. Reported
+        // through `fail` so it is the one emit path, but with the sentinels said
+        // out loud rather than dressed up as a pin failure on an unknown run.
         fail(
           this.#d,
+          LIFECYCLE,
           'shutdown_forced',
-          `drain budget of ${budget}ms expired with ${this.#d.inflight} in-flight; sockets destroyed`,
+          `the drain budget of ${budget}ms expired with ${this.#d.inflight} request(s) still in flight, so ` +
+            `their sockets were destroyed and those callers got a truncated response. Remedy: raise ` +
+            `GatewayOptions.drainMs (or pass a larger budget to closeGracefully), or find out which of ` +
+            `the ${this.#d.inflight} caller(s) is holding a stream open; the budget is enforced at ` +
+            `${cite(REMEDY.drainBudget)}.`,
           false,
         );
         for (const socket of this.#sockets) socket.destroy();
@@ -804,14 +1184,16 @@ class GatewayHttpServer extends Server {
   }
 
   shutdown(reason: string): Promise<void> {
-    this.#d.rt.opts.telemetry?.({
-      type: 'error',
-      runId: 'unknown',
-      stage: 'pin',
-      code: 'shutdown_started',
-      message: reason,
-      failedOpen: false,
-    });
+    fail(
+      this.#d,
+      LIFECYCLE,
+      'shutdown_started',
+      `the gateway was asked to shut down (${reason}), so it stopped accepting connections and began ` +
+        `draining. Remedy: this is not a fault -- if it was not expected, the caller holding the server ` +
+        `called shutdown(); the drain budget is GatewayOptions.drainMs and the deadline is enforced at ` +
+        `${cite(REMEDY.drainBudget)}.`,
+      false,
+    );
     return this.closeGracefully();
   }
 
@@ -882,14 +1264,34 @@ export function createGateway(opts: GatewayOptions): Gateway {
   };
 
   const server = new GatewayHttpServer(d, (req, res) => {
+    // One attribution per request, allocated here so the last line of defence
+    // can name the stage the request had reached instead of guessing. Not on
+    // `Dispatcher`: two in-flight requests would write each other's attribution
+    // and every `by run` summary would be a coin toss.
+    const where: Attribution = { runId: NO_RUN, stage: NO_STAGE };
     void (async () => {
       try {
-        await route(req, res, d);
+        await route(req, res, d, where);
       } catch (err) {
         // The last line of defence. Everything above is written not to throw;
         // a throw that lands here is a bug, and a bug in a long-lived proxy
         // must not take down the process with every other in-flight request.
-        fail(d, 'unhandled', detailOf(err), true);
+        //
+        // `where.stage === NO_STAGE` is the load-bearing part of the message: it
+        // means the throw escaped before the request reached any stage, which is
+        // a different bug from one raised inside the pipeline and is worth
+        // saying rather than leaving the reader to guess from the code.
+        const escapedStage = where.stage === NO_STAGE ? 'before any pipeline stage ran' : `in "${where.stage}"`;
+        fail(
+          d,
+          where,
+          'unhandled',
+          `an exception escaped the request handler (${escapedStage}), which every layer above is written ` +
+            `not to do -- this is a bug in the gateway, not in the request. Remedy: nothing was configured ` +
+            `wrong and there is no knob for this; read the stack from the thrown error and fix the handler, ` +
+            `starting at ${cite(REMEDY.lastDefence)}. (cause: ${detailOf(err)})`,
+          true,
+        );
         if (!res.headersSent) {
           sendJson(res, 502, { error: 'gateway_failed_open', detail: detailOf(err) });
         } else {

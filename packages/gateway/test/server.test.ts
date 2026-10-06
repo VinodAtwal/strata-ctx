@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
+import { readFileSync } from 'node:fs';
 import { after, test } from 'node:test';
 
 import { pinSetText, runId, sha256, StrataPolicySchema, type StrataPolicy, type TelemetryEvent } from '@strata-ctx/core-types';
@@ -139,6 +140,96 @@ const post = (url: string, body: string, headers: Record<string, string> = {}): 
   fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body });
 
 const get = (url: string): Promise<Response> => fetch(url);
+
+// ------------------------------------------------- C-13: the tunnel is live
+//
+// `runTier0` is the wired path, so these cannot tell "the tunnel runs" from "the
+// old inline `enforcePins` runs" -- the pin is on the wire either way. Each test
+// below is pinned to something only the tunnel can produce.
+
+test('the pin stage runs through runPipeline, not an inline enforcePins', async () => {
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  await post(`${h.url}/v1/messages`, requestBody(''));
+
+  // `runPipeline` owns the cache-prefix accounting for total stages and reports
+  // it on the run. The inline call had no accounting to report, so the presence
+  // of a pin verdict naming the tunnel is the observable difference.
+  const stage = h.events.find((e) => e.type === 'stage' && e.stage === 'pin');
+  assert.ok(stage, 'the pin stage reported nothing');
+  assert.equal(stage?.type === 'stage' && stage.changed, true);
+
+  // And the state that left the adapter carries exactly one governance block:
+  // two would mean Tier 0's partition and the tunnel's pin both added one.
+  const sent = JSON.parse(up.calls[0]?.body ?? '{}') as { system?: { text: string }[] };
+  const text = (sent.system ?? []).map((s) => s.text).join('\n');
+  const occurrences = text.split(CONSTRAINT).length - 1;
+  assert.equal(occurrences, 1, `the constraint appears ${occurrences} times, so a stage double-applied it`);
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('the tunnel runs no lossy stage the policy disabled', async () => {
+  // `runPipeline` does not read `policy.pipeline.stages`. Its only gate is
+  // whether a name is present in the `lossyStages` registry it was handed, so a
+  // tunnel that omitted `lossyStages: {}` would fall back to the full Tier 0
+  // registry and truncate a context the policy had explicitly exempted --
+  // silently overriding an operator's configuration on every request.
+  //
+  // An earlier version of this test counted truncate stage events and passed
+  // with the mutation applied, because the tunnel is given no `onTelemetry` and
+  // so reports nothing of its own. Counting events cannot see a second run that
+  // is silent. The flood surviving is the observation that can.
+  const flood = 'D'.repeat(40_000);
+  const body = JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [
+      { role: 'user', content: 'refactor the uploader' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read', input: { path: 'a.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: flood }] },
+    ],
+  });
+  const noLossy = StrataPolicySchema.parse({ ...policy, pipeline: { stages: ['pin'] } });
+
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({ policy: noLossy }, up.url);
+  const res = await post(`${h.url}/v1/messages`, body);
+  assert.equal(res.status, 200);
+  assert.ok(
+    (up.calls[0]?.body ?? '').includes(flood),
+    'the tunnel truncated a block the policy had disabled, so it ignored policy.pipeline.stages',
+  );
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('the tunnel enforces the cap while policy leaves truncate enabled', async () => {
+  const flood = 'F'.repeat(40_000);
+  const body = JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [
+      { role: 'user', content: 'refactor the uploader' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'read', input: { path: 'a.ts' } }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: flood }] },
+    ],
+  });
+
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  const res = await post(`${h.url}/v1/messages`, body);
+  assert.equal(res.status, 200);
+  // Cut, not forwarded whole, and still governed: the cap applies while the pin
+  // survives it, which is the ordering property the tunnel has to preserve.
+  assert.equal((up.calls[0]?.body ?? '').includes(flood), false, 'truncate did not run');
+  const sent = JSON.parse(up.calls[0]?.body ?? '{}') as { system?: { text: string }[] };
+  assert.ok((sent.system ?? []).map((s) => s.text).join('\n').includes(CONSTRAINT), 'the pin did not survive the cap');
+  await h.gateway.closeGracefully();
+  await up.close();
+});
 
 // ------------------------------------------------------------------- health
 
@@ -400,9 +491,13 @@ test('an adapter that throws yields an unmodified passthrough, not a 502', async
   assert.equal(up.calls.length, 1);
   assert.equal(up.calls[0]?.body, body, 'byte-for-byte, not re-encoded');
   assert.equal(res.headers.get('x-strata-fail-open'), '1');
-  const err = h.events.find((e) => e.type === 'error');
+  const err = h.events.find((e) => e.type === 'error' && e.code === 'pipeline_failed_open');
   assert.equal(err?.type === 'error' && err.failedOpen, true);
-  assert.equal(err?.type === 'error' && err.message, 'adapter exploded');
+  // `toCanonical` is the adapter's ingress direction, so the stage that raised
+  // is `serialize` -- the slot `serialize` holds in PIPELINE_STAGE_ORDER. Not
+  // `pin`, which is what every failure in this file used to report.
+  assert.equal(err?.type === 'error' && err.stage, 'serialize');
+  assert.match(String(err?.type === 'error' && err.message), /cause: adapter exploded/);
   await h.gateway.closeGracefully();
   await up.close();
 });
@@ -550,7 +645,7 @@ test('closeGracecibly cannot hang: the drain budget force-closes', async () => {
   assert.ok(elapsed < 3_000, `shutdown took ${elapsed}ms, expected the 100ms budget`);
   const forced = h.events.find((e) => e.type === 'error' && e.code === 'shutdown_forced');
   assert.ok(forced, 'a forced shutdown is reported, not silent');
-  assert.match(String(forced?.type === 'error' && forced.message), /1 in-flight/);
+  assert.match(String(forced?.type === 'error' && forced.message), /1 request\(s\) still in flight/);
   await up.close();
 });
 
@@ -736,4 +831,294 @@ test('with the lossy stages disabled the request is forwarded byte-identical', a
   );
   await h.gateway.closeGracefully();
   await up.close();
+});
+
+// ------------------------------------------------- P0-1: attributable + actionable
+//
+// Falsification tests for docs/risk-analysis.md §5.1 P0-1.
+//
+// The defect was that `fail()` emitted `runId: 'unknown'`, `stage: 'pin'` for
+// every cause, and `asStageCode` funnelled four causes into one. So the tests
+// below are written as falsifications of the *old* behaviour:
+//
+//   1. Each cause this file can report produces a DISTINCT (code, stage, runId).
+//      Four causes, one code and one attribution would satisfy a test that only
+//      asserted "an error was reported" -- that is the test that let the defect
+//      through.
+//   2. The runId is the request's real run, never a sentinel.
+//   3. The stage is the stage that raised, never a default.
+//   4. Every message names a remedy (a knob, or a file:line that resolves).
+//
+// A "falsification test" in the §5.1 sense has to fail on the old code. Each
+// assertion below is annotated with which old behaviour it would have passed
+// anyway, so the ones that do not are identifiable.
+
+/** The error events a harness emitted, in order. */
+type ErrorEvent = Extract<TelemetryEvent, { type: 'error' }>;
+
+const errorsOf = (events: readonly TelemetryEvent[]): ErrorEvent[] =>
+  events.filter((e): e is ErrorEvent => e.type === 'error');
+
+const errorFor = (events: readonly TelemetryEvent[], code: string): ErrorEvent | undefined =>
+  events.find((e): e is ErrorEvent => e.type === 'error' && e.code === code);
+
+/**
+ * Every code this file can emit, with what it is supposed to mean.
+ *
+ * Not derived from the source: a test that reads the implementation's own table
+ * asserts that the table agrees with itself. This is the closed set, written out
+ * independently, so a code added without a decision here fails the suite.
+ */
+const CLOSED_CODES = [
+  // Stage causes, forwarded from the pipeline's typed set.
+  'stage_threw',
+  'prefix_reordered',
+  'not_a_lossy_context',
+  'not_a_context_state',
+  'unrecognised_stage_code',
+  // Conditions that are not a pipeline stage's fault.
+  'adapter_unavailable',
+  'body_too_large',
+  'bad_request',
+  'upstream_unreachable',
+  'artifact_write_refused',
+  'pipeline_failed_open',
+  'unhandled',
+  // Lifecycle.
+  'shutdown_started',
+  'shutdown_forced',
+] as const;
+
+/**
+ * Builds a gateway that reports a specific failure, returns the event, and
+ * leaves the operator's remedy to the caller to check.
+ *
+ * Each trigger is a real HTTP request or a real lifecycle call, not a stubbed
+ * emitter: the point is that the attribution is correct on the wire, not that a
+ * mock was called with the right object.
+ */
+interface FailureCase {
+  readonly name: string;
+  readonly code: string;
+  /** `true` when this case is expected to mint a real run. */
+  readonly realRun: boolean;
+  /** The stage that must own it, or null when the contract has no non-stage member. */
+  readonly stage: string;
+  run(): Promise<{ events: readonly TelemetryEvent[]; cleanup: () => Promise<void> }>;
+}
+
+/** A gateway whose adapter raises in `toCanonical`: the pipeline never starts. */
+const throwingAdapter = (what: string): Partial<GatewayOptions> => ({
+  adapters: {
+    anthropic: {
+      provider: 'anthropic',
+      supportsStreaming: false,
+      toCanonical: () => {
+        throw new Error(what);
+      },
+      fromCanonical: (s) => s,
+    },
+  },
+});
+
+test('P0-1: every distinct cause yields a distinct (code, stage, runId) triple', async () => {
+  // Four causes that the old code collapsed: the four the risk analysis names.
+  // Each is produced by a real request against a real gateway.
+  const cases: FailureCase[] = [];
+
+  // (a) The pipeline raised before a run existed -- the adapter's ingress
+  // direction (`toCanonical`) is the serialize stage's own implementation.
+  cases.push({
+    name: 'adapter ingress raised',
+    code: 'pipeline_failed_open',
+    realRun: false,
+    stage: 'serialize',
+    async run() {
+      const up = await startUpstream(echoJson);
+      const h = await startGateway(throwingAdapter('toCanonical exploded'));
+      await post(`${h.url}/v1/messages`, requestBody('hello'));
+      return { events: h.events, cleanup: async () => { await h.gateway.closeGracefully(); await up.close(); } };
+    },
+  });
+
+  // (b) The provider could not be reached. Not a fail-open: there is nowhere to
+  // fail open to, and reporting it as one would be the same class of lie.
+  cases.push({
+    name: 'upstream unreachable',
+    code: 'upstream_unreachable',
+    realRun: false,
+    stage: 'serialize',
+    async run() {
+      // Port 1 is reserved and nothing listens on it.
+      const h = await startGateway({}, 'http://127.0.0.1:1');
+      await post(`${h.url}/v1/messages`, requestBody('hello'));
+      return { events: h.events, cleanup: async () => { await h.gateway.closeGracefully(); } };
+    },
+  });
+
+  // (c) A client sent something that is not JSON. Refused before any stage.
+  cases.push({
+    name: 'body is not JSON',
+    code: 'bad_request',
+    realRun: false,
+    stage: 'serialize',
+    async run() {
+      const up = await startUpstream(echoJson);
+      const h = await startGateway({}, up.url);
+      await post(`${h.url}/v1/messages`, '{not json');
+      return { events: h.events, cleanup: async () => { await h.gateway.closeGracefully(); await up.close(); } };
+    },
+  });
+
+  // (d) This build routes a provider it has no adapter for. A build/config gap.
+  cases.push({
+    name: 'no adapter for the provider',
+    code: 'adapter_unavailable',
+    realRun: false,
+    stage: 'serialize',
+    async run() {
+      const up = await startUpstream(echoJson);
+      // `mock` is routable and has no built-in adapter, so this is the
+      // "build/config gap" case without reaching for a provider the router
+      // would reject outright.
+      const h = await startGateway({ provider: 'mock' }, up.url);
+      await post(`${h.url}/v1/messages`, requestBody('hello'));
+      return { events: h.events, cleanup: async () => { await h.gateway.closeGracefully(); await up.close(); } };
+    },
+  });
+
+  const seen: { name: string; triple: string }[] = [];
+  for (const c of cases) {
+    const { events, cleanup } = await c.run();
+    try {
+      const err = errorFor(events, c.code);
+      assert.ok(err !== undefined, `${c.name}: expected a "${c.code}" error, got ${JSON.stringify(errorsOf(events).map((e) => e.code))}`);
+      const triple = `${err.code}|${err.stage}|${err.runId}`;
+      seen.push({ name: c.name, triple });
+
+      // 2. The runId is never a sentinel.
+      assert.notEqual(err.runId, 'unknown', `${c.name}: runId is still the hardcoded 'unknown' -- the P0-1 defect`);
+      // 3. The stage is the stage that raised, never the old default.
+      assert.notEqual(err.stage, 'pin', `${c.name}: attributed to pin, which did not raise`);
+    } finally {
+      await cleanup();
+    }
+  }
+
+  // 1. And the four are actually four. On the old code these were
+  // 'unknown|pin|unknown' four times over -- which is the whole defect.
+  assert.equal(seen.length, 4);
+  assert.equal(new Set(seen.map((s) => s.triple)).size, seen.length, `causes collapsed onto one attribution: ${JSON.stringify(seen)}`);
+});
+
+test('P0-1: no error event is ever attributed to a stage that did not raise', async () => {
+  const up = await startUpstream(echoJson);
+  const h = await startGateway(throwingAdapter('ingress exploded'));
+  await post(`${h.url}/v1/messages`, requestBody('hello'));
+  await h.gateway.closeGracefully();
+  await up.close();
+
+  const errs = errorsOf(h.events);
+  assert.ok(errs.length > 0, 'the failure was not reported at all');
+  for (const e of errs) {
+    // `pin` is the old default. The pin stage never ran in any of these, and a
+    // report that names it sends an operator to a stage that was working.
+    assert.notEqual(e.stage, 'pin', `"${e.code}" was attributed to pin, which did not raise`);
+  }
+});
+
+test('P0-1: a stage that fails open is reported under that stage and a real run', async () => {
+  // The lossy stage that genuinely raised, and the run that actually minted one.
+  // `truncate` is made to raise by a block whose declared byte count is a lie,
+  // which makes the real packaged stage throw on real input -- no stub.
+  const flood = 'F'.repeat(60_000);
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  const res = await post(`${h.url}/v1/messages`, JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [{ role: 'user', content: flood }],
+  }));
+  assert.equal(res.status, 200, 'a failed-open stage must not fail the request');
+
+  const stages = h.events.filter((e) => e.type === 'stage');
+  assert.ok(stages.length > 0, 'no stage ran, so this proves nothing');
+  for (const s of stages) {
+    assert.notEqual(s.runId, 'unknown', 'a stage event carried runId unknown');
+  }
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('P0-1: every emitted error names a remedy an operator can act on', async () => {
+  // The requirement from docs/maturity.md Factor 3, applied to the set as a whole:
+  // a message that only explains is not actionable.
+  const up = await startUpstream(echoJson);
+  const h = await startGateway(throwingAdapter('ingress exploded'));
+  await post(`${h.url}/v1/messages`, requestBody('hello'));
+  await h.gateway.closeGracefully();
+  await up.close();
+
+  for (const e of errorsOf(h.events)) {
+    assert.match(e.message, /Remedy:/, `"${e.code}" explains the failure but names no remedy`);
+    // A remedy is a knob or a location. "Fix the code" is not one.
+    const actionable = /[A-Za-z]+Options\.[A-Za-z]+|policy\.[a-z.]+|server\.ts:\d+|runner\.ts:\d+|routing\.ts:\d+|order\.ts:\d+/.test(e.message);
+    assert.ok(actionable, `"${e.code}" names a remedy but not an actionable one: ${e.message}`);
+  }
+});
+
+test('P0-1: the codes emitted are a closed set, so no exception text became a code', async () => {
+  // The contract says the wire carries a closed set of codes. An assertion that
+  // `code` is a string would pass forever; this asserts the membership.
+  const up = await startUpstream(echoJson);
+  const h = await startGateway(throwingAdapter('ingress exploded'));
+  await post(`${h.url}/v1/messages`, requestBody('hello'));
+  await h.gateway.closeGracefully();
+  await up.close();
+
+  for (const e of errorsOf(h.events)) {
+    assert.ok(
+      (CLOSED_CODES as readonly string[]).includes(e.code),
+      `"${e.code}" is not in the declared closed set -- a message or an exception reached the code field`,
+    );
+    // The exception detail belongs in the message, never in the code.
+    assert.ok(e.code.length < 64, `code "${e.code}" looks like serialised exception text`);
+  }
+});
+
+test('P0-1: a lifecycle failure is not dressed up as a pin failure on a request', async () => {
+  const h = await startGateway({});
+  await h.gateway.shutdown('operator asked');
+  const started = errorFor(h.events, 'shutdown_started');
+  assert.ok(started, 'shutdown did not report itself');
+  assert.notEqual(started.stage, 'pin', 'shutdown was attributed to the pin stage');
+  assert.notEqual(started.runId, 'unknown', 'shutdown was attributed to an unknown run');
+  await h.gateway.closeGracefully();
+});
+
+test('P0-1: REMEDY citations resolve to a file and a symbol that still exist', () => {
+  // A citation that has rotted is worse than no citation: it looks right and
+  // sends an operator to the wrong line. This reads the tree, so it fails when
+  // the code moves and nobody updated the number.
+  const server = readFileSync('packages/gateway/src/server.ts', 'utf8');
+  // Both quoting styles, because a symbol that contains a quote has to be
+  // written with the other one and the pattern has to see it either way.
+  const citations = [
+    ...[...server.matchAll(/\{ at: '([^']+)', symbol: '([^']+)' \}/g)].map(([, at, s]) => ({ at: at as string, symbol: s as string })),
+    ...[...server.matchAll(/\{ at: '([^']+)', symbol: "([^"]+)" \}/g)].map(([, at, s]) => ({ at: at as string, symbol: s as string })),
+  ];
+  assert.ok(citations.length >= 8, `expected the remedy table to have grown, found ${citations.length}`);
+
+  for (const { at, symbol } of citations) {
+    const [file, line] = at.split(':') as [string, string];
+    const lines = readFileSync(file, 'utf8').split('\n');
+    const target = Number(line);
+    assert.ok(target >= 1 && target <= lines.length, `${at} points past the end of ${file} (${lines.length} lines)`);
+    const near = lines.slice(Math.max(0, target - 3), target + 2).join('\n');
+    assert.ok(
+      near.includes(symbol.slice(0, 12)),
+      `${at} claims "${symbol}" but that text is not within 2 lines of it -- the citation has rotted`,
+    );
+  }
 });
