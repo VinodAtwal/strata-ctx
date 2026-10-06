@@ -7,6 +7,9 @@ import type {
 } from '@strata-ctx/core-types';
 import { budgetView, estimateMessageTokens } from '@strata-ctx/core-types';
 
+import type { PessimisticTokens } from './token-budget.js';
+import { pessimisticLossyTokens } from './token-budget.js';
+
 /**
  * B-7. Compaction trigger policy: task-boundary (sawtooth) with a size backstop.
  *
@@ -52,7 +55,14 @@ export interface TriggerDecision {
 }
 
 export interface TriggerInput {
-  readonly tokens: number;
+  /**
+   * P0-2: branded, and that is the whole point. `estimateMessageTokens` returns a
+   * bare `number` that reads 1.43-1.49x low on JSON and 2.43-2.49x low on
+   * special-character-dense text (docs/risk-analysis.md §3.1 R1), so a plain number
+   * would let a ratio-safe estimate drive a real `contextLimit` comparison with no
+   * compiler objection. See ./token-budget.ts for the measurement and the split.
+   */
+  readonly tokens: PessimisticTokens;
   /** Signals observed this turn by the caller; see `matchTaskBoundarySignals`. */
   readonly signals?: readonly string[];
   readonly trigger: TriggerPolicy;
@@ -99,8 +109,9 @@ export function evaluateTrigger(input: TriggerInput): TriggerDecision {
   );
 
   const usable = Math.max(1, view.contextLimit - view.reserveOutput);
-  const atHardLimit = input.tokens >= view.hardLimit;
-  const atSoftLimit = input.tokens >= view.triggerAt;
+  const tokens = input.tokens.tokens;
+  const atHardLimit = tokens >= view.hardLimit;
+  const atSoftLimit = tokens >= view.triggerAt;
   const matched = matchTaskBoundarySignals(input.signals ?? [], tp);
   const policyMisordered = view.triggerAt >= view.hardLimit;
 
@@ -113,8 +124,8 @@ export function evaluateTrigger(input: TriggerInput): TriggerDecision {
     trigger: compaction,
     reason,
     view,
-    tokens: input.tokens,
-    utilization: input.tokens / usable,
+    tokens,
+    utilization: tokens / usable,
     matchedSignals: matched,
     atHardLimit,
     policyMisordered,
@@ -153,7 +164,16 @@ export function evaluateTrigger(input: TriggerInput): TriggerDecision {
   return decide(true, 'soft', 'soft_limit');
 }
 
-/** Recomputed rather than read off `ctx.tokenEstimate`: stage 2 may have moved it. */
+/**
+ * The comparative estimate, kept and still correct -- for the question it answers.
+ *
+ * P0-2 moved the budget path to `./token-budget.ts`. This stays because `chars/4`
+ * remains the right estimator for savings ratios, where a shared bias cancels; what
+ * it can no longer do is reach a budget decision, because `TriggerInput.tokens` is
+ * branded and this returns a bare `number`. It is unreferenced in-file on purpose:
+ * an unused comparative estimator that *cannot* be misused is a safety property, and
+ * deleting it would only invite someone to re-derive it.
+ */
 export const estimateLossyTokens = (ctx: LossyContext): number =>
   ctx.messages.reduce((n, m) => n + estimateMessageTokens(m), 0);
 
@@ -163,7 +183,7 @@ export function triggerFor(
   signals: readonly string[] = [],
 ): TriggerDecision {
   return evaluateTrigger({
-    tokens: estimateLossyTokens(ctx),
+    tokens: pessimisticLossyTokens(ctx),
     signals,
     trigger: policy.pipeline.trigger,
     budgets: policy.budgets,

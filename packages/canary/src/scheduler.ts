@@ -1,4 +1,4 @@
-import type { PinnedConstraint, ProbeId, TelemetryEvent } from '@strata-ctx/core-types';
+import type { ContextState, PinnedConstraint, ProbeId, TelemetryEvent } from '@strata-ctx/core-types';
 import { probeId as makeProbeId } from '@strata-ctx/core-types';
 
 import {
@@ -66,7 +66,10 @@ import { rotDegradationSlope } from './rot-probe.js';
  * knows what a model is, what a gateway is, or what a transcript looks like —
  * `CanarySubjects` is two functions. That is what lets the offline tests drive the
  * whole scheduler deterministically, and F2 drive the identical code path against
- * a real provider, with nothing in `src/` able to tell the difference.
+ * a real provider, with nothing in `src/` able to tell the difference. The turn's
+ * `ContextState` is the one place a transcript shape enters this file, and it is
+ * carried opaquely to the injected estimator (see the section on the token count
+ * below) — never read, never sliced, never counted here.
  *
  * ## Time is injected too
  *
@@ -75,6 +78,21 @@ import { rotDegradationSlope } from './rot-probe.js';
  * conversation reproduces the probe schedule byte for byte (N6: same input ⇒
  * byte-identical output) and a failing probe can be replayed from the turn number
  * alone.
+ *
+ * ## The token count is injected too, and it has to be the pessimistic one
+ *
+ * The rot probe is placed on the §E2 ladder by a fill fraction, and the fill is
+ * a division of two numbers from two owners: the count (the host's) and the
+ * window (policy's). A count that under-reports the session places the
+ * observation on a lower rung than the context actually occupies, which is the
+ * regime where the monitor itself is degrading (docs/risk-analysis.md §3.1 R1,
+ * R14). `state.tokenEstimate` — `core-types`' optimistic `chars/4` — under-counts
+ * structured content by up to 1.49x, so it is *not* the number this path reads.
+ * The count comes from `CanarySchedulerOptions.pessimisticTokens`, required at
+ * construction like `windowTokens`, and the state it reads arrives on
+ * `CanaryTurnInput`. The scheduler never inspects that state itself: it is
+ * handed to the estimator and nowhere else, which is what keeps this package
+ * free of both a tokenizer and a content rule.
  */
 
 // --------------------------------------------------------------------- config
@@ -365,14 +383,17 @@ export interface CanaryTurnInput {
   /** Monotonic within a run. Turn 0 is the session's first request. */
   readonly turn: number;
   /**
-   * The session's current input-token estimate.
+   * The session state this turn schedules against.
    *
-   * Injected rather than measured here because this package does not own a
-   * tokenizer, and a probe that estimated the context itself would be measuring
-   * its own arithmetic — the same reason the F1-6 suite counts tokens rather than
-   * asking the subject for a number.
+   * The state rather than a bare number, because a bare number cannot say
+   * whether it was counted over JSON or over prose — and that distinction is
+   * the whole point of the fill: `state.tokenEstimate` is `core-types`'
+   * optimistic `chars/4`, which measures 1.43–1.49x under on JSON
+   * (docs/risk-analysis.md §3.1 R1). The scheduler never reads this itself; it
+   * hands it to `CanarySchedulerOptions.pessimisticTokens`, which is the only
+   * thing in this package that turns a session into a token count.
    */
-  readonly tokenEstimate: number;
+  readonly state: ContextState;
 }
 
 /** One successful constraint firing. */
@@ -424,6 +445,24 @@ export interface CanarySchedulerOptions {
    * x-axis with nothing failing.
    */
   readonly windowTokens: number;
+  /**
+   * How a turn's state becomes the token count the §E2 ladder is placed from.
+   *
+   * Required rather than defaulted, for the reason `windowTokens` is required:
+   * a default would be this package's own guess at tokenisation, and the safety
+   * property (never under-report the fill) belongs to the host, which is the
+   * only side that can hold a structure-aware estimator. The signature is
+   * deliberately identical to `pessimisticStateTokens` in
+   * `@strata-ctx/pipeline`, so a host that already holds the pessimistic
+   * estimator passes it unadapted; this package does not import it, because a
+   * canary → pipeline edge is exactly the cross-stream edge the wiring ledger
+   * exists to make expensive (AGENTS.md §7 — three exist, and a fourth needs
+   * the owner). Passing `estimateTokens` from `core-types` here would compile
+   * and would reinstate the defect this parameter exists to remove
+   * (docs/risk-analysis.md §3.1 R14), which is why the name says which
+   * direction the count must lean.
+   */
+  readonly pessimisticTokens: (state: ContextState) => number;
   readonly config?: CanaryConfig;
   readonly rotCases?: readonly RotProbeCase[];
   /** Attribution for emitted events. */
@@ -447,6 +486,7 @@ export class CanaryScheduler {
   readonly #subjects: CanarySubjects;
   readonly #constraints: readonly PinnedConstraint[];
   readonly #windowTokens: number;
+  readonly #pessimisticTokens: (state: ContextState) => number;
   readonly #rotCases: readonly RotProbeCase[];
   readonly #runId: string;
   readonly #emit: (event: CanaryTelemetryEvent) => void;
@@ -466,6 +506,14 @@ export class CanaryScheduler {
       );
     }
     this.#windowTokens = options.windowTokens;
+    if (typeof options.pessimisticTokens !== 'function') {
+      throw new CanaryConfigError(
+        `pessimisticTokens must be a (state) => number estimator; got ${String(options.pessimisticTokens)}. ` +
+          'The rot ladder is a safety decision, so the count it reads is a required parameter — ' +
+          'a scheduler constructed without one would fall back to a number nobody vouched for.',
+      );
+    }
+    this.#pessimisticTokens = options.pessimisticTokens;
     this.#rotCases = Object.freeze([...(options.rotCases ?? [])]);
     this.#runId = options.runId ?? 'unknown-run';
     this.#emit = options.emit ?? (() => undefined);
@@ -514,7 +562,7 @@ export class CanaryScheduler {
    * throw from the cheap one must not cost the expensive one.
    */
   async runTurn(input: CanaryTurnInput): Promise<CanaryTurnResult> {
-    const { turn, tokenEstimate } = input;
+    const { turn, state } = input;
     const due = this.dueAt(turn);
     const probes: CanaryProbeRecord[] = [];
     const failures: CanaryProbeFailure[] = [];
@@ -530,7 +578,7 @@ export class CanaryScheduler {
     }
 
     if (due.includes('rot')) {
-      const rot = await this.#runRot(turn, tokenEstimate);
+      const rot = await this.#runRot(turn, state);
       if (rot.record !== null) probes.push(rot.record);
       if (rot.failure !== null) failures.push(rot.failure);
       for (const event of rot.events) events.push(event);
@@ -644,7 +692,7 @@ export class CanaryScheduler {
     };
   }
 
-  async #runRot(turn: number, tokenEstimate: number): Promise<ProbeOutcome<RotProbeRecord>> {
+  async #runRot(turn: number, state: ContextState): Promise<ProbeOutcome<RotProbeRecord>> {
     const probeId = canaryProbeId('rot', turn);
     const subject = this.#subjects.rot;
     if (subject === undefined) {
@@ -654,7 +702,16 @@ export class CanaryScheduler {
       return this.#rotFailure(probeId, turn, 'the rot probe has no cases, so a firing could not measure anything');
     }
 
-    const fill = this.#fillOf(tokenEstimate);
+    let fill: number;
+    try {
+      fill = this.#fillOf(this.#pessimisticTokens(state));
+    } catch (error: unknown) {
+      return this.#rotFailure(
+        probeId,
+        turn,
+        `the injected pessimisticTokens estimator threw: ${errorMessage(error)}`,
+      );
+    }
     const tier = rotTierForFill(fill);
     const request = { probeId, turn, tier, fill, cases: this.#rotCases };
 
@@ -741,17 +798,32 @@ export class CanaryScheduler {
   }
 
   /**
-   * `tokenEstimate / windowTokens`, clamped to [0, 1].
+   * `pessimisticTokens(state) / windowTokens`, clamped to [0, 1].
    *
-   * Clamped because the two numbers come from different places — the estimate
-   * from the gateway's estimator, the window from policy — and a session that
+   * The count is whatever the host injected as `pessimisticTokens`, and it is
+   * deliberately not read from `state.tokenEstimate`: that field is
+   * `core-types`' optimistic `chars/4`, which measures 1.43–1.49x under on JSON
+   * and would place a mid-session observation a rung low
+   * (docs/risk-analysis.md §3.1 R1, R14). The gateway's provider-aware
+   * estimator (`packages/gateway/src/token-estimator.ts`) is *also* not in this
+   * path — it is unwired — so neither of the two modules a reader might assume
+   * produced this number did; the host's injected estimator did.
+   *
+   * Clamped because the count and the window come from different places — the
+   * estimator from the host, the window from policy — and a session that
    * overran its budget would otherwise report a fill above 1.0 and land outside
-   * the top of the §E2 ladder, where no tier exists to classify it into.
+   * the top of the §E2 ladder, where no tier exists to classify it into. The
+   * two broken inputs are handled in opposite directions because they are not
+   * the same kind of broken: `+Infinity` tokens divided by a finite window is a
+   * session over budget, so it is the top rung; `NaN` and `-Infinity` are counts
+   * that were never produced, and a count that cannot be produced reports no
+   * position, so they read as 0 rather than as a fraction nobody computed.
    */
-  #fillOf(tokenEstimate: number): number {
-    const raw = tokenEstimate / this.#windowTokens;
-    if (!Number.isFinite(raw) || raw < 0) return 0;
-    return raw > 1 ? 1 : raw;
+  #fillOf(tokens: number): number {
+    const raw = tokens / this.#windowTokens;
+    if (Number.isNaN(raw) || raw < 0) return 0;
+    if (!Number.isFinite(raw) || raw > 1) return 1;
+    return raw;
   }
 
   #violation(probeId: ProbeId, turn: number, constraintIds: readonly string[], detail: string): CanaryViolation {

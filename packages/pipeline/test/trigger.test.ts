@@ -2,9 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { BudgetPolicy, TriggerPolicy } from '@strata-ctx/core-types';
-import { budgetView, estimateMessageTokens, partitionForLossy } from '@strata-ctx/core-types';
+import { budgetView, partitionForLossy } from '@strata-ctx/core-types';
 
 import { applyTruncate, evaluateTrigger, matchTaskBoundarySignals, reserveFor, triggerFor } from '../src/index.js';
+import { pessimisticCount, pessimisticLossyTokens } from '../src/token-budget.js';
 
 import { block, lines, message, meta, policy, state, toolResult } from './fixtures.js';
 
@@ -35,9 +36,14 @@ const at = (frac: number): number => {
   return Math.floor(frac * (view.contextLimit - view.reserveOutput));
 };
 
+// P0-2: `TriggerInput.tokens` is branded, so a bare `number` no longer compiles at a
+// budget decision -- which is the point. These tests supply counts they construct
+// themselves and declare pessimistic, which is what `pessimisticCount` is for.
+const atTokens = (frac: number) => pessimisticCount(at(frac));
+
 const decide = (tokens: number, over: Partial<Parameters<typeof evaluateTrigger>[0]> = {}) =>
   evaluateTrigger({
-    tokens,
+    tokens: pessimisticCount(tokens),
     trigger: TRIGGER,
     budgets: BUDGETS,
     compaction: 'auto',
@@ -101,7 +107,7 @@ describe('B-7 trigger: monotonic', () => {
 
   it('fires on size alone, because no boundary is coming', () => {
     const d = evaluateTrigger({
-      tokens: at(0.7),
+      tokens: atTokens(0.7),
       signals: [],
       trigger: monotonic,
       budgets: BUDGETS,
@@ -114,7 +120,7 @@ describe('B-7 trigger: monotonic', () => {
 
   it('still holds below the soft limit', () => {
     const d = evaluateTrigger({
-      tokens: at(0.1),
+      tokens: atTokens(0.1),
       trigger: monotonic,
       budgets: BUDGETS,
       compaction: 'auto',
@@ -143,14 +149,14 @@ describe('B-7 trigger: the hard limit is a backstop, not a plan', () => {
       );
 
       const atSoft = evaluateTrigger({
-        tokens: soft.triggerAt,
+        tokens: pessimisticCount(soft.triggerAt),
         signals: ['task_complete'],
         trigger,
         budgets: BUDGETS,
         compaction: 'auto',
       });
       const atHard = evaluateTrigger({
-        tokens: soft.hardLimit,
+        tokens: pessimisticCount(soft.hardLimit),
         signals: ['task_complete'],
         trigger,
         budgets: BUDGETS,
@@ -167,7 +173,7 @@ describe('B-7 trigger: the hard limit is a backstop, not a plan', () => {
   it('fires on hard regardless of strategy or boundary', () => {
     for (const strategy of ['sawtooth', 'monotonic'] as const) {
       const d = evaluateTrigger({
-        tokens: at(0.95),
+        tokens: atTokens(0.95),
         signals: [],
         trigger: { ...TRIGGER, strategy },
         budgets: BUDGETS,
@@ -201,7 +207,7 @@ describe('B-7 trigger: the operator always wins', () => {
     // decision the operator explicitly did not delegate.
     for (const compaction of ['off', 'manual'] as const) {
       const d = evaluateTrigger({
-        tokens: at(2),
+        tokens: atTokens(2),
         signals: ['task_complete'],
         trigger: TRIGGER,
         budgets: BUDGETS,
@@ -251,7 +257,11 @@ describe('B-7 trigger: over a real lossy context', () => {
 
     assert.ok(after.tokens < before.tokens, 'the cap moved the number the trigger reads');
     assert.ok(after.tokens > 0);
-    assert.equal(after.tokens, truncated.ctx.messages.reduce((n, m) => n + estimateMessageTokens(m), 0));
+    // P0-2: the number the trigger reads is the pessimistic one, recomputed from the
+    // truncated context rather than trusted off `ctx.tokenEstimate`. It is no longer the
+    // `chars/4` sum -- truncate appends a marker, and the marker's brackets are exactly
+    // the punctuation-in-contact that the pessimistic estimator charges for.
+    assert.equal(after.tokens, pessimisticLossyTokens(truncated.ctx).tokens);
   });
 
   it('honours the policy the caller passes, not a default', () => {

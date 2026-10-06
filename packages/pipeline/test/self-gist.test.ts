@@ -14,7 +14,6 @@ import type {
 } from '@strata-ctx/core-types';
 import {
   enforcePins,
-  estimateMessageTokens,
   budgetView,
   partitionForLossy,
   runId,
@@ -25,6 +24,7 @@ import {
 
 import { evaluateTrigger, reserveFor } from '../src/trigger.js';
 import type { TriggerDecision } from '../src/trigger.js';
+import { pessimisticCount, pessimisticLossyTokens } from '../src/token-budget.js';
 import {
   SELF_GIST_DIRECTIVE,
   SELF_GIST_RETAIN_CHARS,
@@ -159,7 +159,7 @@ const at = (frac: number): number => {
 
 const decide = (frac: number, signals: string[] = []): TriggerDecision =>
   evaluateTrigger({
-    tokens: at(frac),
+    tokens: pessimisticCount(at(frac)),
     signals,
     trigger: TRIGGER,
     budgets: BUDGETS,
@@ -788,7 +788,7 @@ describe('B-8 shouldSelfGist: both halves or neither', () => {
 
   it('never fires when the operator has switched compaction off', () => {
     const trigger = evaluateTrigger({
-      tokens: at(0.99),
+      tokens: pessimisticCount(at(0.99)),
       signals: ['task_complete'],
       trigger: TRIGGER,
       budgets: BUDGETS,
@@ -813,9 +813,9 @@ describe('B-8 shouldSelfGist: both halves or neither', () => {
   it('agrees with B-7 on the token count it was handed, not a recomputed one', () => {
     const ctx = conversationCtx();
     const draft = draftFor(directive, ctx);
-    const tokens = ctx.messages.reduce((n, m) => n + estimateMessageTokens(m), 0);
+    const tokens = pessimisticLossyTokens(ctx).tokens;
     const real = evaluateTrigger({
-      tokens,
+      tokens: pessimisticCount(tokens),
       signals: ['task_complete'],
       trigger: TRIGGER,
       budgets: BUDGETS,

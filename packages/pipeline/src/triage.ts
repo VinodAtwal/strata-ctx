@@ -5,6 +5,7 @@ import type {
   NonGovernanceMessage,
   Tier,
 } from '@strata-ctx/core-types';
+import { promoteTier } from './safety-net.js';
 import type { Tier0Stage } from './stage.js';
 
 /**
@@ -28,7 +29,7 @@ import type { Tier0Stage } from './stage.js';
  * into `ctx.held`, and `NonGovernanceBlock` cannot carry `tier: 'governance'`,
  * so triage is handed something that *cannot* contain one.
  *
- * This module therefore does two things and no more:
+ * This module therefore does three things and no more:
  *
  * 1. A runtime re-check, because a context can arrive by cast rather than by
  *    constructor. A block whose declared tier is governance is *diverted into
@@ -37,6 +38,11 @@ import type { Tier0Stage } from './stage.js';
  *    `held` is exactly the bucket `restoreHeld` puts back at the head of the
  *    outbound request, so diverting is lossless.
  * 2. The retention policy per tier, plus the census that proves nothing was lost.
+ * 3. The P0-3 safety net (./safety-net.ts): a conservative read of a block's
+ *    *wording* that may only move a tier toward `verbatim`, with the count of
+ *    what it moved published on the report. Ingress assigns tiers from the kind
+ *    of text, not its phrasing, so a fact-shaped constraint arrives as
+ *    `episodic` and `episodic` is `compact`; this is the pass that can catch it.
  */
 
 /**
@@ -105,6 +111,18 @@ export interface TriageReport {
   readonly diverted: number;
   readonly taggedIntent: number;
   readonly intentTaggedMessage: number | undefined;
+  /**
+   * P0-3: blocks the safety net moved to a `verbatim` tier. Published because a
+   * check that never fires and one that fires on everything are the same number
+   * from the outside, and because `promotedToVerbatim === promotedUncertain +
+   * promotedDeclarative` is the invariant that says which of the two signals
+   * did the work.
+   */
+  readonly promotedToVerbatim: number;
+  /** Promotions where the detector had no opinion it could state: fail closed. */
+  readonly promotedUncertain: number;
+  /** Promotions where the text was recognised as a constraint (declarative or directive). */
+  readonly promotedDeclarative: number;
   readonly retention: Readonly<Record<Tier, TierRetention>>;
 }
 
@@ -157,6 +175,17 @@ export function tagLeadingUserIntent(
 const taggable = (b: NonGovernanceBlock): boolean =>
   b.type !== 'tool_result' && b.type !== 'cache_control';
 
+/**
+ * Whether the safety net may read this block's text.
+ *
+ * Only prose. `tool_result` is excluded for the same reason `taggable` excludes
+ * it -- Anthropic carries it in *user* messages, and retiering it would hand a
+ * command's output the largest byte cap in the policy; `tool_use` carries a
+ * command name rather than a sentence; `cache_control` is bookkeeping. All three
+ * keep whatever tier ingress gave them.
+ */
+const safetyNetEligible = (b: NonGovernanceBlock): boolean => b.type === 'text';
+
 export interface TriageInput {
   readonly messages: readonly NonGovernanceMessage[];
   readonly held: readonly HeldBlock[];
@@ -171,17 +200,37 @@ export interface TriageOutput {
 export function triageMessages(input: TriageInput): TriageOutput {
   const census = emptyCensus();
   let diverted = 0;
+  let promoted = 0;
+  let promotedUncertain = 0;
+  let promotedDeclarative = 0;
   let changed = false;
   const extraHeld: HeldBlock[] = [];
 
   const rebuilt: NonGovernanceMessage[] = [];
   for (const m of input.messages) {
     const content: NonGovernanceBlock[] = [];
+    // Whether this message's block list came back different. Promotion does not
+    // change the *length* of the content array, so length is not enough to
+    // decide whether the original message object can be handed through.
+    let altered = false;
     for (const b of m.content) {
-      if (declaredTier(b) === 'governance') {
+      const current = declaredTier(b);
+      if (current === 'governance') {
         extraHeld.push({ block: b, reason: 'governance' });
         diverted += 1;
-        changed = true;
+        altered = true;
+        continue;
+      }
+      // Before the census, so the count describes the tiers that actually
+      // leave, and before intent tagging, so a block the safety net already
+      // moved to `user_intent` is not counted a second time as tagged.
+      const promotion = safetyNetEligible(b) ? promoteTier(current, b.text, TIER_RETENTION) : null;
+      if (promotion !== null) {
+        promoted += 1;
+        if (promotion.verdict === 'uncertain') promotedUncertain += 1;
+        else promotedDeclarative += 1;
+        altered = true;
+        content.push({ ...b, meta: { ...b.meta, tier: promotion.tier } });
         continue;
       }
       content.push(b);
@@ -190,8 +239,9 @@ export function triageMessages(input: TriageInput): TriageOutput {
       changed = true;
       continue;
     }
-    if (content.length !== m.content.length) changed = true;
-    rebuilt.push(content.length === m.content.length ? m : { ...m, content });
+    if (content.length !== m.content.length) altered = true;
+    if (altered) changed = true;
+    rebuilt.push(altered ? { ...m, content } : m);
   }
 
   // Recount after triage so the census describes the state that leaves this
@@ -221,6 +271,9 @@ export function triageMessages(input: TriageInput): TriageOutput {
       diverted,
       taggedIntent: tagged.tagged,
       intentTaggedMessage: tagged.message,
+      promotedToVerbatim: promoted,
+      promotedUncertain,
+      promotedDeclarative,
       retention: TIER_RETENTION,
     },
   };
@@ -228,16 +281,20 @@ export function triageMessages(input: TriageInput): TriageOutput {
 
 /**
  * Stage 3. Triage assigns each tier its own retention policy (the Compaction
- * Cliff fix), re-checks at runtime that no governance block is in scope, and
- * tags the leading user-intent turn. It drops nothing, by construction: a tier
- * that triage does not recognise still leaves with all of its blocks.
+ * Cliff fix), re-checks at runtime that no governance block is in scope, tags
+ * the leading user-intent turn, and runs the P0-3 safety net over the wording of
+ * every text block. It drops nothing, by construction: a tier that triage does
+ * not recognise still leaves with all of its blocks, and the safety net may only
+ * move a block to a tier the policy protects *more*.
  *
- * On a steady-state context -- one that is already tagged and holds no stray
- * governance -- `triageMessages` hands back the very arrays it was given, so the
- * stage can return the input context untouched and the caller's `changed` check
- * can tell a real change from a re-scan. That check is worth having: this runs
- * on every turn, and a stage that always allocates makes "did anything change"
- * unanswerable without deep comparison.
+ * On a steady-state context -- one that is already tagged, already promoted and
+ * holding no stray governance -- `triageMessages` hands back the very arrays it
+ * was given, so the stage can return the input context untouched and the caller's
+ * `changed` check can tell a real change from a re-scan. That check is worth
+ * having: this runs on every turn, and a stage that always allocates makes "did
+ * anything change" unanswerable without deep comparison. Promotion is one-shot
+ * by the same mechanism: the second pass finds the block already at `user_intent`
+ * and leaves it alone.
  */
 export const triageStage: Tier0Stage<TriageReport> = {
   name: 'triage',

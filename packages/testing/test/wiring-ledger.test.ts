@@ -260,7 +260,23 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'pipeline/recencyTail': 'recency.ts:58; no reachable module reads a recency tail',
   'pipeline/retainTail': 'self-gist.ts:487; no reachable module retains a tail',
   'pipeline/shouldSelfGist': 'self-gist.ts:965; no reachable module asks whether to self-gist',
-  'pipeline/triggerFor': 'trigger.ts:160; the trigger is decided inline at the call site',
+  'pipeline/triggerFor': 'trigger.ts:180; the trigger is decided inline at the call site',
+  // --- @strata-ctx/pipeline/./token-budget.ts: the pessimistic half of the P0-2 split.
+  // Exported because TriggerInput.tokens is branded PessimisticTokens, so the type has
+  // to be reachable for a .d.ts to be valid. The runtime values below have no cross-file
+  // reader yet; each reason says who will, so the gate is tracking a decision and not
+  // tolerating silence. See docs/risk-analysis.md 3.1 (R1) and 5.1 (P0-2).
+  'pipeline/PESSIMISTIC_BAND': 'token-budget.ts; the declared band is read only by token-budget.test.ts, which asserts predictions land inside it. Nothing in src/ compares a measurement against it',
+  'pipeline/PUNCTUATION_EXCESS': 'token-budget.ts; the measured per-character rate for punctuation-dense content, read only inside the module by pessimisticMultiplier',
+  'pipeline/TokenCalibrator': 'token-budget.ts; the calibration loop has no consumer until the gateway feeds the provider\'s own usage.input_tokens in, which is the P0-2 follow-up named in docs/risk-analysis.md 5.1. It is testable without a provider today',
+  'pipeline/calibrationReport': 'token-budget.ts; builds a CalibrationReport for a caller to log. Same no-consumer gap as TokenCalibrator',
+  'pipeline/calibrationSample': 'token-budget.ts; builds a CalibrationSample for a caller to hand to TokenCalibrator. Same no-consumer gap as TokenCalibrator',
+  'pipeline/pessimisticBlockTokens': 'token-budget.ts; the per-block pessimistic count is read only in-file, by pessimisticMessageTokens',
+  'pipeline/pessimisticCount': 'token-budget.ts; the documented escape hatch from a comparative count, exported on purpose so a future budget caller has a named, greppable conversion instead of a cast. Deliberately has no caller today',
+  'pipeline/pessimisticMessageTokens': 'token-budget.ts; the per-message pessimistic count is read only in-file, by pessimisticStateTokens',
+  'pipeline/pessimisticMultiplier': 'token-budget.ts; the structure-aware multiplier is read only in-file, by pessimisticBlockTokens and pessimisticMessageTokens',
+  'pipeline/pessimisticStateTokens': 'token-budget.ts; the per-state pessimistic count is read only in-file, by pessimisticLossyTokens, which triggerFor:186 calls',
+  'pipeline/tokenContentClass': 'token-budget.ts; the content classifier is read only in-file, by pessimisticMultiplier',
 
   // --- @strata-ctx/security ---
   'security/DEFAULT_REDACTION_OPTIONS': 'redact.ts:113; optionsFromPolicy builds options from the policy',
@@ -323,7 +339,9 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'core-types/SerializationPolicySchema': 'policy.ts:117; no file outside policy.ts names it directly -- it runs only through StrataPolicySchema, which @strata-ctx/gateway/server.ts:274 reads',
   'core-types/StageNameSchema': 'policy.ts:90; no file outside policy.ts names it directly -- it runs only through PipelinePolicySchema, then StrataPolicySchema, which @strata-ctx/gateway/server.ts:274 reads',
   'core-types/TriggerPolicySchema': 'policy.ts:43; no file outside policy.ts names it directly -- it runs only through PipelinePolicySchema, then StrataPolicySchema, which @strata-ctx/gateway/server.ts:274 reads',
-  'core-types/estimateBlockTokens': 'tokens.ts:22; no file outside tokens.ts names it directly -- it runs only through estimateMessageTokens, which @strata-ctx/pipeline/recency.ts:62 calls',
+  // @strata-ctx/pipeline/./token-budget.ts names estimateBlockTokens directly now, so the
+  // old "only through estimateMessageTokens" chain is false and the export is wired.
+  // It is the comparative half of P0-2's split; see docs/risk-analysis.md 3.1 (R1).
   // --- @strata-ctx/gateway: exposed by the ruling. Three shapes, see the header above. ---
   'gateway/ByteRingTail': 'sse.ts:369; no file outside sse.ts names it directly -- it runs only through SsePipeline, then pipeSseUpstream, which server.ts:353 calls',
   'gateway/ConfigError': 'config.ts:93; no file outside config.ts names it and the only call sites are in-file, at config.ts:412, config.ts:422, config.ts:425, config.ts:431, inside parseConfig and readDocument -- no chain of same-file readers reaches an operator a reachable file calls',
@@ -484,7 +502,7 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'pipeline/classifySeverity': 'severity.ts:161; no file outside severity.ts names it directly -- it runs only through applySeverityClassification, which truncate.ts:333 calls',
   'pipeline/dedupeMessages': 'dedupe.ts:198; no file outside dedupe.ts names it directly -- it runs only through dedupeStage, which order.ts:77 reads',
   'pipeline/emptyDedupeReasons': 'dedupe.ts:85; no file outside dedupe.ts names it directly -- it runs only through dedupeMessages, then dedupeStage, which order.ts:77 reads',
-  'pipeline/estimateLossyTokens': 'trigger.ts:157; no file outside trigger.ts names it and the only call sites are in-file, at trigger.ts:166, inside triggerFor -- no chain of same-file readers reaches an operator a reachable file calls',
+  'pipeline/estimateLossyTokens': 'trigger.ts:177; kept deliberately uncalled -- triggerFor:186 now reads pessimisticLossyTokens from ./token-budget.ts, so the comparative half of the P0-2 split is structurally unable to reach a budget decision. See docs/risk-analysis.md 3.1 (R1). It is retained rather than deleted because it is the comparative estimator the savings side compares against',
   'pipeline/evaluateTrigger': 'trigger.ts:90; no file outside trigger.ts names it and the only call sites are in-file, at trigger.ts:165, inside triggerFor -- no chain of same-file readers reaches an operator a reachable file calls',
   'pipeline/extractExitCode': 'severity.ts:147; no file outside severity.ts names it directly -- it runs only through classifySeverity, then applySeverityClassification, which truncate.ts:333 calls',
   'pipeline/isFileRead': 'pointer.ts:73; no file outside pointer.ts names it directly -- it runs only through pointerizeBlocks, which truncate.ts:326 calls',

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import type { PinnedConstraint } from '@strata-ctx/core-types';
-import { sha256 } from '@strata-ctx/core-types';
+import type { ContextState, PinnedConstraint } from '@strata-ctx/core-types';
+import { estimateTokens, runId, sha256 } from '@strata-ctx/core-types';
 
 import {
   CANARY_VIOLATION_KINDS,
@@ -57,6 +57,42 @@ const ROT_CASES: readonly RotProbeCase[] = Object.freeze([
 
 const WINDOW = 200_000;
 
+/**
+ * A one-block session state. `CanaryTurnInput` carries the state rather than a
+ * token count, and the count is the constructor's `pessimisticTokens` job — see
+ * `../src/scheduler.ts`.
+ */
+function stateOf(text: string): ContextState {
+  const base: ContextState = {
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text,
+            meta: { origin: 'user', sha256: sha256(text), tier: 'episodic', bytes: text.length, cacheable: false },
+          },
+        ],
+        ts: 0,
+      },
+    ],
+    pinned: [],
+    tokenEstimate: 0,
+    policyHash: 'policy-hash',
+    runId: runId('run-1'),
+    turn: 0,
+    gists: [],
+    artifacts: [],
+  };
+  return { ...base, tokenEstimate: estimateTokens(base) };
+}
+
+const STATE = stateOf('the session so far');
+
+/** An estimator that answers with a fixed count, for turns whose fill is incidental. */
+const fixedTokens = (tokens: number): ((state: ContextState) => number) => () => tokens;
+
 /** A subject that retains everything and answers the rot cases correctly. */
 const goodSubjects = {
   constraint: {
@@ -78,6 +114,7 @@ const rotCasesFor = (constraints: readonly PinnedConstraint[]) =>
     subjects: goodSubjects,
     constraints,
     windowTokens: WINDOW,
+    pessimisticTokens: fixedTokens(0),
     rotCases: ROT_CASES,
     runId: 'run-1',
     emit: () => undefined,
@@ -141,6 +178,7 @@ describe('config defaults and validation', () => {
           subjects: goodSubjects,
           constraints: MIXED,
           windowTokens: 0,
+          pessimisticTokens: fixedTokens(0),
           rotCases: ROT_CASES,
         }),
       CanaryConfigError,
@@ -162,6 +200,7 @@ describe('dueAt — which probes run on a turn', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
       config: { ...DEFAULT_CANARY_CONFIG, constraintProbe: { enabled: false, intervalTurns: 25 } },
     });
@@ -172,6 +211,7 @@ describe('dueAt — which probes run on a turn', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
       config: { ...DEFAULT_CANARY_CONFIG, rotProbe: { enabled: false, intervalTurns: 50 } },
     });
@@ -186,10 +226,11 @@ describe('runTurn — the quiet path', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(1000),
       rotCases: ROT_CASES,
       emit: (event) => events.push(event),
     });
-    const result = await scheduler.runTurn({ turn: 1, tokenEstimate: 1000 });
+    const result = await scheduler.runTurn({ turn: 1, state: STATE });
     assert.equal(result.probed, false);
     assert.deepEqual(result.probes, []);
     assert.deepEqual(result.violations, []);
@@ -202,10 +243,11 @@ describe('runTurn — the quiet path', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(WINDOW / 4),
       rotCases: ROT_CASES,
       emit: (event) => events.push(event),
     });
-    const result = await scheduler.runTurn({ turn: 25, tokenEstimate: WINDOW / 4 });
+    const result = await scheduler.runTurn({ turn: 25, state: STATE });
     assert.equal(result.probed, true);
     assert.deepEqual(result.violations, []);
     assert.equal(result.probes.length, 1);
@@ -227,10 +269,11 @@ describe('runTurn — the quiet path', () => {
       },
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
       emit: (event) => events.push(event),
     });
-    const result = await scheduler.runTurn({ turn: 25, tokenEstimate: 0 });
+    const result = await scheduler.runTurn({ turn: 25, state: STATE });
     assert.equal(result.violations.length, 1);
     assert.equal(result.violations[0]?.kind, 'canary_fail');
     assert.equal(result.violations[0]?.blocked, false, 'a canary must never block the turn');
@@ -255,9 +298,10 @@ describe('fail-open — a throwing probe costs a telemetry line and nothing else
       },
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
     });
-    const result = await scheduler.runTurn({ turn: 25, tokenEstimate: 0 });
+    const result = await scheduler.runTurn({ turn: 25, state: STATE });
     assert.equal(result.failures.length, 1);
     assert.equal(result.failures[0]?.kind, 'constraint');
     assert.match(result.failures[0]?.message ?? '', /subject exploded/);
@@ -272,9 +316,10 @@ describe('fail-open — a throwing probe costs a telemetry line and nothing else
       subjects: {},
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
     });
-    const result = await scheduler.runTurn({ turn: 50, tokenEstimate: 0 });
+    const result = await scheduler.runTurn({ turn: 50, state: STATE });
     assert.equal(result.failures.length, 2, 'constraint and rot both report the missing subject');
     assert.equal(result.violations.length, 2);
   });
@@ -284,12 +329,13 @@ describe('fail-open — a throwing probe costs a telemetry line and nothing else
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
       emit: () => {
         throw new Error('sink is down');
       },
     });
-    await assert.doesNotReject(scheduler.runTurn({ turn: 25, tokenEstimate: 0 }));
+    await assert.doesNotReject(scheduler.runTurn({ turn: 25, state: STATE }));
   });
 });
 
@@ -305,9 +351,10 @@ describe('the false green — hard-norms-only is surfaced, not passed', () => {
       },
       constraints: HARD_ONLY,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
     });
-    const result = await scheduler.runTurn({ turn: 25, tokenEstimate: 0 });
+    const result = await scheduler.runTurn({ turn: 25, state: STATE });
     assert.equal(result.violations.length, 1, 'a green here would be measuring the provider priors');
     assert.match(result.violations[0]?.detail ?? '', /hard_safety/);
   });
@@ -317,10 +364,11 @@ describe('the false green — hard-norms-only is surfaced, not passed', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(0),
       rotCases: ROT_CASES,
       config: { ...DEFAULT_CANARY_CONFIG, includeSoftOrgPolicies: false },
     });
-    const result = await scheduler.runTurn({ turn: 25, tokenEstimate: 0 });
+    const result = await scheduler.runTurn({ turn: 25, state: STATE });
     // With the flag off, the only constraint left is hard_safety, so the firing
     // cannot see the 8.3x decay and must not read as a pass.
     assert.equal(result.violations.length, 1);
@@ -335,11 +383,12 @@ describe('rot telemetry — the §8 rot_canary shape', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(WINDOW / 2),
       rotCases: ROT_CASES,
       runId: 'run-rot',
       emit: (event) => events.push(event),
     });
-    await scheduler.runTurn({ turn: 50, tokenEstimate: WINDOW / 2 });
+    await scheduler.runTurn({ turn: 50, state: STATE });
     const rot = events.find((event) => event.type === 'rot_canary');
     assert.ok(rot !== undefined, 'the rot probe must emit a rot_canary record');
     assert.deepEqual(Object.keys(rot).sort(), ['atFracOfWindow', 'probeId', 'runId', 'score', 'tier', 'turn', 'type'].sort());
@@ -354,10 +403,11 @@ describe('rot telemetry — the §8 rot_canary shape', () => {
       subjects: goodSubjects,
       constraints: MIXED,
       windowTokens: WINDOW,
+      pessimisticTokens: fixedTokens(WINDOW * 3),
       rotCases: ROT_CASES,
       emit: (event) => events.push(event),
     });
-    await scheduler.runTurn({ turn: 50, tokenEstimate: WINDOW * 3 });
+    await scheduler.runTurn({ turn: 50, state: STATE });
     const rot = events.find((event) => event.type === 'rot_canary');
     assert.equal(rot?.atFracOfWindow, 1);
     assert.equal(rot?.tier, 't80');
