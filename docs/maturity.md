@@ -75,13 +75,19 @@ Separately, `ArtifactStore.remove` (`packages/security/src/store.ts`) is reachab
 result lost that trailing result (`recoverTurns` returns a turn *window* — five evicted messages,
 four recovered). It is exported and uncalled.
 
-**Eviction is blocked on wiring, not on a port shape.** It was long recorded as needing an async
-`LossyStage.run` — a §1 contract change. Checked against the call graph, that premise is wrong:
-`runCompactionTransaction` is invoked only from gist's own tests, `TUNNEL_AFTER_TIER0` only from a
-test, and `runPipeline` — the generic runner that accepts caller-supplied stages — has no
-production callers. There is no eviction waiting on an async port; there is no eviction in the
-pipeline at all. Until something calls the tunnel, there is no evidence for which seam is right.
-(`61ef8ae`)
+**The tunnel seam now exists in production.** It was long recorded as needing an async
+`LossyStage.run` — a §1 contract change. Checked against the call graph, that premise was wrong:
+`runCompactionTransaction` is invoked only from gist's own tests and `TUNNEL_AFTER_TIER0` only
+from a test, so there was never an eviction waiting on an async port. There was no eviction in the
+pipeline at all, and therefore no evidence for which seam was right. (`61ef8ae`)
+
+`server.ts` now runs the post-Tier-0 stages through `runPipeline`, the generic runner that accepts
+caller-supplied stages and had no production caller. `pin` is supplied as a `TotalStage`; the lossy
+registry is passed empty, because Tier 0 has already run and `runPipeline` does not consult
+`policy.pipeline.stages` — omitting the field would fall back to the full `LOSSY_TIER0_STAGES` and
+let the tunnel override an operator's explicit stage configuration. `compact` and `compress` are
+still absent, so eviction remains unwired; what changed is that there is now a real seam to attach
+it to, rather than an argument about a port shape.
 
 **The MCP path cannot deliver recovery even though it looks wired.**
 `createStrataMcpServer` *is* reached from `packages/cli/src/index.ts` via `strata-ctx mcp serve`,
@@ -102,9 +108,20 @@ Measured through the real adapter egress on a 40-row corpus: **Anthropic −28%*
 `{output: [...]}`, which the classifier vetoes as object-shaped. Governance and pinned text pass
 through unchanged.
 
-*Decision:* **held.** The saving is real on two of three hosts, but wiring it adds a fourth
-cross-stream edge and `MACHINE_FORMATS` is unvalidated against real model output. Held rather than
-deleted so the measurement survives for whoever revisits it.
+**The serializer itself was never the thing under test.** `E3` takes its serializer as an injected
+`ToonCodec`, and the only implementation of that interface in the tree was `refEncode`/`refDecode`,
+a reference re-implementation of the grammar inside `packages/eval/test/e3-output-format.test.ts`.
+Every G10 result so far described that re-implementation, not `serializeToon`/`serializeTron`.
+`scripts/test/e3-serializer-codec.test.ts` injects the shipping codec instead: **30/30 in-domain
+cases lossless** across both dialects (15 each) and **22/22 out-of-domain values refused**,
+including `NaN`, the infinities and `-0`. Mean saving on that corpus is **TOON 55.7%**,
+**TRON 58.5%** — well clear of the 2% floor `select.ts` applies. Verified by mutation: deleting
+`json-value.ts`'s `-0` rejection fails two of these tests.
+
+*Decision:* **held.** The saving is real on two of three hosts and the shipping serializer is
+provably lossless on E3's corpus, but wiring it adds a fourth cross-stream edge and
+`MACHINE_FORMATS` is still unvalidated against what a live model actually returns. Held rather
+than deleted so the measurement survives for whoever revisits it.
 
 ### 3.3 B-3 pointerization — the archetype for "wired but doesn't run"
 

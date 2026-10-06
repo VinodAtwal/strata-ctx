@@ -29,6 +29,9 @@ repo. **If you find a count hardcoded in any doc, that is a defect** — see §1
 | Work a board task | `docs/tasks.csv` + `docs/development.md` §6 | §5 dispatch, §8 DoD |
 | Answer "is X reachable / does X run" | `docs/wiring-ledger.md` §5, §6 | §7 |
 | Assess readiness / risk | `docs/maturity.md`, `docs/decisions.md` §1 | — |
+| Explain the product to a non-engineer | `docs/how-it-works.md` | §11 (keep one copy) |
+| Evaluate or sell it | `docs/market.md`, `docs/visibility.md` | §11 |
+| Assess a risk or change a capability | `docs/risk-analysis.md` | §11 (R-register + P0/P1/P2 order) |
 | Deploy or operate it | `docs/operations.md` | — |
 | Learn from a mistake | `learning.md` | §8.0 |
 | Run the live A/B campaign (spends money) | `docs/evaluation.md` §Running it | §3, §8 |

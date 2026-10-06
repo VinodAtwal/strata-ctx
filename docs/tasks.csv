@@ -120,14 +120,14 @@ J-12,J,Dev infra,Fail the gate when the uncalled-export count rises (needs owner
 D-11,D,Gateway,Dedupe orphaned tool_result when two same-named tool calls collide,agent,1,-,5,-,done
 B-16,B,Context pipeline,Anthropic egress sent tool_use input as {} instead of reading the arguments back out of text,agent,1,-,5,-,done
 B-17,B,Context pipeline,Property-test tool-pair atomicity over generated transcripts,agent,1,-,5,-,done
-C-13,C,Gist engine,Eviction blocked on wiring not on the port: no production caller reaches the stage tunnel,agent,1,C-8,5,-,todo
+C-13,C,Gist engine,Tunnel seam is live and pins through it; compact and compress still unwired so eviction stays off,agent,1,C-8,5,-,todo
 C-14,C,Gist engine,MCP recovery unreachable: in-memory context over a disk artifact store,ext,1,C-8,5,-,todo
 C-15,C,Gist engine,recoverEvictedMessages closes the eviction-to-recovery gap,agent,1,C-8,5,-,done
 D-12,D,Gateway,Never drop the severe half of a tool pair during dedupe,agent,1,D-11,5,-,done
 E-16,E,Integrations,get_task no longer advertises itself as a reversibility path,agent,0.5,-,5,-,done
 F2-8,F,Evals,Grading-basis cap made fail-closed and unreportable as met,agent,1,F2-4,5,"G1,G2",done
 F2-9,F,Evals,A live run now reports whether it exercised the structured channel,agent,1,F2-4,5,-,done
-H-10,H,Output compress,Wire output-compress after TOON and TRON are validated on real output,ext,1,H-9,5,-,todo
+H-10,H,Output compress,Serializer proven lossless on E3 corpus via production codec; wiring waits on live model reading MACHINE_FORMATS,ext,1,H-9,5,-,todo
 J-13,J,Dev infra,Re-key the uncalled-export ratchet on local rather than the total,agent,1,J-12,5,-,done
 J-14,J,Dev infra,Declare the gist to telemetry dependency the code already had,agent,0.5,-,5,-,done
 F2-10,F,Evals,Board reader refuses a comma in a title instead of truncating it,agent,0.5,-,5,-,done

@@ -608,6 +608,10 @@ Start here, then follow the routing table in [`AGENTS.md`](AGENTS.md) §0.
 | Doc | Read it when you want |
 |---|---|
 | [`docs/quickstart.md`](docs/quickstart.md) | **New here.** Clone, install, build, run, and the gate explained |
+| [`docs/how-it-works.md`](docs/how-it-works.md) | **New here, non-technical.** The problem, the product, and how a request flows — no jargon |
+| [`docs/visibility.md`](docs/visibility.md) | **Evaluating it.** What you can see, what you can't, and the transparency work |
+| [`docs/risk-analysis.md`](docs/risk-analysis.md) | **Worried about it.** Every capability's upside and downside, what would betray you, and what to fix first |
+| [`docs/market.md`](docs/market.md) | **Deciding on it.** The market, the gap, and what would falsify this |
 | [`docs/architecture.md`](docs/architecture.md) | The canonical model, topology, pipeline order, compaction transaction |
 | [`docs/spec.md`](docs/spec.md) | What the product promises, non-goals, success criteria |
 | [`docs/operations.md`](docs/operations.md) | Running it: distribution model, defaults, observability, what degrades silently |

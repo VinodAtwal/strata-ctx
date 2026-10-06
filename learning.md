@@ -1,6 +1,6 @@
 # Learning
 
-*Intentionally empty. Append an entry when a mistake teaches something worth not repeating.*
+Append an entry when a mistake teaches something worth not repeating.
 
 Each entry: what went wrong → why it was not obvious → the rule that now prevents it. Rules that
 belong in the operational contract get written into [`AGENTS.md`](AGENTS.md) too; this file is the
@@ -9,6 +9,55 @@ narrative of how they were learned.
 ---
 
 <!-- Newest entries at the top. -->
+
+## A guard that cannot fail is not a guard
+
+C-13 wired `runPipeline` into the gateway and added a guard for a pin stage that never ran. I
+removed the guard to check the test could see it, and the whole suite stayed green.
+
+**Why it was not obvious.** `runPipeline` cannot drop the `pin` stage: the caller supplies it, and
+`isolateTotal` reverts to the input on failure rather than skipping. So `pinned === undefined` is
+reachable only if `enforcePins` itself throws. No test throws, so no test covered the branch, and a
+branch no test can reach is indistinguishable from dead code.
+
+Worse, the comment above it was wrong. I had written that a reverted pin "has had its governance
+blocks stripped and not replaced". It has not: `isolateTotal` returns the pin's *input*, and
+`restoreHeld` already put the inbound governance blocks back into that input. What is missing is
+the pin itself, which is synthesized from the policy and exists nowhere else in the state.
+
+**The rule.** A guard needs a reachable failure, or it is decoration. When one cannot be reached
+through the public surface, say so in the comment instead of implying a threat it cannot defend
+against — and do not describe a failure mode you have not traced to the actual mechanism.
+
+## An event-count assertion cannot see a silent second run
+
+The test meant to prove Tier 0 ran once through the tunnel counted `stage` telemetry events. With
+`lossyStages: {}` deleted — the exact mutation it was written to catch — the test still passed.
+
+**Why it was not obvious.** The gateway passes no `onTelemetry` to `runPipeline`, so the tunnel's
+own stages emit nothing. A duplicate execution would have been invisible to an event count. The
+pre-existing test caught it, and only because a flood of 40k characters survived or did not.
+
+**The rule.** Assert on observable *outcomes*, not on the bookkeeping. "Counted one run" is a claim
+about instrumentation; "the disabled stage left the bytes alone" is a claim about behaviour. When a
+test asserts something is absent, ask what would make it present, and confirm the answer is a
+mechanism that actually exists.
+
+## The thing under test was a re-implementation of the thing that ships
+
+H-10 gates `output-compress` wiring on TOON/TRON being "validated on real output". `E3` takes its
+serializer by injection, and the only implementation of that interface in the repo was
+`refEncode`/`refDecode` — a reference re-implementation of the grammar, inside E3's own test file.
+Every G10 number this repo had was evidence about that reference, not about `serializeToon`.
+
+**Why it was not obvious.** The suite was green, thorough, and correctly argued, and the gap was
+one level of indirection away: the injected interface looked like a seam, and a seam with only an
+in-repo implementation reads as "the code is exercised". Nothing asserted that the injected
+implementation *was* the production one.
+
+**The rule.** When a gate takes the thing-under-test by injection, find what is actually injected at
+the call site, not just in the test that proves the gate works. A reference implementation inside a
+gate's own test validates the gate's *oracle*, which is worth having and is not the same claim.
 
 ## 2026-10-05 — A CSV edit that looked surgical and was not
 

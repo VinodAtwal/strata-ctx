@@ -190,7 +190,11 @@ counted anywhere:
 | --- | --- | --- |
 | `pin_missing_pre_apply` / `pin_post_compact_missing` | `violation` | a constraint may not have survived |
 | `canary_fail` | `violation` | a probe failed |
-| `stage_failed_open` | `error` | the context went upstream uncompressed |
+| `stage_threw` / `prefix_reordered` / `not_a_lossy_context` / `not_a_context_state` / `unrecognised_stage_code` | `error` | the named stage failed open; its input went upstream unmodified |
+| `pipeline_failed_open` | `error` | the turn's pipeline raised; the original bytes went upstream with no pin or tier cap applied |
+| `bad_request` / `body_too_large` / `adapter_unavailable` / `upstream_unreachable` | `error` | the request was refused; nothing was lost, because nothing ran |
+| `unhandled` | `error` | an exception escaped the request handler; a gateway bug, not a request fault |
+| `shutdown_started` / `shutdown_forced` | `error` | lifecycle, not a request: no run, no stage |
 | `artifact_write_refused` | `error` | a pointer was not published; the read was left inline |
 | `eviction_skipped` | `error` (`EVICTION_SKIPPED_UNVERIFIED`) | the transcript was not evicted; it is still growing |
 
