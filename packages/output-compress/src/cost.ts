@@ -37,6 +37,14 @@ import { breakevenOk } from '@strata-ctx/core-types';
  * compared went through the same estimator. The per-block structural overhead
  * that `estimateBlockTokens` adds is excluded for the same reason -- it is a
  * constant added to both sides and cancels.
+ *
+ * The one job this estimator must not be given: deciding whether a request fits
+ * in a window. docs/risk-analysis.md §3.1 R1 measured `chars/4` at 1.43-1.49x
+ * too low on JSON and 2.43-2.49x too low on special-character-dense text, so a
+ * budget decision taken from it declines to compact a context that is already
+ * over the limit. `packages/pipeline/src/token-budget.ts` is the pessimistic
+ * estimator for that path and the type system keeps the two apart; this one
+ * stays correct for the ratio it was written for.
  */
 const BYTES_PER_TOKEN = 4;
 
