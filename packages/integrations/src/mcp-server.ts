@@ -22,6 +22,7 @@
 import { breakevenOk, runId, sha256 } from '@strata-ctx/core-types';
 import type { ArtifactRef, ContextState, Role, TaskId } from '@strata-ctx/core-types';
 import { taskId as brandTaskId } from '@strata-ctx/core-types';
+import type { ArtifactIntegrity } from '@strata-ctx/security';
 
 /* ------------------------------------------------------------------ *
  * JSON-RPC envelope
@@ -477,6 +478,103 @@ export interface ContextMemory {
 }
 
 /* ------------------------------------------------------------------ *
+ * The asynchronous half of artifact resolution
+ * ------------------------------------------------------------------ */
+
+/**
+ * Why an artifact lookup did not produce an object.
+ *
+ * Four honest answers were available and this is three of them, because the
+ * fourth is not reachable. `refused` would have meant "the store declined to
+ * authorise this read", and the only path a lookup takes to the store is
+ * `parseArtifactRef`, which accepts a bare sha256 or `artifact://bucket/digest`
+ * and nothing else -- so by the time a read is attempted the pointer is already
+ * content-addressed and already verified. There is no input this interface
+ * accepts that reaches a refusal, and an error arm no input can produce is a
+ * decoration, not a guard: it reads like coverage and tests nothing.
+ *
+ * `absent` is therefore the only arm that may ever be reported as "not found".
+ */
+export type ArtifactLookupFailure = 'malformed_ref' | 'absent' | 'unresolved';
+
+export type ArtifactLookup =
+  | {
+      readonly ok: true;
+      readonly artifact: StoredArtifact;
+      /**
+       * The store's own verdict on these bytes, passed on unedited.
+       *
+       * `redacted` means the digest the caller named is the digest of what was
+       * *submitted*, and an alias carried the read to the stored object. The
+       * content is therefore not byte-identical to what the pointer addresses,
+       * and the store refuses to call that `exact`. Neither does this: a
+       * recovery path that returns different bytes without saying so corrupts
+       * whatever it is used to restore, silently and by design.
+       */
+      readonly integrity: ArtifactIntegrity;
+    }
+  | {
+      readonly ok: false;
+      readonly failure: ArtifactLookupFailure;
+      /** The pointer that was asked about, normalised where one could be formed. */
+      readonly uri: string;
+      /**
+       * The underlying refusal, verbatim. Never synthesised, never dropped --
+       * `unresolved` is exactly the case where the reason is the answer.
+       */
+      readonly detail: string;
+    };
+
+/**
+ * What a context holder backed by durable storage adds to `ContextMemory`.
+ *
+ * `ContextMemory.getArtifact` is synchronous, and that is load-bearing: it is
+ * what lets `search`, `status` and the five non-artifact tools be plain
+ * functions over a `Map`, which is why this server can be tested with no
+ * filesystem anywhere in sight. It is also, on its own, a promise the interface
+ * cannot keep -- `ArtifactStore.read` is async because it authorises, stats,
+ * reads and audits through a filesystem ACL, and no wrapper turns that into a
+ * value a non-async method can return.
+ *
+ * So a store-backed context implements *this* rather than pretending the two
+ * fit. Adding a capability instead of widening `ContextMemory` is deliberate:
+ *
+ * 1. `getArtifact(ref): StoredArtifact | undefined` cannot grow a third state
+ *    without lying. `undefined` means "no such artifact", and against a real
+ *    store the truth is more often "I could not ask" -- a permission refusal, a
+ *    failed read, an audit log that will not append. Collapsing those into
+ *    "not found" is the defect this whole module exists to remove, so the
+ *    return type is not allowed to express it.
+ * 2. `T | Promise<T>` is worse than either: the union is satisfied by the sync
+ *    branch, so a caller who forgets `await` type-checks and gets a `Promise`
+ *    where it expected an artifact. A capability that can be absent is
+ *    capability code that can be absent.
+ * 3. `ContextMemory` is what the MCP server needs from a context holder. Making
+ *    it larger to accommodate one implementation's storage medium is how an
+ *    interface stops describing a capability and starts describing a
+ *    implementation.
+ *
+ * `createStrataMcpServer` prefers this when present and falls back to the
+ * synchronous read when not, which is what keeps `createInMemoryContext` and
+ * every test double in this package working unchanged.
+ */
+export interface AsyncArtifactReader {
+  lookupArtifact(ref: string): Promise<ArtifactLookup>;
+}
+
+/**
+ * Does this holder resolve artifacts through an async store?
+ *
+ * Private on purpose: one caller, `createStrataMcpServer`. Exporting it would
+ * add a second entry to the wiring ledger for a question the server already
+ * answers, and the gate that matters here is behavioural -- `get_artifact` is
+ * tested through both a store-backed and an in-memory binding, and a guard that
+ * cannot fail is not a guard either way.
+ */
+const isAsyncArtifactReader = (memory: ContextMemory): memory is ContextMemory & AsyncArtifactReader =>
+  typeof (memory as Partial<AsyncArtifactReader>).lookupArtifact === 'function';
+
+/* ------------------------------------------------------------------ *
  * Artifact refs
  * ------------------------------------------------------------------ */
 
@@ -494,6 +592,59 @@ export function parseArtifactRef(ref: string): ParsedArtifactRef | undefined {
   if (digest === undefined) return undefined;
   return { digest, uri: `artifact://file/${digest}` };
 }
+
+/**
+ * The one sentence per failure, and the whole reason for the union.
+ *
+ * `artifact not found` appears in exactly one of these branches, and that is
+ * the constraint. A caller who reads it can act on it: the pointer is wrong, or
+ * the object was purged. A caller reading `unresolved` cannot act on "not
+ * found", because nothing was found *or* denied -- the store did not answer --
+ * so pointing them at their own typo is a false lead manufactured by this
+ * layer. The distinction is the deliverable; the wording is not.
+ */
+const lookupMessage = (ref: string, failure: ArtifactLookupFailure, uri: string, detail: string): string => {
+  switch (failure) {
+    case 'malformed_ref':
+      return `not an artifact ref: ${ref}`;
+    case 'absent':
+      return `artifact not found: ${uri}`;
+    case 'unresolved':
+      return `artifact unresolved by the store: ${uri} (${detail})`;
+  }
+};
+
+/**
+ * `get_artifact` for a holder with no async capability -- i.e. `createInMemoryContext`.
+ *
+ * Kept, not deleted, because a `ContextMemory` written before `AsyncArtifactReader`
+ * existed must keep working; removing the fallback would turn a capability into a
+ * breaking change to every implementation of the interface it is defined
+ * alongside.
+ *
+ * What it cannot do is the third state. A `Map` that has never heard of a digest
+ * and an empty `Map` are the same `undefined`, so this reports `absent` for both,
+ * and it is therefore wrong to describe it as "how the store answers". It is
+ * "how a store that cannot answer looks from the outside" -- which is exactly
+ * what C-14 looked like: a pointer to a perfectly good artifact, reported as
+ * missing, because the process holding the context never loaded it.
+ */
+const syncLookup = (memory: ContextMemory, ref: string): ArtifactLookup => {
+  const parsed = parseArtifactRef(ref);
+  if (parsed === undefined) {
+    return {
+      ok: false,
+      failure: 'malformed_ref',
+      uri: ref,
+      detail: 'expected artifact://<bucket>/<64 hex sha256> or a bare 64 hex digest',
+    };
+  }
+  const artifact = memory.getArtifact(ref);
+  if (artifact === undefined) {
+    return { ok: false, failure: 'absent', uri: parsed.uri, detail: 'not held by this context' };
+  }
+  return { ok: true, artifact, integrity: 'exact' };
+};
 
 /* ------------------------------------------------------------------ *
  * In-memory ContextMemory
@@ -1334,20 +1485,40 @@ export function createStrataMcpServer(
     });
   });
 
-  server.registerTool('get_artifact', TOOL_SCHEMAS.get_artifact, (args) => {
+  // The only handler that cannot be a plain function, and the reason the
+  // `AsyncArtifactReader` capability exists at all. `async` here costs nothing
+  // for the in-memory binding -- `await` on an already-resolved `ArtifactLookup`
+  // is one microtask -- and it is what lets the store-backed binding answer
+  // without a second server and a second tool surface.
+  server.registerTool('get_artifact', TOOL_SCHEMAS.get_artifact, async (args) => {
     const ref = str(args, 'ref');
-    const parsed = parseArtifactRef(ref);
-    if (parsed === undefined) {
-      return toolError(`not an artifact ref: ${ref}`, { ref });
+    const lookup = isAsyncArtifactReader(memory) ? await memory.lookupArtifact(ref) : syncLookup(memory, ref);
+    if (!lookup.ok) {
+      return toolError(lookupMessage(ref, lookup.failure, lookup.uri, lookup.detail), {
+        ref,
+        uri: lookup.uri,
+        failure: lookup.failure,
+        // The reason is redundant with it for `absent` (the store's own words)
+        // and is the entire content for `unresolved`. Send it either way: an
+        // operator reading a log needs the underlying error, not this layer's
+        // summary of it.
+        detail: lookup.detail,
+      });
     }
-    const artifact = memory.getArtifact(ref);
-    if (artifact === undefined) return toolError(`artifact not found: ${parsed.uri}`, { ref: parsed.uri });
+    const { artifact, integrity } = lookup;
     return toolJson({
       uri: artifact.uri,
       sha256: artifact.sha256,
       kind: artifact.kind,
       bytes: artifact.bytes,
       content: artifact.text,
+      // A new field, and not for tidiness. `redacted` means `content` is not the
+      // bytes the pointer names, and an agent restoring a transcript from this
+      // needs to see that rather than diff the result against the original and
+      // conclude the store lost data. Absent this key the store's central
+      // guarantee -- never call a redacted read `exact` -- does not survive the
+      // trip through the tool.
+      integrity,
     });
   });
 
