@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { ContextState, LossyContext, StrataPolicy } from '@strata-ctx/core-types';
-import { assertPrefixPreserved, isHighSeverity, partitionForLossy } from '@strata-ctx/core-types';
+import { assertPrefixPreserved, estimateTokens, isHighSeverity, partitionForLossy } from '@strata-ctx/core-types';
 
 import {
   LAST_STAGE,
@@ -97,6 +97,35 @@ describe('Tier 0 end to end', () => {
       assert.ok(run.telemetry.bytesIn > 0);
     }
     assert.ok(result.runs.every((r) => r.telemetry.changed), 'this fixture makes every stage work');
+  });
+
+  it('reports input tokens as the context arrived, not as the stage left it', () => {
+    // Both figures used to be computed after `ctx = next`, so every stage
+    // reported one number twice: a sink reading `status.ts` per-stage token
+    // tallies would have seen a reduction of zero for the stages that
+    // demonstrably reduced the context, and `request_in` versus `stage` would
+    // have been the only pair that moved. G-10.
+    const [first, ...rest] = result.runs;
+    assert.ok(first !== undefined);
+
+    // What the first stage received is the partitioned input, exactly as the
+    // bytes it reports are the partitioned input.
+    const partitioned = partitionForLossy(input, PINNED_POLICY);
+    assert.equal(first.telemetry.inputTokens, estimateTokens({ ...input, messages: partitioned.messages }));
+
+    // The chain a sink reads: what a stage says it received is what the stage
+    // before it says it produced. This is the assertion that fails when the two
+    // figures are computed from the same (post-stage) state.
+    for (let i = 0; i < rest.length; i += 1) {
+      assert.equal(rest[i]?.telemetry.inputTokens, result.runs[i]?.telemetry.outputTokens, rest[i]?.name);
+    }
+
+    // And the claim the fix exists for: dedupe dropped a duplicated read, so
+    // the token count fell between the two figures.
+    assert.ok(
+      (first.telemetry.outputTokens ?? 0) < (first.telemetry.inputTokens ?? 0),
+      `dedupe reported ${first.telemetry.inputTokens} -> ${first.telemetry.outputTokens}`,
+    );
   });
 
   it('reclaims bytes at the pointer-izer, which is the biggest win', () => {

@@ -1,7 +1,7 @@
 import { Server, type IncomingMessage, type RequestListener, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { Readable } from 'node:stream';
-import type { ContextState, LossyStage, LossyStageName, PinDefect, StageName, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
+import type { ContextState, LossyStage, LossyStageName, PinDefect, StageName, StageTelemetry, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
 import {
   enforcePins,
   type PinApplication,
@@ -18,7 +18,7 @@ import {
   type StageErrorCode,
   type Tier0Result,
 } from '@strata-ctx/pipeline';
-import type { AsyncLossyStage, PendingArtifact } from '@strata-ctx/pipeline';
+import type { AsyncLossyStage, PendingArtifact, StageResult } from '@strata-ctx/pipeline';
 import { ArtifactStore } from '@strata-ctx/security';
 import { DEFAULT_TAIL_BYTES, pipeSseUpstream } from './sse.js';
 import { ollamaClientFromFetch, type NarrationConfig } from './ollama-adapter.js';
@@ -391,14 +391,14 @@ const fail = (
  */
 const REMEDY = {
   bodyCeiling: { at: 'packages/gateway/src/server.ts:172', symbol: 'MAX_BODY_BYTES' },
-  jsonParse: { at: 'packages/gateway/src/server.ts:691', symbol: 'JSON.parse(body.text)' },
-  upstreamFetch: { at: 'packages/gateway/src/server.ts:579', symbol: 'upstream = await fetch' },
+  jsonParse: { at: 'packages/gateway/src/server.ts:726', symbol: 'JSON.parse(body.text)' },
+  upstreamFetch: { at: 'packages/gateway/src/server.ts:614', symbol: 'upstream = await fetch' },
   adapterResolution: { at: 'packages/gateway/src/routing.ts:137', symbol: 'resolveAdapter' },
-  lossyFailOpen: { at: 'packages/pipeline/src/order.ts:144', symbol: 'runStageFailOpen' },
-  totalFailOpen: { at: 'packages/pipeline/src/runner.ts:235', symbol: 'isolateTotal' },
-  ingressPipeline: { at: 'packages/gateway/src/server.ts:637', symbol: 'handleIngress' },
-  lastDefence: { at: 'packages/gateway/src/server.ts:1394', symbol: "'unhandled'" },
-  drainBudget: { at: 'packages/gateway/src/server.ts:1226', symbol: "'shutdown_forced'" },
+  lossyFailOpen: { at: 'packages/pipeline/src/order.ts:157', symbol: 'runStageFailOpen' },
+  totalFailOpen: { at: 'packages/pipeline/src/runner.ts:267', symbol: 'isolateTotal' },
+  ingressPipeline: { at: 'packages/gateway/src/server.ts:672', symbol: 'handleIngress' },
+  lastDefence: { at: 'packages/gateway/src/server.ts:1433', symbol: "'unhandled'" },
+  drainBudget: { at: 'packages/gateway/src/server.ts:1265', symbol: "'shutdown_forced'" },
 } as const;
 
 /** `file:line (symbol)` -- the shape operations.md Factor 6 asks for. */
@@ -406,6 +406,41 @@ const cite = (anchor: { readonly at: string; readonly symbol: string }): string 
   `${anchor.at} (${anchor.symbol})`;
 
 const isLossyStageName = (stage: StageName): stage is LossyStageName => stage !== 'pin' && stage !== 'serialize';
+
+/**
+ * One `stage` event, from either producer.
+ *
+ * Tier 0 measures its own stages (`runTier0`, `StageRun.telemetry`) and the
+ * runner measures the tunnel's (`PipelineRun.stageResults`); the projection onto
+ * the wire shape happens once here so the two cannot drift into two field
+ * lists. The numbers underneath already agree -- both go through `order.ts`'s
+ * `measure` and `blockFingerprint`, and both apply the same `changed` rule --
+ * which is the only reason a sink can put a Tier 0 stage and an injected one on
+ * the same axis.
+ *
+ * `inputTokens`/`outputTokens` are carried for both, so `status.ts`'s per-stage
+ * token tallies are fed by every stage rather than by none of them. They are
+ * `estimateTokens`, not provider usage; `order.ts` records why that is the
+ * defensible number to publish when there is no real measurement (§6.2).
+ */
+const stageEvent = (runId: string, telemetry: StageTelemetry): TelemetryEvent => ({
+  type: 'stage',
+  runId,
+  ...telemetry,
+});
+
+/** What the runner reports, in the shape the `stage` event wants. */
+const tunnelTelemetry = (result: StageResult): StageTelemetry => ({
+  stage: result.name,
+  bytesIn: result.bytesIn,
+  bytesOut: result.bytesOut,
+  blocksIn: result.blocksIn,
+  blocksOut: result.blocksOut,
+  durationMs: result.durationMs,
+  changed: result.changed,
+  inputTokens: result.tokensIn,
+  outputTokens: result.tokensOut,
+});
 
 /**
  * One message per cause, with the remedy in it.
@@ -707,12 +742,10 @@ const handleIngress = async (
   }
 
   const session = touchSession(d, sessionId);
-  const t0 = performance.now();
 
   let state: ContextState;
   let expected: readonly string[];
   let outbound: unknown;
-  let blocksIn = 0;
   // Declared outside the `try` because the telemetry below reads it, and it is
   // read after the stages have run. Initialised to a zero-delta result rather
   // than left undefined so the telemetry loop is unconditional: a stage that
@@ -736,7 +769,6 @@ const handleIngress = async (
     attribute(where, 'serialize');
     const before = adapter.toCanonical(parsed, Date.now());
     where.runId = before.runId;
-    blocksIn = before.messages.length;
 
     // Tier 0 (partition -> dedupe, truncate, triage -> restore) -> pin.
     //
@@ -937,18 +969,15 @@ const handleIngress = async (
     // telemetry sink that throws cannot cost the request -- the catch below
     // fails the whole turn open, and losing the user's context to a logging
     // failure is precisely the trade this design refuses to make.
+    //
+    // Two loops because there are two producers, and the second one is what C-13
+    // made necessary: before the tunnel existed, `pin` was reported by the
+    // turn-level event at the bottom of this function (deleted in G-10, along
+    // with the fact that it measured the whole turn, in wire bytes and message
+    // counts, and filed both under one stage name). A stage the composition root
+    // injected now reports like any other.
     for (const stageRun of tier0Run.runs) {
-      d.rt.opts.telemetry?.({
-        type: 'stage',
-        runId: state.runId,
-        stage: stageRun.name,
-        bytesIn: stageRun.telemetry.bytesIn,
-        bytesOut: stageRun.telemetry.bytesOut,
-        blocksIn: stageRun.telemetry.blocksIn,
-        blocksOut: stageRun.telemetry.blocksOut,
-        durationMs: stageRun.telemetry.durationMs,
-        changed: stageRun.telemetry.changed,
-      });
+      d.rt.opts.telemetry?.(stageEvent(state.runId, stageRun.telemetry));
       // A stage that failed open is reported with its cause, not flattened into
       // one code: the context went upstream unmodified, so a report that counted
       // it as a reduction would be claiming work that did not happen -- and a
@@ -964,6 +993,14 @@ const handleIngress = async (
           fail(d, where, code, stageFailureMessage(stageRun.name, code), true);
         }
       }
+    }
+    // Telemetry only, and that is deliberate. Failures were already reported
+    // while they happened, by `onStage` on the `runPipeline` call above -- the
+    // stage event and the `error` event for one failure is the right count, and
+    // reporting `fail` again from here would give a sink two errors and an
+    // operator two fixes for one broken stage.
+    for (const result of tunnel.stageResults) {
+      d.rt.opts.telemetry?.(stageEvent(state.runId, tunnelTelemetry(result)));
     }
     if (tier0Run.prefixInvalidated) {
       // R4: moving or editing a cacheable block destroys the economics of the
@@ -1016,17 +1053,19 @@ const handleIngress = async (
   session.state = state;
   session.lastSent = expected;
 
-  d.rt.opts.telemetry?.({
-    type: 'stage',
-    runId: state.runId,
-    stage: 'pin',
-    bytesIn: JSON.stringify(parsed).length,
-    bytesOut: JSON.stringify(outbound).length,
-    blocksIn,
-    blocksOut: state.messages.length,
-    durationMs: performance.now() - t0,
-    changed: true,
-  });
+  // No turn-level `stage` event here, and that is a deletion rather than an
+  // omission. What used to sit at this point was labeled `stage: 'pin'` while
+  // measuring the whole turn: `bytesIn`/`bytesOut` were wire-JSON lengths, not
+  // the `meta.bytes` sum every other `stage` event carries; `blocksIn`/
+  // `blocksOut` were message counts; and `durationMs` was the entire request,
+  // which `status.ts` adds into a per-stage duration total once per turn. With
+  // the tunnel reporting its own stages (the loop above), it would have
+  // reported `pin` twice in incompatible units and handed a sink a `pin` with
+  // two different answers. G-10.
+  //
+  // What a sink reads instead: `request_in` for input tokens and turn number,
+  // one `stage` event per stage that actually ran, `cache` for prefix damage,
+  // and `error` for anything that failed open.
 
   await forward(req, res, d, where, JSON.stringify(outbound), { 'x-strata-pinned': String(expected.length) });
 };

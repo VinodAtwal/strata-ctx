@@ -156,9 +156,11 @@ test('the pin stage runs through runPipeline, not an inline enforcePins', async 
   const h = await startGateway({}, up.url);
   await post(`${h.url}/v1/messages`, requestBody(''));
 
-  // `runPipeline` owns the cache-prefix accounting for total stages and reports
-  // it on the run. The inline call had no accounting to report, so the presence
-  // of a pin verdict naming the tunnel is the observable difference.
+  // The `pin` stage event is emitted from `PipelineRun.stageResults`, so it
+  // exists only if `pin` ran as a stage of `runPipeline`. The inline
+  // `enforcePins` this replaced emitted nothing of its own -- and before G-10
+  // the one event that carried the name `pin` was a turn summary, which said
+  // nothing about how pin ran.
   const stage = h.events.find((e) => e.type === 'stage' && e.stage === 'pin');
   assert.ok(stage, 'the pin stage reported nothing');
   assert.equal(stage?.type === 'stage' && stage.changed, true);
@@ -370,6 +372,97 @@ test('a failing injected stage is attributed to itself and still fails open', as
   const sent = JSON.parse(up.calls[0]?.body ?? '{}') as { system?: { text: string }[] };
   const text = (sent.system ?? []).map((s) => s.text).join('\n');
   assert.ok(text.includes(CONSTRAINT), 'the pin did not survive a failed compact stage');
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+// ---------------------------------------------- G-10: every stage that ran is visible
+//
+// C-13 put `pin` and any injected stage behind `runPipeline`, and until G-10
+// nothing reported them: `handleIngress` emitted exactly one `stage` event,
+// labeled `stage: 'pin'`, that measured the whole turn -- wire-JSON lengths as
+// `bytesIn`, message counts as `blocksIn`, the entire request as `durationMs`.
+// A sink could not tell a gateway that pinned from one that compacted 40k
+// tokens to 6k, and `status.ts` was adding a full turn to a per-stage duration
+// total once per request.
+//
+// What has to hold: the tunnel's stages report like Tier 0's -- same fields,
+// same units, both fed by `order.ts`'s `measure` -- pin is reported exactly
+// once, the token fields the contract has carried since G-9 are actually
+// filled, and an injected stage is distinguishable from no stage at all.
+
+type StageEvent = Extract<TelemetryEvent, { type: 'stage' }>;
+
+const stagesOf = (events: readonly TelemetryEvent[]): StageEvent[] =>
+  events.filter((e): e is StageEvent => e.type === 'stage');
+
+test('the tunnel reports pin once, in stage units, with the token fields filled', async () => {
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  await post(`${h.url}/v1/messages`, requestBody(''));
+
+  const pins = stagesOf(h.events).filter((e) => e.stage === 'pin');
+  assert.equal(pins.length, 1, `pin reported ${pins.length} times; one of them is a turn summary wearing its name`);
+  const pin = pins[0] as StageEvent;
+
+  assert.equal(pin.changed, true, 'pin did its job and reported no change');
+  assert.ok(pin.blocksOut > pin.blocksIn, `pin ${pin.blocksIn} -> ${pin.blocksOut} blocks`);
+  assert.ok(pin.bytesOut > pin.bytesIn, `pin ${pin.bytesIn} -> ${pin.bytesOut} bytes`);
+  assert.equal(typeof pin.inputTokens, 'number');
+  assert.equal(typeof pin.outputTokens, 'number');
+  assert.ok(
+    (pin.outputTokens ?? 0) > (pin.inputTokens ?? 0),
+    `pin ${pin.inputTokens} -> ${pin.outputTokens}: it added a constraint and the tokens did not move`,
+  );
+
+  // Tier 0's stages come from the other producer, so the two loops cannot drift
+  // into one of them carrying tokens and the other not.
+  const truncate = stagesOf(h.events).find((e) => e.stage === 'truncate');
+  assert.equal(typeof truncate?.inputTokens, 'number');
+  assert.equal(typeof truncate?.outputTokens, 'number');
+
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('an injected stage reports a stage event of its own, in the same units', async () => {
+  const up = await startUpstream(echoJson);
+  const h = await startGateway(
+    {
+      lossyStages: {
+        compact: {
+          name: 'compact',
+          run: async (ctx: LossyContext): Promise<LossyContext> => {
+            await Promise.resolve();
+            return { ...ctx, messages: [...ctx.messages, markerMessage(MARKER)] };
+          },
+        },
+      },
+    },
+    up.url,
+  );
+
+  await post(`${h.url}/v1/messages`, requestBody(''));
+
+  const compacts = stagesOf(h.events).filter((e) => e.stage === 'compact');
+  assert.equal(compacts.length, 1, 'the injected stage reported nothing to the sink, so it is invisible');
+  const compact = compacts[0] as StageEvent;
+  assert.equal(compact.changed, true);
+  // The stage appends exactly one block, so the counts move by exactly one
+  // block and by that block's bytes -- true only if these are content blocks and
+  // `meta.bytes`, rather than messages and serialized JSON as the deleted
+  // turn-level event reported.
+  assert.equal(compact.blocksOut, compact.blocksIn + 1, `compact ${compact.blocksIn} -> ${compact.blocksOut}`);
+  assert.ok(compact.bytesOut > compact.bytesIn, `compact ${compact.bytesIn} -> ${compact.bytesOut}`);
+  assert.equal(typeof compact.inputTokens, 'number');
+
+  // Both producers in one request: Tier 0's three, then the tunnel's pin, then
+  // the injected stage, in pipeline order.
+  assert.deepEqual(
+    stagesOf(h.events).map((e) => e.stage),
+    ['dedupe', 'truncate', 'triage', 'pin', 'compact'],
+  );
+
   await h.gateway.closeGracefully();
   await up.close();
 });

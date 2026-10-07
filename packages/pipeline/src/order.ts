@@ -94,7 +94,13 @@ export interface StageRun {
   readonly code?: string;
 }
 
-const blockFingerprint = (messages: readonly Message[]): string =>
+/**
+ * Every block's identity and size, in order. Exported because `runner.ts`
+ * measures the tunnel's stages with the same definition, and a `stage` event
+ * from Tier 0 and one from an injected stage have to be the same number or a
+ * sink comparing them is comparing two measurement schemes.
+ */
+export const blockFingerprint = (messages: readonly Message[]): string =>
   messages
     .flatMap((m) => m.content)
     .map((b) => `${b.meta.sha256}/${b.meta.tier}/${b.meta.bytes}`)
@@ -107,7 +113,14 @@ const cacheableFingerprint = (messages: readonly Message[]): string =>
     .map((b) => b.meta.sha256)
     .join('|');
 
-const measure = (messages: readonly Message[]): { blocks: number; bytes: number } => {
+/**
+ * `{blocks, bytes}` for a message list: content-block count and the sum of
+ * `meta.bytes`, which is the unit `bytesIn`/`bytesOut` means everywhere else.
+ *
+ * Exported for the same reason as `blockFingerprint` -- `runner.ts` measures the
+ * tunnel's stages through this function so a `stage` event means one thing.
+ */
+export const measure = (messages: readonly Message[]): { blocks: number; bytes: number } => {
   let blocks = 0;
   let bytes = 0;
   for (const m of messages) {
@@ -240,6 +253,11 @@ export function runTier0(
     const stageBefore = measure(ctx.messages);
     const fingerprintBefore = blockFingerprint(ctx.messages);
     const cacheBefore = cacheableFingerprint(ctx.messages);
+    // Held because `ctx` is reassigned to the result below: `inputTokens` means
+    // the context as it arrived, and measuring it after would report the same
+    // figure as `outputTokens` for every stage -- a token number that claims a
+    // reduction of zero for a stage that demonstrably dropped blocks.
+    const messagesBefore = ctx.messages;
 
     // Three branches, one implementation. Each hands the same generic runner a
     // concrete stage so the report stays typed all the way to the sink; a lookup
@@ -283,7 +301,7 @@ export function runTier0(
         blocksOut: stageAfter.blocks,
         durationMs,
         changed: code !== undefined || blockFingerprint(ctx.messages) !== fingerprintBefore,
-        inputTokens: estimateTokens({ ...state, messages: ctx.messages }),
+        inputTokens: estimateTokens({ ...state, messages: messagesBefore }),
         outputTokens: estimateTokens({ ...state, messages: next.messages }),
       },
       cache: { prefixHit: cacheAfter === cacheBefore, prefixInvalidated: cacheAfter !== cacheBefore },

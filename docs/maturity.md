@@ -99,6 +99,22 @@ other one, and the wiring ratchet said so.
 `compact` and `compress` are still not supplied by any composition root, so eviction remains
 unwired. The seam now accepts an injected stage; nothing attaches one.
 
+**Every stage that runs reports, in one set of units.** The tunnel's stages (`pin`, and anything
+injected) report from `PipelineRun.stageResults`; Tier 0's report from `runTier0`. Both go through
+`order.ts`'s `measure` and `blockFingerprint`, so `bytesIn`/`bytesOut` are `meta.bytes` and
+`blocksIn`/`blocksOut` are content blocks on both sides, and `changed` follows the same rule in both
+-- which is the only reason a sink can put a Tier 0 stage and an injected one on one axis. The
+`inputTokens`/`outputTokens` fields the contract has carried since G-9 are filled too, so `strata
+status` per-stage token tallies are fed by every stage instead of by none of them; Tier 0's
+`inputTokens` was measured after the stage ran, so it reported the same figure as `outputTokens` and
+a reduction of zero for stages that demonstrably reduced.
+
+What disappeared here is the one `stage` event that used to be emitted at the end of a turn. It was
+labeled `stage: 'pin'` while measuring the whole request -- wire-JSON lengths as bytes, message
+counts as blocks, the entire request as `durationMs` -- so it would have reported `pin` twice in
+incompatible units, and `status.ts` was already adding a full turn to a per-stage duration total
+once per request.
+
 **The MCP path can deliver recovery now — behind an opt-in the reader and the writer share.**
 It used to bind `createInMemoryContext()`, a per-process `Map`, so `get_artifact` resolved nothing
 on the CLI path: a pointer written to `ArtifactStore` on disk was answered "not found" by a

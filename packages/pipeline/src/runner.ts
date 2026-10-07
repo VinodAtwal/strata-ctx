@@ -18,7 +18,13 @@ import {
 } from '@strata-ctx/core-types';
 import type { CachePrefixDiff } from './cache-prefix.js';
 import { observeCachePrefix } from './cache-prefix.js';
-import { LOSSY_TIER0_STAGES, PIPELINE_STAGE_ORDER, runStageFailOpen } from './order.js';
+import {
+  LOSSY_TIER0_STAGES,
+  PIPELINE_STAGE_ORDER,
+  blockFingerprint,
+  measure,
+  runStageFailOpen,
+} from './order.js';
 import type { StageApplied } from './stage.js';
 
 /**
@@ -95,6 +101,32 @@ export interface StageResult {
   readonly durationMs: number;
   readonly tokensIn: number;
   readonly tokensOut: number;
+  /**
+   * Content-block bytes in and out, plus the block counts -- the unit
+   * `StageTelemetry` means, measured by `order.ts`'s `measure` so a tunnel stage
+   * and a Tier 0 stage cannot disagree about what a byte is.
+   *
+   * `in` is what the stage was given and `out` is what it produced, both on the
+   * view the stage actually saw: the partitioned messages for a lossy stage, the
+   * full state for a total one. A stage that failed open reports `out == in`,
+   * because isolation put its input back and that is the context that went
+   * upstream -- the same thing `runTier0` reports for a stage that failed open.
+   */
+  readonly bytesIn: number;
+  readonly bytesOut: number;
+  readonly blocksIn: number;
+  readonly blocksOut: number;
+  /**
+   * The stage altered the messages it was given, or failed open.
+   *
+   * The second disjunct is `runTier0`'s rule exactly (`order.ts`): a stage that
+   * failed open left the context alone, so "changed" reads backwards -- until
+   * you remember the field exists to answer "did this stage do anything I need
+   * to look at", and a failed stage is precisely that. Two producers of `stage`
+   * events agreeing on one definition matters more than the definition being
+   * the intuitive one.
+   */
+  readonly changed: boolean;
   /** Present only on failure. A closed set, not a serialized exception. */
   readonly code?: StageErrorCode;
 }
@@ -280,27 +312,48 @@ interface StepInput {
   readonly emit: (event: TelemetryEvent) => void;
 }
 
-const recordStep = (name: StageName, input: StepInput, next: ContextState): RecordedStep => ({
-  result: {
-    name,
-    ok: input.code === undefined,
-    durationMs: performance.now() - input.started,
-    tokensIn: input.tokensIn,
-    tokensOut: estimateTokens(next),
-    ...(input.code === undefined ? {} : { code: input.code }),
-  },
-  diff: observeCachePrefix(
-    name,
-    {
-      before: input.measuredBefore,
-      after: input.observedMessages,
-      reverted: input.code !== undefined,
+const recordStep = (name: StageName, input: StepInput, next: ContextState): RecordedStep => {
+  // What the telemetry reports, as opposed to what the prefix tracker inspects.
+  //
+  // On failure the two deliberately diverge: the committed state is the input,
+  // because isolation put it back, so `bytesOut` reporting the stage's discarded
+  // output would credit a reduction that never reached the context and went
+  // upstream. `observedMessages` stays raw for `observeCachePrefix`, whose whole
+  // job is to see the discarded output -- a reordered prefix has to be caught
+  // before it is reverted, and it is reverted precisely because it was wrong.
+  const reported =
+    input.code === undefined ? (input.observedMessages ?? input.measuredBefore) : input.measuredBefore;
+  const before = measure(input.measuredBefore);
+  const after = measure(reported);
+  return {
+    result: {
+      name,
+      ok: input.code === undefined,
+      durationMs: performance.now() - input.started,
+      tokensIn: input.tokensIn,
+      tokensOut: estimateTokens(next),
+      bytesIn: before.bytes,
+      bytesOut: after.bytes,
+      blocksIn: before.blocks,
+      blocksOut: after.blocks,
+      changed:
+        input.code !== undefined ||
+        blockFingerprint(reported) !== blockFingerprint(input.measuredBefore),
+      ...(input.code === undefined ? {} : { code: input.code }),
     },
-    input.runId,
-    input.emit,
-  ),
-  next,
-});
+    diff: observeCachePrefix(
+      name,
+      {
+        before: input.measuredBefore,
+        after: input.observedMessages,
+        reverted: input.code !== undefined,
+      },
+      input.runId,
+      input.emit,
+    ),
+    next,
+  };
+};
 
 /** The mutable part of a run, so a loop body reads as compute, record, commit. */
 interface LoopState {

@@ -19,6 +19,7 @@ import {
   enforcePins,
   estimateTokens,
   GistSchema,
+  partitionForLossy,
   pinSetText,
   runId,
   sha256,
@@ -324,6 +325,38 @@ describe('A-14 runner: happy path', async () => {
     }
   });
 
+  it('reports each stage in the units StageTelemetry means: meta.bytes and content blocks', () => {
+    const blockCount = (messages: readonly Message[]): number => messages.reduce((n, m) => n + m.content.length, 0);
+    const byteCount = (messages: readonly Message[]): number =>
+      messages.reduce((n, m) => n + m.content.reduce((k, b) => k + b.meta.bytes, 0), 0);
+
+    const dedupe = run.stageResults[0];
+    assert.ok(dedupe !== undefined);
+    // The view the stage was given, not the committed state: governance is held
+    // out of a lossy stage's input, and reporting the restored state as `in`
+    // would credit a stage with measuring blocks it was never shown. This is the
+    // same view `runTier0` measures, which is the point -- one `stage` event
+    // series, two producers.
+    const partitioned = partitionForLossy(realisticState(), PINNED_POLICY);
+    assert.equal(dedupe.blocksIn, blockCount(partitioned.messages));
+    assert.equal(dedupe.bytesIn, byteCount(partitioned.messages));
+
+    // This fixture has a duplicated file read and an oversized build log, so the
+    // stages that worked must report a shrink in both units -- the number a sink
+    // needs to tell a running pipeline from an idle one.
+    assert.equal(dedupe.changed, true);
+    assert.ok(dedupe.blocksOut < dedupe.blocksIn, `dedupe ${dedupe.blocksIn} -> ${dedupe.blocksOut}`);
+    assert.ok(dedupe.bytesOut < dedupe.bytesIn, `dedupe ${dedupe.bytesIn} -> ${dedupe.bytesOut}`);
+    const truncate = run.stageResults[1];
+    assert.ok(truncate !== undefined);
+    assert.equal(truncate.changed, true);
+    // Truncate shortens a block or turns it into a pointer rather than deleting
+    // it, so the block count can hold still while the bytes fall -- which is
+    // exactly why the event carries both figures instead of one.
+    assert.ok(truncate.bytesOut < truncate.bytesIn, `truncate ${truncate.bytesIn} -> ${truncate.bytesOut}`);
+    assert.ok(truncate.blocksOut <= truncate.blocksIn, `truncate ${truncate.blocksIn} -> ${truncate.blocksOut}`);
+  });
+
   it('runs all seven stages in order when the tunnel stages are wired', async () => {
     const wired = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
@@ -392,9 +425,29 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     });
     const failed = run.stageResults[1];
     assert.ok(failed);
-    assert.deepEqual(Object.keys(failed), ['name', 'ok', 'durationMs', 'tokensIn', 'tokensOut', 'code']);
+    assert.deepEqual(Object.keys(failed), [
+      'name',
+      'ok',
+      'durationMs',
+      'tokensIn',
+      'tokensOut',
+      'bytesIn',
+      'bytesOut',
+      'blocksIn',
+      'blocksOut',
+      'changed',
+      'code',
+    ]);
     assert.equal('message' in failed, false);
     assert.equal('stack' in failed, false);
+    // The stage's output was discarded, so what it did to the context must not
+    // be reported as a reduction: `out` is the input that actually went
+    // upstream, and a sink that read a shrink here would be counting work that
+    // was undone. It still has to be visible -- `changed` stays true for a
+    // failure, which is `runTier0`'s rule too.
+    assert.equal(failed.bytesOut, failed.bytesIn, 'a failed stage reported bytes it never produced');
+    assert.equal(failed.blocksOut, failed.blocksIn, 'a failed stage reported blocks it never produced');
+    assert.equal(failed.changed, true, 'a stage that failed open must not look like one that did nothing');
   });
 
   it('codes a stage that reorders the cached prefix', async () => {
