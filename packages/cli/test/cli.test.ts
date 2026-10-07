@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, chmod, symlink } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, writeFile, chmod, symlink, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { promisify } from 'node:util';
+
+import { createStoreBackedContext, createStrataMcpServer } from '@strata-ctx/integrations';
+import { ArtifactStore } from '@strata-ctx/security';
 
 const run = promisify(execFile);
 
@@ -559,5 +562,182 @@ describe('E-13: mcp serve end to end, as an installed bin', () => {
 
     const res = JSON.parse(stdout.trim()) as { result: { tools: { name: string }[] } };
     assert.equal(res.result.tools.length, 6);
+  });
+});
+
+// ------------------------------------------------------------------ C-14
+//
+// The recovery path, end to end, across real processes: one process writes
+// through `ArtifactStore.put`, another -- a freshly spawned `mcp serve` -- is
+// asked for that pointer and has to hand the bytes back. An in-process call
+// would prove the binding; it would not prove that the two processes agree on
+// where the store is, which is the entire claim C-14 makes.
+
+const REPO_ROOT = join(import.meta.dirname, '..', '..', '..');
+const C14_TEXT = 'const recover = (uri: string): Promise<string> => store.read(uri).then((r) => r.text);\n';
+const c14Roots: string[] = [];
+
+after(async () => {
+  await Promise.all(c14Roots.map((r) => rm(r, { recursive: true, force: true })));
+});
+
+const c14Root = async (): Promise<string> => {
+  const root = await mkdtemp(join(tmpdir(), 'strata-ctx-c14-'));
+  c14Roots.push(root);
+  return root;
+};
+
+interface SeededArtifact {
+  readonly uri: string;
+  readonly sha256: string;
+}
+
+/**
+ * Write an artifact in a child process, so the object under test was never in
+ * this process's memory.
+ *
+ * `--input-type=module -e` resolves bare specifiers from the cwd, so the child
+ * loads the built `@strata-ctx/security` exactly the way an installed host
+ * would; a temp file elsewhere in the tree would resolve a different
+ * node_modules or none.
+ */
+const seedArtifact = async (root: string, text: string): Promise<SeededArtifact> => {
+  const script =
+    "import { ArtifactStore } from '@strata-ctx/security';\n" +
+    `const store = await ArtifactStore.open({ root: ${JSON.stringify(root)} });\n` +
+    `const put = await store.put(${JSON.stringify(text)}, 'raw_transcript');\n` +
+    'process.stdout.write(JSON.stringify({ uri: put.uri, sha256: put.sha256 }));';
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: REPO_ROOT });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
+  child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+  const code = await withTimeout(
+    new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
+    30_000,
+    'artifact writer',
+  ).catch(() => {
+    child.kill('SIGKILL');
+    throw new Error('the artifact writer never exited');
+  });
+  assert.equal(code, 0, `the writer failed: ${stderr}`);
+  return JSON.parse(stdout) as SeededArtifact;
+};
+
+/** `mcp serve` under a caller-supplied environment, with stderr in hand. */
+const serveIn = async (
+  requests: readonly unknown[],
+  env: Record<string, string>,
+): Promise<{ readonly responses: Record<string, unknown>[]; readonly stderr: string }> => {
+  const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], { env: { ...process.env, ...env } });
+  child.stdin.end(`${requests.map((r) => JSON.stringify(r)).join('\n')}\n`);
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
+  child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+  const code = await withTimeout(
+    new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
+    30_000,
+    'mcp serve',
+  ).catch(() => {
+    child.kill('SIGKILL');
+    throw new Error('mcp serve never exited after stdin closed');
+  });
+  assert.equal(code, 0, 'a host closing stdin is a normal shutdown, not a crash');
+  return {
+    responses: stdout
+      .trim()
+      .split('\n')
+      .filter((l) => l !== '')
+      .map((l) => JSON.parse(l) as Record<string, unknown>),
+    stderr,
+  };
+};
+
+const artifactData = (response: Record<string, unknown> | undefined): Record<string, unknown> => {
+  assert.ok(response, 'the server must answer');
+  const result = response['result'] as { content?: { text?: string }[] };
+  return JSON.parse(result.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+};
+
+describe('C-14: get_artifact resolves against the artifact store', () => {
+  it('reads back an object another process wrote', async () => {
+    const root = await c14Root();
+    const seeded = await seedArtifact(root, C14_TEXT);
+
+    const store = await ArtifactStore.open({ root });
+    const server = createStrataMcpServer(createStoreBackedContext(store));
+    const result = await server.callTool('get_artifact', { ref: seeded.uri });
+
+    assert.equal(result.isError, undefined, `get_artifact failed: ${result.content[0]?.text ?? ''}`);
+    const data = artifactData({ result });
+    assert.equal(data['content'], C14_TEXT, 'the bytes, not a description of them');
+    assert.equal(data['sha256'], seeded.sha256);
+    assert.equal(data['integrity'], 'exact');
+  });
+
+  it('a spawned serve binds the store STRATA_ARTIFACT_ROOT names', async () => {
+    const root = await c14Root();
+    const seeded = await seedArtifact(root, C14_TEXT);
+
+    const { responses, stderr } = await serveIn(
+      [
+        { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+        { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_artifact', arguments: { ref: seeded.uri } } },
+      ],
+      { STRATA_ARTIFACT_ROOT: root },
+    );
+
+    const tools = responses[0]?.['result'] as { tools: { name: string }[] };
+    assert.deepEqual(
+      tools.tools.map((t) => t.name).sort(),
+      ['ctx_search', 'get_artifact', 'get_task', 'note', 'remember', 'status'],
+    );
+
+    const data = artifactData(responses[1]);
+    assert.equal(data['content'], C14_TEXT, 'the server that was spawned is the one holding the store');
+    assert.equal(data['sha256'], seeded.sha256);
+    assert.ok(
+      stderr.split('\n').includes(`strata-ctx mcp: artifact root ${root}`),
+      'the root it bound is on stderr, where a host can log it',
+    );
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('an empty variable falls back to the shared default root', async () => {
+    const { stderr } = await serveIn([{ jsonrpc: '2.0', id: 1, method: 'tools/list' }], {
+      STRATA_ARTIFACT_ROOT: '',
+    });
+    const expected = `strata-ctx mcp: artifact root ${join(homedir(), '.local', 'share', 'strata-ctx', 'artifacts')}`;
+    assert.ok(
+      stderr.split('\n').includes(expected),
+      'two entry points that disagree about the default are two stores',
+    );
+  });
+
+  it('a root that cannot be opened fails loudly, naming the path and the variable', async () => {
+    const dir = await c14Root();
+    const notADir = join(dir, 'i-am-a-file');
+    await writeFile(notADir, 'not a directory');
+
+    const child = spawn(process.execPath, [CLI, 'mcp', 'serve'], {
+      env: { ...process.env, STRATA_ARTIFACT_ROOT: notADir },
+    });
+    child.stdin.end('');
+    let stderr = '';
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    const code = await withTimeout(
+      new Promise<number>((resolve) => child.on('close', (c) => resolve(c ?? 1))),
+      30_000,
+      'mcp serve with a bad root',
+    ).catch(() => {
+      child.kill('SIGKILL');
+      throw new Error('mcp serve with a bad root never exited');
+    });
+
+    assert.equal(code, 1, 'serving without a store would answer every pointer "not found"');
+    assert.match(stderr, /STRATA_ARTIFACT_ROOT/, 'the variable is named');
+    assert.ok(stderr.includes(notADir), 'and so is the path it tried');
+    assert.ok(!stderr.includes('artifact root'), 'nothing claims a binding that did not happen');
   });
 });

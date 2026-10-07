@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import type { ArtifactRef } from '@strata-ctx/core-types';
@@ -159,6 +160,27 @@ export const artifactUriFor = (digest: string): string => `artifact://file/${dig
 /** Content-addressed URI for any artifact kind. The bucket is a label, not a path. */
 export const uriFor = (kind: ArtifactRef['kind'], digest: string): string =>
   `artifact://${KIND_BUCKET[kind]}/${digest}`;
+
+/**
+ * Where artifacts go when nobody says otherwise: `~/.local/share/strata-ctx/artifacts`.
+ *
+ * `strata-ctx mcp serve` is the only entry point that opens a store without
+ * being handed a root, so it is the only one that falls back here. The gateway
+ * deliberately does not: it opens a store only when `GatewayOptions.artifactRoot`
+ * or `STRATA_ARTIFACT_ROOT` names one, because a default would switch
+ * pointer-ization on for every gateway without anyone asking for it.
+ *
+ * The two still have to agree. An operator who names a root for the gateway
+ * must export the same variable to the host that spawns `mcp serve`, or the
+ * reader falls back here and answers a real object `not_found`. `mcp serve`
+ * prints the root it bound to stderr for exactly that reason.
+ *
+ * It returns a path; it never creates one. `ArtifactStore.open` is the only thing
+ * that writes a directory into existence, so asking for the default cannot scatter
+ * `objects/` and `audit/` into a machine that never stored an artifact.
+ */
+export const defaultArtifactRoot = (): string =>
+  join(homedir(), '.local', 'share', 'strata-ctx', 'artifacts');
 
 const emptySidecarKinds: readonly SecretKind[] = [];
 

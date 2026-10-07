@@ -306,13 +306,30 @@ const cmdMcp = async (p: Parsed): Promise<void> => {
   if (p.subcommand !== 'serve') {
     fail(`unknown mcp subcommand ${JSON.stringify(p.subcommand)}; only \`serve\` exists`, 2);
   }
-  const { createInMemoryContext, createStrataMcpServer, serveStdio } = await import(
+  const { createStoreBackedContext, createStrataMcpServer, serveStdio } = await import(
     '@strata-ctx/integrations'
   );
-  const server = createStrataMcpServer(createInMemoryContext());
+  const { ArtifactStore, defaultArtifactRoot } = await import('@strata-ctx/security');
+
+  // The whole point of C-14: an `artifact://` pointer minted by the gateway
+  // resolves here, in a process that never held the bytes. An empty or
+  // whitespace-only variable is "unset" rather than a root of `''`, which is
+  // how `export STRATA_ARTIFACT_ROOT=` in a profile reads.
+  const configured = (process.env['STRATA_ARTIFACT_ROOT'] ?? '').trim();
+  const root = configured === '' ? defaultArtifactRoot() : configured;
+  const store = await ArtifactStore.open({ root }).catch((err) =>
+    fail(
+      `strata-ctx mcp: the artifact store at ${root} could not be opened ` +
+        `(${err instanceof Error ? err.message : String(err)}). Remedy: point ` +
+        `STRATA_ARTIFACT_ROOT at a writable directory, or unset it to use ${defaultArtifactRoot()}.`,
+      1,
+    ),
+  );
+
+  const server = createStrataMcpServer(createStoreBackedContext(store));
   // stderr, not stdout: stdout is the JSON-RPC channel and a stray log line there
   // is a parse error in the host.
-  process.stderr.write('strata-ctx mcp: serving on stdio\n');
+  process.stderr.write(`strata-ctx mcp: serving on stdio\nstrata-ctx mcp: artifact root ${root}\n`);
   const stdio = serveStdio(process.stdin, process.stdout, server);
   await stdio.done;
   // Exit 0 on a clean end of input. A host that closes stdin is a normal shutdown,

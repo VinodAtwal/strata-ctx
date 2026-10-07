@@ -121,7 +121,7 @@ D-11,D,Gateway,Dedupe orphaned tool_result when two same-named tool calls collid
 B-16,B,Context pipeline,Anthropic egress sent tool_use input as {} instead of reading the arguments back out of text,agent,1,-,5,-,done
 B-17,B,Context pipeline,Property-test tool-pair atomicity over generated transcripts,agent,1,-,5,-,done
 C-13,C,Gist engine,Tunnel seam is live and pins through it; compact and compress still unwired so eviction stays off,agent,1,C-8,5,-,todo
-C-14,C,Gist engine,MCP recovery unreachable: in-memory context over a disk artifact store,ext,1,C-8,5,-,todo
+C-14,C,Gist engine,MCP resolves disk artifacts through a store-backed context; the gateway write side stays opt-in via STRATA_ARTIFACT_ROOT,ext,1,C-8,5,-,done
 C-15,C,Gist engine,recoverEvictedMessages closes the eviction-to-recovery gap,agent,1,C-8,5,-,done
 D-12,D,Gateway,Never drop the severe half of a tool pair during dedupe,agent,1,D-11,5,-,done
 E-16,E,Integrations,get_task no longer advertises itself as a reversibility path,agent,0.5,-,5,-,done

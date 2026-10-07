@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { pinSetText, runId, sha256, StrataPolicySchema, type StrataPolicy, type TelemetryEvent } from '@strata-ctx/core-types';
+import { pinSetText, runId, sha256, StrataPolicySchema, type ContextState, type StrataPolicy, type TelemetryEvent } from '@strata-ctx/core-types';
+import { ArtifactStore } from '@strata-ctx/security';
 import { createGateway, type Gateway, type GatewayOptions } from '../src/server.js';
 import type { ProviderAdapter } from '../src/routing.js';
 
@@ -1121,4 +1125,186 @@ test('P0-1: REMEDY citations resolve to a file and a symbol that still exist', (
       `${at} claims "${symbol}" but that text is not within 2 lines of it -- the citation has rotted`,
     );
   }
+});
+
+// ------------------------------------------------- C-14: STRATA_ARTIFACT_ROOT
+//
+// The env var is the one knob an operator can turn from outside the process, so
+// the test that matters is the request path end to end: env -> resolved root ->
+// durable flag -> a pointer on the wire -> an object on disk *at that root*.
+// Asserting on construction would pass for a gateway that resolved the root and
+// then never used it, which is the defect this closed.
+//
+// The adapter is injected because the production adapters emit `subject.kind:
+// 'other'` for every tool result, and pointer-ization only fires on a file
+// read. An injected adapter is the seam that exists for exactly this: the
+// request path below is the real one, from POST to upstream fetch.
+
+const envRoots: string[] = [];
+
+const envRoot = async (): Promise<string> => {
+  const root = await mkdtemp(join(tmpdir(), 'strata-gw-env-'));
+  envRoots.push(root);
+  return root;
+};
+
+after(async () => {
+  await Promise.all(envRoots.map((r) => rm(r, { recursive: true, force: true })));
+});
+
+/** Over the default `tool_state` cap of 20k, so the pointerizer wants a pointer. */
+const OVER_CAP_TEXT = 'const a = 1;\n'.repeat(4_000);
+
+const fileReadState = (text: string): ContextState => ({
+  messages: [
+    {
+      role: 'system',
+      content: [
+        {
+          type: 'text',
+          text: SYSTEM,
+          meta: { origin: 'system', sha256: sha256(SYSTEM), tier: 'episodic', bytes: SYSTEM.length, cacheable: false },
+        },
+      ],
+      ts: 1,
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          text,
+          toolName: 'Read',
+          meta: {
+            origin: 'tool',
+            // The digest of the block, which is what every adapter produces and
+            // what `meta.sha256` means; the pointer mints its own from `text`.
+            sha256: sha256(JSON.stringify({ type: 'tool_result', text })),
+            subject: { kind: 'file', ref: 'src/estimator.ts' },
+            tier: 'tool_state',
+            bytes: text.length,
+            cacheable: false,
+          },
+        },
+      ],
+      ts: 1,
+    },
+  ],
+  pinned: [],
+  tokenEstimate: 0,
+  policyHash: sha256(''),
+  runId: runId('run-env-artifact'),
+  turn: 1,
+  gists: [],
+  artifacts: [],
+});
+
+const fileReadAdapter = (state: ContextState): ProviderAdapter => ({
+  provider: 'mock',
+  supportsStreaming: false,
+  toCanonical: () => state,
+  // The canonical state verbatim: the assertion is about what the *pipeline*
+  // put on the wire, not about how a provider would serialize it.
+  fromCanonical: (canonical) => ({ messages: canonical.messages }),
+});
+
+const sentToolResultText = (body: string): string => {
+  const parsed = JSON.parse(body) as {
+    messages?: { content?: { readonly type?: string; readonly text?: string }[] }[];
+  };
+  return (parsed.messages ?? [])
+    .flatMap((m) => m.content ?? [])
+    .filter((b) => b.type === 'tool_result')
+    .map((b) => b.text ?? '')
+    .join('');
+};
+
+const gatewayWithFileRead = async (overrides: Partial<GatewayOptions>, upstreamUrl: string): Promise<Harness> =>
+  startGateway({ provider: 'mock', adapters: { mock: fileReadAdapter(fileReadState(OVER_CAP_TEXT)) }, ...overrides }, upstreamUrl);
+
+test('C-14: STRATA_ARTIFACT_ROOT puts a resolvable pointer on the wire and its bytes at that root', async () => {
+  const root = await envRoot();
+  const up = await startUpstream(echoJson);
+  const h = await gatewayWithFileRead({ env: { STRATA_ARTIFACT_ROOT: root } }, up.url);
+
+  const res = await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(res.status, 200);
+  assert.equal(up.calls.length, 1);
+
+  const body = up.calls[0]?.body ?? '';
+  const uri = `artifact://file/${sha256(OVER_CAP_TEXT)}`;
+  assert.ok(body.includes(uri), 'the oversized read went out as a pointer, not as 48k of text');
+  assert.ok(!body.includes(OVER_CAP_TEXT), 'and the bytes did not travel beside the pointer');
+  assert.ok(
+    !h.events.some((e) => e.type === 'error' && e.code === 'artifact_write_refused'),
+    'nothing refused the write, so the pointer is not dangling',
+  );
+
+  // Reading the published URI back from the root the env var named is the whole
+  // claim: a store opened anywhere else would answer `not_found` here.
+  const store = await ArtifactStore.open({ root });
+  assert.equal((await store.read(uri)).text, OVER_CAP_TEXT, 'the object is under the resolved root, verbatim');
+
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('C-14: with no STRATA_ARTIFACT_ROOT the byte cap applies and no uri is minted', async () => {
+  const up = await startUpstream(echoJson);
+  // `env: {}` rather than no env at all: the suite must not depend on what the
+  // machine running it happens to have exported.
+  const h = await gatewayWithFileRead({ env: {} }, up.url);
+
+  const res = await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(res.status, 200);
+
+  const body = up.calls[0]?.body ?? '';
+  assert.ok(!body.includes('artifact://'), 'a gateway with no writer must not mint references to nothing');
+  const text = sentToolResultText(body);
+  assert.ok(text.length > 0, 'the block still carries text');
+  assert.ok(text.length < OVER_CAP_TEXT.length, 'and it went through the byte cap instead, still lossy but visible');
+  assert.ok(!h.events.some((e) => e.type === 'error'), 'taking the cap is not a failure');
+
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('C-14: an empty or whitespace STRATA_ARTIFACT_ROOT is unset, not a root of ""', async () => {
+  for (const value of ['', '   ']) {
+    const up = await startUpstream(echoJson);
+    const h = await gatewayWithFileRead({ env: { STRATA_ARTIFACT_ROOT: value } }, up.url);
+
+    const res = await post(`${h.url}/v1/messages`, requestBody(''));
+    assert.equal(res.status, 200);
+    const body = up.calls[0]?.body ?? '';
+    assert.ok(!body.includes('artifact://'), `a root of ${JSON.stringify(value)} must behave as no root at all`);
+    assert.ok(sentToolResultText(body).length < OVER_CAP_TEXT.length, 'so the cap ran instead');
+
+    await h.gateway.closeGracefully();
+    await up.close();
+  }
+});
+
+test('C-14: an explicit artifactRoot wins over the env var', async () => {
+  const explicit = await envRoot();
+  const fromEnv = await envRoot();
+  const up = await startUpstream(echoJson);
+  const h = await gatewayWithFileRead(
+    { artifactRoot: explicit, env: { STRATA_ARTIFACT_ROOT: fromEnv } },
+    up.url,
+  );
+
+  const res = await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(res.status, 200);
+
+  const uri = `artifact://file/${sha256(OVER_CAP_TEXT)}`;
+  assert.equal(
+    await (await ArtifactStore.open({ root: explicit })).exists(uri),
+    true,
+    'the explicit option is a decision, so the write landed there',
+  );
+  assert.equal(existsSync(join(fromEnv, 'objects')), false, 'and the env var was not consulted at all');
+
+  await h.gateway.closeGracefully();
+  await up.close();
 });

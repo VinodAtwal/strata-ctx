@@ -24,6 +24,7 @@
  */
 
 // Clean surfaces — no contested names.
+export * from './artifact-context.js';
 export * from './gemini.js';
 export * from './mcp-server.js';
 export * from './profiles.js';

@@ -89,14 +89,25 @@ let the tunnel override an operator's explicit stage configuration. `compact` an
 still absent, so eviction remains unwired; what changed is that there is now a real seam to attach
 it to, rather than an argument about a port shape.
 
-**The MCP path cannot deliver recovery even though it looks wired.**
-`createStrataMcpServer` *is* reached from `packages/cli/src/index.ts` via `strata-ctx mcp serve`,
-but that binds `createInMemoryContext()` — a per-process `Map` — while eviction writes to
-`ArtifactStore` on disk. `get_artifact` therefore resolves nothing on the CLI path. Fixing this
-needs a task/turn index in `ArtifactStore` or a split of `ContextMemory`; neither is mechanical.
+**The MCP path can deliver recovery now — behind an opt-in the reader and the writer share.**
+It used to bind `createInMemoryContext()`, a per-process `Map`, so `get_artifact` resolved nothing
+on the CLI path: a pointer written to `ArtifactStore` on disk was answered "not found" by a
+process that had never seen the bytes. The fix did not need the task/turn index this section once
+predicted. `ContextMemory` was split instead — `getArtifact` stays synchronous for the tools that
+are a `Map` problem, and `AsyncArtifactReader` carries the one read that crosses the filesystem ACL.
+`mcp serve` now binds `createStoreBackedContext(store)` over the disk store, and a spawned process
+writing through `ArtifactStore.put` is read back by a second spawned `mcp serve` in the tests.
 
-*Loss:* deletion is entirely unobserved in production. Recovery and the `raw_recoverable` guard
-must land in the same change before eviction is enabled. Unsafe to wire in isolation.
+The shared root is `STRATA_ARTIFACT_ROOT`, falling back to
+`~/.local/share/strata-ctx/artifacts` on the read side only. The write side has no fallback and
+stays off unless that variable or `GatewayOptions.artifactRoot` names one, because a default there
+would switch pointer-ization on for every gateway without anyone asking — which is what
+`runTier0(..., { durable: false })` does today. `mcp serve` prints the root it bound to stderr so
+a reader pointed somewhere other than the writer is visible rather than silent.
+
+*Loss:* unchanged. Deletion is still entirely unobserved in production, eviction is still not
+wired, and recovery plus the `raw_recoverable` guard must still land in the same change before
+eviction is enabled. Unsafe to wire in isolation.
 
 ### 3.2 `output-compress` — measured, and deliberately held
 

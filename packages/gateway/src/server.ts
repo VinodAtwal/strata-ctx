@@ -111,6 +111,16 @@ export interface GatewayOptions {
    * lossy, but the loss is visible in a report instead of silent in a URI.
    */
   readonly artifactRoot?: string;
+  /**
+   * Where `STRATA_ARTIFACT_ROOT` is read from. Defaults to `process.env`.
+   *
+   * Injectable so resolution is testable: a suite that exported the variable to
+   * prove the wiring would mutate process state shared with every other test in
+   * the run. `artifactRoot` still wins over it -- this is the same precedence
+   * `CredentialSource` uses, and the same reason: an explicit option is a
+   * decision, an env var is a default.
+   */
+  readonly env?: Record<string, string | undefined>;
 }
 
 export interface Session {
@@ -351,15 +361,15 @@ const fail = (
  * symbol and the line is only ever the hint.
  */
 const REMEDY = {
-  bodyCeiling: { at: 'packages/gateway/src/server.ts:133', symbol: 'MAX_BODY_BYTES' },
-  jsonParse: { at: 'packages/gateway/src/server.ts:651', symbol: 'JSON.parse(body.text)' },
-  upstreamFetch: { at: 'packages/gateway/src/server.ts:539', symbol: 'upstream = await fetch' },
+  bodyCeiling: { at: 'packages/gateway/src/server.ts:143', symbol: 'MAX_BODY_BYTES' },
+  jsonParse: { at: 'packages/gateway/src/server.ts:662', symbol: 'JSON.parse(body.text)' },
+  upstreamFetch: { at: 'packages/gateway/src/server.ts:550', symbol: 'upstream = await fetch' },
   adapterResolution: { at: 'packages/gateway/src/routing.ts:137', symbol: 'resolveAdapter' },
   lossyFailOpen: { at: 'packages/pipeline/src/order.ts:144', symbol: 'runStageFailOpen' },
   totalFailOpen: { at: 'packages/pipeline/src/runner.ts:229', symbol: 'isolateTotal' },
-  ingressPipeline: { at: 'packages/gateway/src/server.ts:597', symbol: 'handleIngress' },
-  lastDefence: { at: 'packages/gateway/src/server.ts:1288', symbol: "'unhandled'" },
-  drainBudget: { at: 'packages/gateway/src/server.ts:1166', symbol: "'shutdown_forced'" },
+  ingressPipeline: { at: 'packages/gateway/src/server.ts:608', symbol: 'handleIngress' },
+  lastDefence: { at: 'packages/gateway/src/server.ts:1330', symbol: "'unhandled'" },
+  drainBudget: { at: 'packages/gateway/src/server.ts:1176', symbol: "'shutdown_forced'" },
 } as const;
 
 /** `file:line (symbol)` -- the shape operations.md Factor 6 asks for. */
@@ -1223,7 +1233,39 @@ class GatewayHttpServer extends Server {
   }
 }
 
-export function createGateway(opts: GatewayOptions): Gateway {
+const ARTIFACT_ROOT_ENV = 'STRATA_ARTIFACT_ROOT';
+
+/**
+ * The artifact root this gateway will actually use, resolved once, at construction.
+ *
+ * Module-private because it is not a second API: `GatewayOptions.artifactRoot`
+ * is the documented knob and this is only how it gets a value when the operator
+ * did not supply one. Three sources, first usable wins:
+ *
+ *   1. `options.artifactRoot` -- an explicit option is a decision;
+ *   2. `STRATA_ARTIFACT_ROOT` from `options.env ?? process.env` -- a default,
+ *      and only a real one: empty and whitespace-only values are *unset*, so a
+ *      `export STRATA_ARTIFACT_ROOT=` in a profile does not silently point the
+ *      store at `''`;
+ *   3. `undefined` -- pointer-ization stays off, which is the documented
+ *      behaviour of a gateway with no root at all (see `GatewayOptions`).
+ *
+ * The result is folded back into the options the runtime reads, so both call
+ * sites -- the `durable` flag on the request path and the memoized store open --
+ * see one value and cannot disagree. Resolving here rather than in each site is
+ * the point: reading `process.env` per request would make the mode depend on
+ * when the request ran, and a store opened under one root and written under
+ * another is a pointer to nowhere.
+ */
+const resolveArtifactRoot = (options: GatewayOptions): GatewayOptions => {
+  const usable = (value: string | undefined): string | undefined =>
+    value !== undefined && value.trim() !== '' ? value.trim() : undefined;
+  const root = usable(options.artifactRoot) ?? usable((options.env ?? process.env)[ARTIFACT_ROOT_ENV]);
+  return root === undefined ? options : { ...options, artifactRoot: root };
+};
+
+export function createGateway(options: GatewayOptions): Gateway {
+  const opts: GatewayOptions = resolveArtifactRoot(options);
   const provider: ConfigProvider = isConfigProvider(opts.provider) ? opts.provider : 'anthropic';
   const d: Dispatcher = {
     rt: {

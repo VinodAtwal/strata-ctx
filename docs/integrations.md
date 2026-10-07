@@ -131,10 +131,15 @@ this file called it "the escape hatch that makes aggressive compression safe to 
 wrong about the code, and the tool description carried the same claim to every MCP client. The
 recovered originals are in the raw transcript artifact written during compaction, reached through
 `ctx_get_artifact` — and only when the server is bound to a store that can resolve it. The CLI
-binds `createInMemoryContext()`, which has no disk behind it, so on that path recovery is not
-reachable at all. Until the store is wired through, an agent that has lost detail to compression
-has no in-band way to get it back, which is the Focus finding that iterative-refinement tasks
-degrade under compression — still open, and now stated as the gap it is rather than as a feature.
+now binds `createStoreBackedContext()` over the disk `ArtifactStore` at `STRATA_ARTIFACT_ROOT`,
+falling back to `~/.local/share/strata-ctx/artifacts`, so the path resolves rather than reporting
+a good object missing. It resolves only if the process that wrote the pointer was given the same
+root: the gateway takes no default, so `STRATA_ARTIFACT_ROOT` or `GatewayOptions.artifactRoot` has
+to name one or pointer-ization never happens and there is nothing to resolve. `mcp serve` prints
+the root it bound to stderr for exactly that reason.
+
+What is still open is the finding itself — iterative-refinement tasks degrade under compression.
+An agent now has an in-band way back when a pointer was written, and none when it was not.
 
 ## 6. GitHub Copilot — the honest assessment
 

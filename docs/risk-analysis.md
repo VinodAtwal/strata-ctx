@@ -414,9 +414,11 @@ make it a test.
 `recoverTurns` / `recoverEvictedMessages` exist and are unwired. **Good:** recovery was designed
 before eviction, which is backwards from most systems and exactly right.
 **Bad:** eviction + no recovery = irreversible. The board's own note is the right constraint:
-deletion must not be wired without the recovery path. C-14 is the missing half of this.
+deletion must not be wired without the recovery path.
 **Plan:** **P1, non-negotiable: no eviction until `get_artifact` resolves end-to-end from a real
-`ArtifactStore`.** This is the single hardest ordering constraint in the project.
+`ArtifactStore`.** This is the single hardest ordering constraint in the project. The read half of
+it is now met — 5.2.1 says exactly what is proven — and `recoverEvictedMessages` is still unwired,
+so the constraint does not lift with it.
 
 ### R9 — Redaction knows prefixes, not secrets (Live, High)
 
@@ -663,6 +665,14 @@ Integration — exporting it — is the integrator's call.
 
 1. **Recovery path end-to-end** (R5, R8, R12): a real `ArtifactStore` written by the gateway, read
    by `get_artifact`, over `ArtifactAcl`. No eviction before this passes.
+   *Met for the read side, and only there.* `createStoreBackedContext` reads a real store through
+   `ArtifactAcl`, proven across processes: a child writes through `ArtifactStore.put` and a
+   separately spawned `mcp serve` hands the bytes back. The gateway's write half is proven
+   separately — `STRATA_ARTIFACT_ROOT` puts a resolvable pointer on the wire, and with no variable
+   the byte cap applies and no uri is minted — but no single test runs a real gateway and a real
+   `mcp serve` against one root, and nothing stops an operator from naming two. Closing that
+   coupling, and `recoverEvictedMessages` itself, is what is left before this item can be called
+   satisfied rather than its read half.
 2. **Make publish-after-persist a transaction, not a documented duty** (R5). Close with
    `runCompactionTransaction`.
 3. **Re-verify redaction after compression** (R9); assert the marker count is non-decreasing.

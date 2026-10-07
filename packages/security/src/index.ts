@@ -76,7 +76,7 @@ export type {
 export type { SecretPattern } from './patterns.js';
 export type { ArtifactRef } from '@strata-ctx/core-types';
 
-export { ArtifactStore, artifactUriFor, bucketForKind, uriFor } from './store.js';
+export { ArtifactStore, artifactUriFor, bucketForKind, defaultArtifactRoot, uriFor } from './store.js';
 export type { ArtifactIntegrity, ArtifactStat, PutResult, ReadResult, VerifyFailure, VerifyResult, ArtifactStoreOptions } from './store.js';
 
 export { AdvisoryNotAcknowledgedError, DAY_MS, applyGc, assertPlanAcknowledged, expiresAt, isRetainWorthyAction, planGc, retentionClassOf, runGc, windowDaysFor } from './retention.js';
