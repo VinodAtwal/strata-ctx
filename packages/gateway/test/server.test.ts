@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 
-import { pinSetText, runId, sha256, StrataPolicySchema, type ContextState, type StrataPolicy, type TelemetryEvent } from '@strata-ctx/core-types';
+import { pinSetText, runId, sha256, StrataPolicySchema, type ContextState, type LossyContext, type NonGovernanceMessage, type StrataPolicy, type TelemetryEvent } from '@strata-ctx/core-types';
 import { ArtifactStore } from '@strata-ctx/security';
 import { createGateway, type Gateway, type GatewayOptions } from '../src/server.js';
 import type { ProviderAdapter } from '../src/routing.js';
@@ -231,6 +231,145 @@ test('the tunnel enforces the cap while policy leaves truncate enabled', async (
   assert.equal((up.calls[0]?.body ?? '').includes(flood), false, 'truncate did not run');
   const sent = JSON.parse(up.calls[0]?.body ?? '{}') as { system?: { text: string }[] };
   assert.ok((sent.system ?? []).map((s) => s.text).join('\n').includes(CONSTRAINT), 'the pin did not survive the cap');
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+
+// ------------------------------------- C-13: the tunnel's lossy stages are injected
+//
+// The port exists so `compact` and `compress` can be attached without this
+// package importing the ones that implement them (AGENTS.md §7 -- three
+// cross-stream imports exist and a fourth needs the owner). What has to hold
+// once it exists: an injected stage runs in its slot, `policy.pipeline.stages`
+// is the switch the failure remedy advertises, a Tier 0 stage cannot be
+// re-run through it, and a failure is filed under the stage that failed.
+
+const MARKER = 'C-13 injected stage marker';
+
+const markerMessage = (text: string): NonGovernanceMessage => ({
+  role: 'user',
+  ts: 1_700_000_000_000,
+  content: [
+    {
+      type: 'text',
+      text,
+      meta: { origin: 'tool', sha256: sha256(text), tier: 'episodic', bytes: text.length, cacheable: false },
+    },
+  ],
+});
+
+test('an injected lossy stage runs after pin and its output reaches the upstream', async () => {
+  const up = await startUpstream(echoJson);
+  let calls = 0;
+  const h = await startGateway(
+    {
+      lossyStages: {
+        compact: {
+          name: 'compact',
+          run: async (ctx: LossyContext) => {
+            calls += 1;
+            await Promise.resolve();
+            return { ...ctx, messages: [...ctx.messages, markerMessage(MARKER)] };
+          },
+        },
+      },
+    },
+    up.url,
+  );
+
+  const res = await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(res.status, 200);
+  assert.equal(calls, 1, 'the injected stage did not run');
+  assert.ok(
+    (up.calls[0]?.body ?? '').includes(MARKER),
+    'the stage output never reached the upstream, so the port is decorative',
+  );
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('policy.pipeline.stages is the switch for an injected stage, as the remedy says', async () => {
+  const up = await startUpstream(echoJson);
+  let calls = 0;
+  const withoutCompact = StrataPolicySchema.parse({
+    ...policy,
+    pipeline: { stages: ['dedupe', 'truncate', 'triage', 'pin', 'compress', 'serialize'] },
+  });
+  const h = await startGateway(
+    {
+      policy: withoutCompact,
+      lossyStages: {
+        compact: {
+          name: 'compact',
+          run: async (ctx: LossyContext) => {
+            calls += 1;
+            await Promise.resolve();
+            return { ...ctx, messages: [...ctx.messages, markerMessage(MARKER)] };
+          },
+        },
+      },
+    },
+    up.url,
+  );
+
+  await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(calls, 0, 'the stage ran although the policy does not name it');
+  assert.equal(
+    (up.calls[0]?.body ?? '').includes(MARKER),
+    false,
+    'a stage the operator removed from policy.pipeline.stages still transformed the context',
+  );
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('a Tier 0 name in lossyStages is refused at construction, not run a second time', () => {
+  assert.throws(
+    () =>
+      createGateway({
+        port: 0,
+        host: '127.0.0.1',
+        upstream: 'http://127.0.0.1:1',
+        apiKeyEnv: 'STRATA_TEST_KEY',
+        policy,
+        lossyStages: { truncate: { name: 'truncate', run: (ctx: LossyContext) => ctx } },
+      }),
+    /already ran in Tier 0/,
+    'the duplicate-truncate hazard is real, so it has to be a loud construction failure',
+  );
+});
+
+test('a failing injected stage is attributed to itself and still fails open', async () => {
+  const up = await startUpstream(echoJson);
+  const h = await startGateway(
+    {
+      lossyStages: {
+        compact: {
+          name: 'compact',
+          run: (): LossyContext => {
+            throw new Error('compaction exploded');
+          },
+        },
+      },
+    },
+    up.url,
+  );
+
+  const res = await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(res.status, 200, 'a stage failure must cost the stage, not the request');
+
+  const err = h.events.find((e) => e.type === 'error');
+  assert.ok(err, 'no error event was reported for the failed stage');
+  // Before the port, one `attribute(where, 'pin')` covered the whole tunnel, so
+  // this would have named pin -- and an operator would go and debug the stage
+  // that worked.
+  assert.equal(err?.stage, 'compact', `attributed to ${err?.stage}`);
+  assert.equal(err?.type === 'error' && err.code, 'stage_threw');
+
+  const sent = JSON.parse(up.calls[0]?.body ?? '{}') as { system?: { text: string }[] };
+  const text = (sent.system ?? []).map((s) => s.text).join('\n');
+  assert.ok(text.includes(CONSTRAINT), 'the pin did not survive a failed compact stage');
   await h.gateway.closeGracefully();
   await up.close();
 });

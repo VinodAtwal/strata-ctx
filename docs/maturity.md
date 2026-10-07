@@ -81,13 +81,23 @@ four recovered). It is exported and uncalled.
 from a test, so there was never an eviction waiting on an async port. There was no eviction in the
 pipeline at all, and therefore no evidence for which seam was right. (`61ef8ae`)
 
-`server.ts` now runs the post-Tier-0 stages through `runPipeline`, the generic runner that accepts
-caller-supplied stages and had no production caller. `pin` is supplied as a `TotalStage`; the lossy
-registry is passed empty, because Tier 0 has already run and `runPipeline` does not consult
-`policy.pipeline.stages` — omitting the field would fall back to the full `LOSSY_TIER0_STAGES` and
-let the tunnel override an operator's explicit stage configuration. `compact` and `compress` are
-still absent, so eviction remains unwired; what changed is that there is now a real seam to attach
-it to, rather than an argument about a port shape.
+`server.ts` runs the post-Tier-0 stages through `runPipeline`, the generic runner that accepts
+caller-supplied stages. `pin` is supplied as a `TotalStage`; the lossy registry is always passed
+explicitly, because Tier 0 has already run and omitting the field would fall back to the full
+`LOSSY_TIER0_STAGES`, letting the tunnel override an operator's stage configuration.
+
+**C-13 opened that registry to injected stages.** `GatewayOptions.lossyStages` takes a
+`LossyStage | AsyncLossyStage` per name; `createGateway` refuses a Tier 0 name at construction
+rather than running `truncate` twice over an already-capped context, and the tunnel filters what is
+left against `policy.pipeline.stages` before it builds the registry — so the remedy the failure
+message hands an operator ("remove it from `policy.pipeline.stages`") is the switch that governs
+it. The runner is one `async` function: it waits when a stage returns a promise and costs a
+microtask when one does not. There is no second runner to keep in step, because the split did not
+survive the change — the synchronous twin had no caller left the moment the tunnel awaited the
+other one, and the wiring ratchet said so.
+
+`compact` and `compress` are still not supplied by any composition root, so eviction remains
+unwired. The seam now accepts an injected stage; nothing attaches one.
 
 **The MCP path can deliver recovery now — behind an opt-in the reader and the writer share.**
 It used to bind `createInMemoryContext()`, a per-process `Map`, so `get_artifact` resolved nothing

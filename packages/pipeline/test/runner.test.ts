@@ -10,6 +10,7 @@ import type {
   Message,
   NonGovernanceBlock,
   Role,
+  StageName,
   StrataPolicy,
   TotalStage,
 } from '@strata-ctx/core-types';
@@ -17,6 +18,7 @@ import {
   collectGovernanceText,
   enforcePins,
   estimateTokens,
+  GistSchema,
   pinSetText,
   runId,
   sha256,
@@ -26,7 +28,7 @@ import {
 
 import { LOSSY_TIER0_STAGES, PIPELINE_STAGE_ORDER } from '../src/order.js';
 import { asStageCode, runPipeline } from '../src/runner.js';
-import type { PipelineRun, StageResult } from '../src/runner.js';
+import type { AsyncLossyStage, PipelineRun, StageResult } from '../src/runner.js';
 
 /**
  * A-14 runner tests. Fixtures are inline by rule; nothing here imports another
@@ -291,8 +293,8 @@ function shape(run: PipelineRun): unknown {
   };
 }
 
-describe('A-14 runner: happy path', () => {
-  const run = runPipeline(realisticState(), { policy: PINNED_POLICY });
+describe('A-14 runner: happy path', async () => {
+  const run = await runPipeline(realisticState(), { policy: PINNED_POLICY });
 
   it('runs the packaged Tier 0 stages in the documented order', () => {
     assert.deepEqual(run.stagesRun, ['dedupe', 'truncate', 'triage']);
@@ -322,8 +324,8 @@ describe('A-14 runner: happy path', () => {
     }
   });
 
-  it('runs all seven stages in order when the tunnel stages are wired', () => {
-    const wired = runPipeline(realisticState(), {
+  it('runs all seven stages in order when the tunnel stages are wired', async () => {
+    const wired = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({
         compact: identityLossy('compact'),
@@ -347,10 +349,10 @@ describe('A-14 runner: happy path', () => {
     assert.equal(wired.stagesRun.length, 7);
   });
 
-  it('does not mutate the state it was given', () => {
+  it('does not mutate the state it was given', async () => {
     const input = realisticState();
     const before = structuredClone(input);
-    runPipeline(input, { policy: PINNED_POLICY });
+    await runPipeline(input, { policy: PINNED_POLICY });
     assert.deepEqual(input, before);
   });
 });
@@ -358,8 +360,8 @@ describe('A-14 runner: happy path', () => {
 describe('A-14 runner: per-stage error isolation (fail-open)', () => {
   const input = realisticState();
 
-  it('isolates a throwing stage and still runs the later stages', () => {
-    const run = runPipeline(input, {
+  it('isolates a throwing stage and still runs the later stages', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
     });
@@ -372,8 +374,8 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.ok(run.state.messages.length > 0, 'the request is not taken down');
   });
 
-  it('passes the context through unmodified when a stage throws', () => {
-    const run = runPipeline(input, {
+  it('passes the context through unmodified when a stage throws', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
     });
@@ -383,8 +385,8 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.equal(failed.tokensOut, failed.tokensIn, 'tokensOut == tokensIn on fail-open');
   });
 
-  it('reports only a typed code on failure, never a stack trace', () => {
-    const run = runPipeline(input, {
+  it('reports only a typed code on failure, never a stack trace', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
     });
@@ -395,12 +397,12 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.equal('stack' in failed, false);
   });
 
-  it('codes a stage that reorders the cached prefix', () => {
+  it('codes a stage that reorders the cached prefix', async () => {
     const reorder: LossyStage = {
       name: 'dedupe',
       run: (c) => ({ ...c, messages: [...c.messages].reverse() }),
     };
-    const run = runPipeline(input, {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ dedupe: reorder }),
     });
@@ -409,12 +411,12 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.deepEqual(run.stagesRun, ['dedupe', 'truncate', 'triage'], 'later stages still run');
   });
 
-  it('codes a stage that hands back something that is not a LossyContext', () => {
+  it('codes a stage that hands back something that is not a LossyContext', async () => {
     const forged: LossyStage = {
       name: 'triage',
       run: () => ({ messages: 'not messages' } as unknown as LossyContext),
     };
-    const run = runPipeline(input, {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ triage: forged }),
     });
@@ -422,14 +424,14 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.equal(run.stageResults[2]?.code, 'not_a_lossy_context');
   });
 
-  it('isolates a throwing total stage and still runs the later one', () => {
+  it('isolates a throwing total stage and still runs the later one', async () => {
     const throwingPin: TotalStage = {
       name: 'pin',
       run: () => {
         throw new Error('governance exploded');
       },
     };
-    const run = runPipeline(input, {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       totalStages: { pin: throwingPin, serialize: identityTotalStage('serialize') },
     });
@@ -438,12 +440,12 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.equal(run.stageResults[4]?.ok, true, 'serialize still ran');
   });
 
-  it('codes a total stage that returns a forged ContextState', () => {
+  it('codes a total stage that returns a forged ContextState', async () => {
     const forged: TotalStage = {
       name: 'pin',
       run: () => ({ messages: 'junk' } as unknown as ContextState),
     };
-    const run = runPipeline(input, {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       totalStages: { pin: forged, serialize: identityTotalStage('serialize') },
     });
@@ -452,8 +454,8 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.equal(run.stageResults[4]?.ok, true);
   });
 
-  it('records every one of several independent failures', () => {
-    const run = runPipeline(input, {
+  it('records every one of several independent failures', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({
         truncate: throwingLossy('truncate'),
@@ -465,8 +467,8 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
     assert.ok(run.stageResults.every((r, i) => (i === 1 || i === 3 ? !r.ok : r.ok)));
   });
 
-  it('is fail-open by default even when told nothing about failing', () => {
-    const run = runPipeline(input, {
+  it('is fail-open by default even when told nothing about failing', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
     });
@@ -479,8 +481,8 @@ describe('A-14 runner: per-stage error isolation (fail-open)', () => {
 describe('A-14 runner: stopOnFailure (fail-closed opt-in)', () => {
   const input = realisticState();
 
-  it('halts the run at the first failure', () => {
-    const run = runPipeline(input, {
+  it('halts the run at the first failure', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
       stopOnFailure: true,
@@ -489,8 +491,8 @@ describe('A-14 runner: stopOnFailure (fail-closed opt-in)', () => {
     assert.deepEqual(run.stagesRun, ['dedupe', 'truncate'], 'triage never ran');
   });
 
-  it('still records the failing stage in the report', () => {
-    const run = runPipeline(input, {
+  it('still records the failing stage in the report', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
       stopOnFailure: true,
@@ -499,9 +501,9 @@ describe('A-14 runner: stopOnFailure (fail-closed opt-in)', () => {
     assert.equal(run.stageResults[1]?.code, 'stage_threw');
   });
 
-  it('does not fire the hook for stages it never ran', () => {
+  it('does not fire the hook for stages it never ran', async () => {
     const seen: string[] = [];
-    runPipeline(input, {
+    await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
       stopOnFailure: true,
@@ -510,8 +512,8 @@ describe('A-14 runner: stopOnFailure (fail-closed opt-in)', () => {
     assert.deepEqual(seen, ['dedupe', 'truncate']);
   });
 
-  it('runs everything when nothing fails', () => {
-    const run = runPipeline(input, {
+  it('runs everything when nothing fails', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       stopOnFailure: true,
     });
@@ -523,8 +525,8 @@ describe('A-14 runner: stopOnFailure (fail-closed opt-in)', () => {
 describe('A-14 runner: governance invariant', () => {
   const input = realisticState();
 
-  it('leaves pins byte-identical on the output when pin runs clean', () => {
-    const run = runPipeline(input, {
+  it('leaves pins byte-identical on the output when pin runs clean', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       totalStages: { pin: pinStage(PINNED_POLICY) },
     });
@@ -533,8 +535,8 @@ describe('A-14 runner: governance invariant', () => {
     assert.deepEqual(integrity.defects, []);
   });
 
-  it('re-pins despite a stage failing before the pin position', () => {
-    const run = runPipeline(input, {
+  it('re-pins despite a stage failing before the pin position', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
       totalStages: { pin: pinStage(PINNED_POLICY) },
@@ -547,8 +549,8 @@ describe('A-14 runner: governance invariant', () => {
     assert.deepEqual(integrity.defects, []);
   });
 
-  it('keeps pins byte-identical when a lossy stage after pin fails', () => {
-    const run = runPipeline(input, {
+  it('keeps pins byte-identical when a lossy stage after pin fails', async () => {
+    const run = await runPipeline(input, {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ compact: throwingLossy('compact') }),
       totalStages: { pin: pinStage(PINNED_POLICY) },
@@ -559,16 +561,16 @@ describe('A-14 runner: governance invariant', () => {
     assert.deepEqual(integrity.defects, []);
   });
 
-  it('holds inbound governance verbatim when no pin stage is wired', () => {
-    const run = runPipeline(input, { policy: PINNED_POLICY });
+  it('holds inbound governance verbatim when no pin stage is wired', async () => {
+    const run = await runPipeline(input, { policy: PINNED_POLICY });
     assert.deepEqual(collectGovernanceText(run.state), [CONSTRAINTS[0]]);
   });
 });
 
 describe('A-14 runner: onStage observability', () => {
-  it('fires once per run stage, in order, with the same records', () => {
+  it('fires once per run stage, in order, with the same records', async () => {
     const seen: StageResult[] = [];
-    const run = runPipeline(realisticState(), {
+    const run = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       onStage: (result) => seen.push(result),
     });
@@ -577,9 +579,9 @@ describe('A-14 runner: onStage observability', () => {
     assert.deepEqual(seen.map((r) => r.name), ['dedupe', 'truncate', 'triage']);
   });
 
-  it('hands the failure verdict to the hook', () => {
+  it('hands the failure verdict to the hook', async () => {
     const verdicts: { name: string; ok: boolean; code?: string }[] = [];
-    runPipeline(realisticState(), {
+    await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
       onStage: (result) =>
@@ -596,9 +598,9 @@ describe('A-14 runner: onStage observability', () => {
     ]);
   });
 
-  it('fires once for each stage even when the tunnel stages are wired', () => {
+  it('fires once for each stage even when the tunnel stages are wired', async () => {
     const seen: string[] = [];
-    runPipeline(realisticState(), {
+    await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({
         compact: identityLossy('compact'),
@@ -615,9 +617,9 @@ describe('A-14 runner: onStage observability', () => {
 });
 
 describe('A-14 runner: hygiene', () => {
-  it('treats an empty stage list as a no-op', () => {
+  it('treats an empty stage list as a no-op', async () => {
     const input = realisticState();
-    const run = runPipeline(input, { policy: PINNED_POLICY, lossyStages: {}, totalStages: {} });
+    const run = await runPipeline(input, { policy: PINNED_POLICY, lossyStages: {}, totalStages: {} });
     assert.equal(run.state, input, 'the very same object comes back');
     assert.deepEqual(run.stageResults, []);
     assert.deepEqual(run.stagesRun, []);
@@ -625,39 +627,39 @@ describe('A-14 runner: hygiene', () => {
     assert.equal(run.halted, false);
   });
 
-  it('skips tunnel stages that are not wired instead of crashing', () => {
-    const run = runPipeline(realisticState(), { policy: PINNED_POLICY });
+  it('skips tunnel stages that are not wired instead of crashing', async () => {
+    const run = await runPipeline(realisticState(), { policy: PINNED_POLICY });
     assert.deepEqual(run.stagesRun, ['dedupe', 'truncate', 'triage']);
     assert.deepEqual(run.stagesRun, PIPELINE_STAGE_ORDER.slice(0, 3));
   });
 
-  it('is deterministic: two runs produce identical state and reports', () => {
-    const a = runPipeline(realisticState(), {
+  it('is deterministic: two runs produce identical state and reports', async () => {
+    const a = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       totalStages: { pin: pinStage(PINNED_POLICY) },
     });
-    const b = runPipeline(realisticState(), {
+    const b = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       totalStages: { pin: pinStage(PINNED_POLICY) },
     });
     assert.deepEqual(shape(a), shape(b));
   });
 
-  it('is deterministic with a failure too', () => {
-    const a = runPipeline(realisticState(), {
+  it('is deterministic with a failure too', async () => {
+    const a = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
     });
-    const b = runPipeline(realisticState(), {
+    const b = await runPipeline(realisticState(), {
       policy: PINNED_POLICY,
       lossyStages: tier0Stages({ truncate: throwingLossy('truncate') }),
     });
     assert.deepEqual(shape(a), shape(b));
   });
 
-  it('handles an empty context', () => {
+  it('handles an empty context', async () => {
     const empty = state({ messages: [] });
-    const run = runPipeline(empty, {
+    const run = await runPipeline(empty, {
       policy: PINNED_POLICY,
       totalStages: { pin: pinStage(PINNED_POLICY) },
     });
@@ -666,8 +668,8 @@ describe('A-14 runner: hygiene', () => {
     assert.deepEqual(collectGovernanceText(run.state), pinSetText(PINNED_POLICY));
   });
 
-  it('reports monotonic, non-negative token counts', () => {
-    const run = runPipeline(realisticState(), { policy: PINNED_POLICY });
+  it('reports monotonic, non-negative token counts', async () => {
+    const run = await runPipeline(realisticState(), { policy: PINNED_POLICY });
     for (const result of run.stageResults) {
       assert.ok(Number.isInteger(result.tokensIn));
       assert.ok(Number.isInteger(result.tokensOut));
@@ -677,8 +679,8 @@ describe('A-14 runner: hygiene', () => {
   });
 });
 
-it('exports a runner whose default stage set is exactly the packaged Tier 0', () => {
-  const run = runPipeline(realisticState(), { policy: PINNED_POLICY });
+it('exports a runner whose default stage set is exactly the packaged Tier 0', async () => {
+  const run = await runPipeline(realisticState(), { policy: PINNED_POLICY });
   assert.deepEqual(run.stagesRun, LOSSY_TIER0_STAGES.map((s) => s.name));
 });
 // ------------------------------------------------- P0-1: the cause is not dropped
@@ -730,5 +732,212 @@ describe('P0-1: asStageCode keeps causes distinct and never invents one', () => 
 
   it('is case-sensitive, so a renamed code surfaces rather than resolving by luck', () => {
     assert.equal(asStageCode('Stage_Threw'), 'unrecognised_stage_code');
+  });
+});
+
+// --------------------------------------------- C-13: the async stage port
+//
+// `compact` is the first stage that has to wait: its work is a transaction over
+// a filesystem store, and `LossyStage.run` is in the frozen contract, so the
+// wait belongs here rather than in a widening of core-types.
+//
+// "It awaits" is the easy half, so nothing below tests that a promise is
+// awaited. What the suite is for is that a wait did not buy itself a second
+// set of behavior: the order, the isolation of a failing stage, the closed set
+// of codes, `stopOnFailure` and the telemetry all have to be the same for a
+// stage that returned a promise as for one that did not, and a rejection has
+// to be classified where a throw would be. Where the behavior did change --
+// a `LossyStage` that returns a promise is now awaited instead of being coded
+// `not_a_lossy_context` -- the test says so by name.
+
+describe('C-13: runPipeline waits for a lossy stage, and isolates a rejection the way it isolates a throw', () => {
+  const input = realisticState();
+
+  const asyncStage = (
+    name: LossyStageName,
+    fn: (ctx: LossyContext) => LossyContext | Promise<LossyContext>,
+  ): AsyncLossyStage => ({ name, run: fn });
+
+  /**
+   * The Tier 0 registry with the tunnel slots this suite exercises filled in.
+   * One helper, not one per shape: `lossyStages` takes `LossyStage |
+   * AsyncLossyStage`, and a suite that needed two names for it would be
+   * asserting the old split rather than the behavior.
+   */
+  const tunnel = (
+    over: Partial<Record<LossyStageName, LossyStage | AsyncLossyStage>>,
+  ): Partial<Record<LossyStageName, LossyStage | AsyncLossyStage>> => ({
+    ...tier0Stages(),
+    ...over,
+  });
+
+  const dropLast = (ctx: LossyContext): LossyContext => ({
+    ...ctx,
+    messages: ctx.messages.slice(0, -1),
+  });
+
+  it('runs an async stage in its documented slot, after pin, and commits what it returned', async () => {
+    const asyncRun = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({
+        compact: asyncStage('compact', async (ctx) => {
+          await Promise.resolve();
+          return dropLast(ctx);
+        }),
+      }),
+      totalStages: { pin: pinStage(PINNED_POLICY) },
+    });
+    const syncRun = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({ compact: { name: 'compact', run: dropLast } }),
+      totalStages: { pin: pinStage(PINNED_POLICY) },
+    });
+
+    assert.deepEqual(asyncRun.stagesRun, ['dedupe', 'truncate', 'triage', 'pin', 'compact']);
+    assert.equal(asyncRun.stageResults[4]?.ok, true, 'a stage that has to wait is not a failed stage');
+    // The point of waiting. An unawaited promise is a forged return, so a
+    // green run with the input's messages would mean the port is decorative.
+    assert.deepEqual(shape(asyncRun), shape(syncRun));
+    assert.notEqual(asyncRun.state.messages.length, input.messages.length);
+  });
+
+  it('runs a registry of plain LossyStages without the caller re-typing anything', async () => {
+    // Every stage wired before C-13 returns a `LossyContext`, not a promise.
+    // Widening the registry to admit `AsyncLossyStage` must not change what
+    // they do or force a caller to convert them: the packaged Tier 0 stages run
+    // in the documented order and commit normally.
+    const run = await runPipeline(input, { policy: PINNED_POLICY });
+    assert.deepEqual(run.stagesRun, LOSSY_TIER0_STAGES.map((s) => s.name));
+    assert.ok(run.stageResults.every((result) => result.ok));
+    assert.equal(run.failed, 0);
+  });
+
+  it('classifies a rejection exactly as it classifies a synchronous throw', async () => {
+    const rejected = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({
+        compact: asyncStage('compact', () => Promise.reject(new Error('boom'))),
+      }),
+      totalStages: { pin: pinStage(PINNED_POLICY) },
+    });
+    const threw = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({ compact: throwingLossy('compact') }),
+      totalStages: { pin: pinStage(PINNED_POLICY) },
+    });
+
+    assert.equal(rejected.stageResults[4]?.code, 'stage_threw');
+    // Same codes, same reverted state, same token counts: one classification
+    // table for a stage that threw and a stage that rejected, or a caller would
+    // get two answers to the same bug depending on which way it failed.
+    assert.deepEqual(shape(rejected), shape(threw));
+    const integrity = verifyPinIntegrity(pinSetText(PINNED_POLICY), collectGovernanceText(rejected.state));
+    assert.equal(integrity.ok, true, 'fail-open must not cost a pin');
+  });
+
+  it('maps a rejection carrying the prefix-reorder cause to prefix_reordered', async () => {
+    const run = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({
+        compact: asyncStage('compact', () =>
+          Promise.reject(new Error('stage reordered blocks inside the cached prefix')),
+        ),
+      }),
+    });
+    // The mutation this test exists to catch: a second copy of the table in the
+    // async path that ended in `return 'stage_threw'` would send an operator to
+    // a stage that works, and the distinction R4 depends on would be gone.
+    assert.equal(run.stageResults[3]?.code, 'prefix_reordered');
+  });
+
+  it('codes an async stage that resolves to something that is not a LossyContext', async () => {
+    const run = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({
+        compact: asyncStage('compact', () =>
+          Promise.resolve({ messages: 'junk' } as unknown as LossyContext),
+        ),
+      }),
+    });
+    assert.equal(run.stageResults[3]?.ok, false);
+    assert.equal(run.stageResults[3]?.code, 'not_a_lossy_context');
+    const syncish = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({
+        compact: { name: 'compact', run: () => ({ messages: 'junk' } as unknown as LossyContext) },
+      }),
+    });
+    assert.equal(run.state.messages.length, syncish.state.messages.length);
+  });
+
+  it('commits the gists a lossy stage produced, not only its messages', async () => {
+    const gist = GistSchema.parse({
+      v: 1,
+      task_id: 'task-1',
+      status: 'complete',
+      goal: 'ship the fix',
+      next: { question: 'what breaks it?', next_command: 'npm run check' },
+      log_gist: { raw_uri: 'gist://task-1' },
+      constraints: [],
+      source_turn_range: [0, 0],
+      raw_recoverable: true,
+      compressed_by: 'self-gist',
+    });
+    const commit = (ctx: LossyContext): Promise<LossyContext> =>
+      Promise.resolve({ ...ctx, gists: [...ctx.gists, gist] });
+
+    const asyncRun = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({ compact: asyncStage('compact', commit) }),
+    });
+    const syncRun = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({ compact: { name: 'compact', run: (ctx) => ({ ...ctx, gists: [...ctx.gists, gist] }) } }),
+    });
+
+    // `compact` is the first stage that writes to `gists`. Dropping it here
+    // would leave a gist:// message in the transcript with no record in the
+    // state that governance's type guard and ctx_status read.
+    assert.equal(asyncRun.state.gists.length, 1);
+    assert.deepEqual(asyncRun.state.gists[0], gist);
+    assert.equal(syncRun.state.gists.length, 1);
+  });
+
+  it('halts after a rejected async stage when stopOnFailure is set', async () => {
+    const seen: StageName[] = [];
+    const run = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({
+        compact: asyncStage('compact', () => Promise.reject(new Error('boom'))),
+        compress: identityLossy('compress'),
+      }),
+      totalStages: { pin: pinStage(PINNED_POLICY) },
+      stopOnFailure: true,
+      onStage: (result) => seen.push(result.name),
+    });
+    assert.equal(run.halted, true);
+    assert.deepEqual(seen, ['dedupe', 'truncate', 'triage', 'pin', 'compact']);
+    assert.ok(!seen.includes('compress'));
+    assert.equal(run.failed, 1);
+  });
+
+  it('awaits the promise a stage typed LossyStage returned instead of calling it forged', async () => {
+    // This is the behavior that changed when the two runners merged. The sync
+    // runner had no way to wait, so a promise out of a `LossyStage` was coded
+    // `not_a_lossy_context` -- correct for a runner that cannot await, and a
+    // trap once there is only one runner and it can. The forged-return guard is
+    // about the value the stage *resolved to*, not about the shape of the
+    // promise it returned.
+    const promiseStage = {
+      name: 'compact',
+      run: (ctx: LossyContext) => Promise.resolve(dropLast(ctx)),
+    } as unknown as LossyStage;
+    const run = await runPipeline(input, {
+      policy: PINNED_POLICY,
+      lossyStages: tunnel({ compact: promiseStage }),
+    });
+    assert.equal(run.stageResults[3]?.ok, true, JSON.stringify(run.stageResults[3]));
+    assert.equal(run.failed, 0);
+    assert.notEqual(run.state.messages.length, input.messages.length, 'the awaited output was not committed');
   });
 });

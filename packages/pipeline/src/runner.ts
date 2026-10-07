@@ -3,6 +3,7 @@ import type {
   LossyContext,
   LossyStage,
   LossyStageName,
+  Message,
   StageName,
   StrataPolicy,
   TelemetryEvent,
@@ -18,7 +19,7 @@ import {
 import type { CachePrefixDiff } from './cache-prefix.js';
 import { observeCachePrefix } from './cache-prefix.js';
 import { LOSSY_TIER0_STAGES, PIPELINE_STAGE_ORDER, runStageFailOpen } from './order.js';
-import type { Tier0Stage } from './stage.js';
+import type { StageApplied } from './stage.js';
 
 /**
  * A-14. The generic pipeline runner.
@@ -98,6 +99,23 @@ export interface StageResult {
   readonly code?: StageErrorCode;
 }
 
+/**
+ * The lossy stage this runner actually accepts: same slot, same isolation
+ * contract as `LossyStage`, one difference -- `run` may return a promise.
+ *
+ * `compact` is the reason this type exists rather than a widening of
+ * `LossyStage`. `LossyStage.run` is in the frozen contract
+ * (`core-types/src/guards.ts`), so widening it would be a §1 change. The shape
+ * lives here instead, and `RunPipelineOptions.lossyStages` is typed as
+ * `LossyStage | AsyncLossyStage` so that one registry means one thing: a plain
+ * `LossyStage` is a widening of this, so a registry that was valid before
+ * C-13 is still valid, and nothing has to be re-typed to opt out of waiting.
+ */
+export interface AsyncLossyStage {
+  readonly name: LossyStageName;
+  run(ctx: LossyContext): LossyContext | Promise<LossyContext>;
+}
+
 export interface RunPipelineOptions {
   /** Drives the partition and the pin buffer; must be the policy the stages were built against. */
   readonly policy: StrataPolicy;
@@ -107,7 +125,7 @@ export interface RunPipelineOptions {
    * stages"). Omit it to run the Tier 0 stages `order.ts` ships. `compact` and
    * `compress` are attached here by their own workstreams.
    */
-  readonly lossyStages?: Readonly<Partial<Record<LossyStageName, LossyStage>>>;
+  readonly lossyStages?: Readonly<Partial<Record<LossyStageName, LossyStage | AsyncLossyStage>>>;
   /** `pin` (governance) and `serialize` (egress adapter), owned elsewhere. */
   readonly totalStages?: Readonly<Partial<Record<TotalStageName, TotalStage>>>;
   /** Fail-closed opt-in for governance-critical callers. Default: fail open. */
@@ -141,18 +159,6 @@ export interface PipelineRun {
   /** True when `stopOnFailure` cut the run short after a failure. */
   readonly halted: boolean;
 }
-
-/**
- * The `LossyStage` shape is the frozen contract's; the isolation guarantee
- * lives on `Tier0Stage` (`StageApplied` carries the report). Projecting one to
- * the other is the exact "one implementation, two views" concession
- * `order.ts` documents, so `runStageFailOpen` covers stages this package does
- * not own too.
- */
-const asTier0 = (stage: LossyStage): Tier0Stage<undefined> => ({
-  name: stage.name,
-  run: (ctx: LossyContext) => ({ ctx: stage.run(ctx), report: undefined }),
-});
 
 /**
  * `runStageFailOpen` decides lossy failure with a `string` code; this runner
@@ -244,131 +250,248 @@ const defaultLossy: ReadonlyMap<LossyStageName, LossyStage> = new Map(
 
 const NO_EMIT = (): void => {};
 
-export function runPipeline(state: ContextState, opts: RunPipelineOptions): PipelineRun {
-  const lossy: ReadonlyMap<LossyStageName, LossyStage> =
+/**
+ * What a stage leaves behind: the typed verdict, the prefix measurement, and
+ * the state to commit. Every stage records through this, so telemetry is a
+ * property of the stage rather than of the branch that reached it: a stage that
+ * returned a `LossyContext` and a stage that returned a promise are measured
+ * the same way or the numbers are not comparable.
+ */
+interface RecordedStep {
+  readonly result: StageResult;
+  readonly diff: CachePrefixDiff;
+  readonly next: ContextState;
+}
+
+interface StepInput {
+  /** The messages the prefix measurement compares against. */
+  readonly measuredBefore: readonly Message[];
+  /**
+   * What the stage actually produced, narrowed by the caller. Measuring the
+   * committed state instead would be blind: isolation discards the output on
+   * failure, so a reordered prefix would be reverted before the tracker saw it,
+   * and these stages have no other guard.
+   */
+  readonly observedMessages: readonly Message[] | undefined;
+  readonly code: StageErrorCode | undefined;
+  readonly started: number;
+  readonly tokensIn: number;
+  readonly runId: string;
+  readonly emit: (event: TelemetryEvent) => void;
+}
+
+const recordStep = (name: StageName, input: StepInput, next: ContextState): RecordedStep => ({
+  result: {
+    name,
+    ok: input.code === undefined,
+    durationMs: performance.now() - input.started,
+    tokensIn: input.tokensIn,
+    tokensOut: estimateTokens(next),
+    ...(input.code === undefined ? {} : { code: input.code }),
+  },
+  diff: observeCachePrefix(
+    name,
+    {
+      before: input.measuredBefore,
+      after: input.observedMessages,
+      reverted: input.code !== undefined,
+    },
+    input.runId,
+    input.emit,
+  ),
+  next,
+});
+
+/** The mutable part of a run, so a loop body reads as compute, record, commit. */
+interface LoopState {
+  current: ContextState;
+  readonly stageResults: StageResult[];
+  readonly cachePrefix: CachePrefixDiff[];
+  halted: boolean;
+}
+
+const commit = (
+  loop: LoopState,
+  step: RecordedStep,
+  stopOnFailure: boolean,
+  onStage: ((result: StageResult) => void) | undefined,
+): void => {
+  loop.stageResults.push(step.result);
+  loop.cachePrefix.push(step.diff);
+  loop.current = step.next;
+  onStage?.(step.result);
+  if (stopOnFailure && !step.result.ok) loop.halted = true;
+};
+
+const finish = (loop: LoopState): PipelineRun => ({
+  state: loop.current,
+  stageResults: loop.stageResults,
+  stagesRun: loop.stageResults.map((result) => result.name),
+  cachePrefix: loop.cachePrefix,
+  failed: loop.stageResults.reduce((count, result) => (result.ok ? count : count + 1), 0),
+  halted: loop.halted,
+});
+
+/**
+ * Put a validated lossy output back into a full state.
+ *
+ * `gists` is taken from the stage's output as well as `messages` and
+ * `artifacts`, which is the one thing this does that it did not do before.
+ * `compact` commits a gist: a `gist://` message in `messages` and a matching
+ * record in `gists`. Keeping the first and dropping the second would leave
+ * `governance/type-guard.ts` and `ctx_status` reading a state that disagrees
+ * with the transcript it is about. The Tier 0 stages do not touch `gists`, so
+ * for everything wired today the value is the same either way.
+ */
+const restoreLossy = (
+  outcome: { readonly ctx: LossyContext; readonly code: string | undefined },
+  current: ContextState,
+): ContextState => {
+  if (outcome.code !== undefined) return current;
+  const restored = restoreHeld(outcome.ctx, {
+    ...current,
+    messages: outcome.ctx.messages,
+    artifacts: outcome.ctx.artifacts,
+    gists: outcome.ctx.gists,
+  });
+  return { ...restored, tokenEstimate: estimateTokens(restored) };
+};
+
+/**
+ * Run one turn's stages in pipeline order, isolating each so one failure costs
+ * that stage and not the request.
+ *
+ * ## Why this is `async` and there is only one of it
+ *
+ * It was two runners: a synchronous `runPipeline` for callers with nothing to
+ * wait for, and `runPipelineAsync` for the ones that injected `compact`. Both
+ * bodies were the same loop with one branch moved, which is exactly the
+ * "one implementation, two views" shape this repo's gates treat as a defect --
+ * and the moment the gateway tunnel awaited the async one, the synchronous one
+ * had no caller left anywhere and the wiring ratchet said so.
+ *
+ * Awaiting a stage that returned a `LossyContext` rather than a promise costs a
+ * microtask and no behavior, so one runner that waits covers both. The type
+ * still tells a reader which stages can block: `lossyStages` accepts
+ * `LossyStage | AsyncLossyStage`, and a plain `LossyStage` needs no change to
+ * run through it.
+ *
+ * The isolation contract does not change with the wait: a stage that throws or
+ * rejects, resolves to something that is not a `LossyContext`, or reorders the
+ * cached prefix fails open, with the stage's own input restored. The rejection
+ * is re-raised *inside* `runStageFailOpen` rather than handled here, so there
+ * is one classification table (`stage_threw` vs `prefix_reordered`) instead of
+ * a second one that drifts.
+ *
+ * Total stages stay synchronous. `TotalStage` is governance (`pin`) or the
+ * egress adapter (`serialize`), and neither can become async without a contract
+ * change; only `compact` needs to wait.
+ */
+export async function runPipeline(state: ContextState, opts: RunPipelineOptions): Promise<PipelineRun> {
+  const lossy: ReadonlyMap<LossyStageName, LossyStage | AsyncLossyStage> =
     opts.lossyStages === undefined
       ? defaultLossy
-      : new Map<LossyStageName, LossyStage>(
+      : new Map<LossyStageName, LossyStage | AsyncLossyStage>(
           Object.entries(opts.lossyStages)
-            .filter((entry): entry is [LossyStageName, LossyStage] => entry[1] !== undefined),
+            .filter(
+              (entry): entry is [LossyStageName, LossyStage | AsyncLossyStage] =>
+                entry[1] !== undefined,
+            ),
         );
   const total = opts.totalStages ?? {};
   const stopOnFailure = opts.stopOnFailure === true;
   const runId = state.runId;
-  // The accounting is computed either way, because `cachePrefix` is part of the
-  // run result; `emit` only decides whether it is also reported.
   const emit = opts.onTelemetry ?? NO_EMIT;
 
-  let current: ContextState = state;
-  const stageResults: StageResult[] = [];
-  const cachePrefix: CachePrefixDiff[] = [];
-  let halted = false;
+  const loop: LoopState = {
+    current: state,
+    stageResults: [],
+    cachePrefix: [],
+    halted: false,
+  };
 
   for (const name of PIPELINE_STAGE_ORDER) {
-    if (halted) break;
+    if (loop.halted) break;
 
     if (name === 'pin' || name === 'serialize') {
       const stage = total[name];
       if (stage === undefined) continue;
 
+      const current = loop.current;
       const tokensIn = estimateTokens(current);
       const started = performance.now();
-      // The spy captures what the stage actually produced. Measuring the
-      // committed state instead would be blind here: `isolateTotal` discards the
-      // output on failure, so a reordered prefix would be reverted before the
-      // tracker ever saw it, and these two stages have no other guard.
       let observed: ContextState | undefined;
       const outcome = isolateTotal(
         { name, run: (s) => (observed = stage.run(s)) },
         current,
       );
-      const next: ContextState = outcome.code === undefined ? outcome.state : current;
-      const result: StageResult = {
-        name,
-        ok: outcome.code === undefined,
-        durationMs: performance.now() - started,
-        tokensIn,
-        tokensOut: estimateTokens(next),
-        ...(outcome.code === undefined ? {} : { code: outcome.code }),
-      };
-      stageResults.push(result);
-      cachePrefix.push(
-        observeCachePrefix(
+      const next = outcome.code === undefined ? outcome.state : current;
+      commit(
+        loop,
+        recordStep(
           name,
           {
-            before: current.messages,
-            after: isContextState(observed) ? observed.messages : undefined,
-            reverted: outcome.code !== undefined,
+            measuredBefore: current.messages,
+            observedMessages: isContextState(observed) ? observed.messages : undefined,
+            code: outcome.code,
+            started,
+            tokensIn,
+            runId,
+            emit,
           },
-          runId,
-          emit,
+          next,
         ),
+        stopOnFailure,
+        opts.onStage,
       );
-      current = next;
-      opts.onStage?.(result);
-      if (stopOnFailure && !result.ok) halted = true;
       continue;
     }
 
     const stage = lossy.get(name);
     if (stage === undefined) continue;
 
+    const current = loop.current;
     const tokensIn = estimateTokens(current);
     const started = performance.now();
     const lossyIn = partitionForLossy(current, opts.policy);
-    // Same reason as the total-stage spy: `runStageFailOpen` reverts a reordered
-    // stage, so the committed state alone would report the prefix as intact.
+
     let observed: LossyContext | undefined;
+    let rejection: { readonly error: unknown } | undefined;
+    try {
+      observed = await stage.run(lossyIn);
+    } catch (error) {
+      rejection = { error };
+    }
+
     const outcome = runStageFailOpen(
-      asTier0({ name, run: (ctx) => (observed = stage.run(ctx)) }),
+      {
+        name,
+        run: (): StageApplied<undefined> => {
+          if (rejection !== undefined) throw rejection.error;
+          return { ctx: observed as LossyContext, report: undefined };
+        },
+      },
       lossyIn,
     );
-    let next: ContextState = current;
-    if (outcome.code === undefined) {
-      next = restoreHeld(outcome.ctx, {
-        ...current,
-        messages: outcome.ctx.messages,
-        artifacts: outcome.ctx.artifacts,
-      });
-      next = { ...next, tokenEstimate: estimateTokens(next) };
-    }
-    const code = asStageCode(outcome.code);
-    const result: StageResult = {
-      name,
-      ok: outcome.code === undefined,
-      durationMs: performance.now() - started,
-      tokensIn,
-      tokensOut: estimateTokens(next),
-      ...(code === undefined ? {} : { code }),
-    };
-    stageResults.push(result);
-    // `before` is the partitioned view, matching what a lossy stage can reach:
-    // `partitionForLossy` holds governance out of reach by construction, so
-    // holding it out of the measurement too keeps the verdict attributable to
-    // the stage. Governance is in scope for the total stages, which see it.
-    cachePrefix.push(
-      observeCachePrefix(
+    commit(
+      loop,
+      recordStep(
         name,
         {
-          before: lossyIn.messages,
-          after: isLossyContext(observed) ? observed.messages : undefined,
-          reverted: outcome.code !== undefined,
+          measuredBefore: lossyIn.messages,
+          observedMessages: isLossyContext(observed) ? observed.messages : undefined,
+          code: asStageCode(outcome.code),
+          started,
+          tokensIn,
+          runId,
+          emit,
         },
-        runId,
-        emit,
+        restoreLossy(outcome, current),
       ),
+      stopOnFailure,
+      opts.onStage,
     );
-    current = next;
-    opts.onStage?.(result);
-    if (stopOnFailure && !result.ok) halted = true;
   }
 
-  return {
-    state: current,
-    stageResults,
-    stagesRun: stageResults.map((result) => result.name),
-    cachePrefix,
-    failed: stageResults.reduce((count, result) => (result.ok ? count : count + 1), 0),
-    halted,
-  };
+  return finish(loop);
 }

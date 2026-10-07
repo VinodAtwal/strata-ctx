@@ -78,10 +78,10 @@ compaction + artifact store), **governance** (immutable pinning), the **canary s
 
 > **Read this before you read the feature list.** Tier 0 (`dedupe`, `truncate`, `triage`) is
 > **wired into the gateway's request path** — `packages/gateway/src/server.ts` calls `runTier0`, then
-> `enforcePins` last — so the current claim is **"context is reduced, pinned, and measured"**.
-> Tiers 1–2 (`compact`, `compress`, `serialize`) remain library operators that are not yet on the
-> request path, and Tier 3 narration is opt-in via `pipeline.tokenCompression: 'local'` with a
-> configured model.
+> runs the post-Tier-0 tunnel through `runPipeline`, which applies `pin` and any lossy stage the
+> caller injects — so the current claim is **"context is reduced, pinned, and measured"**.
+> `compact` and `compress` are library operators no composition root injects yet, and Tier 3
+> narration is opt-in via `pipeline.tokenCompression: 'local'` with a configured model.
 >
 > What "enforced" means, stated plainly, because it is narrower than the word suggests:
 >

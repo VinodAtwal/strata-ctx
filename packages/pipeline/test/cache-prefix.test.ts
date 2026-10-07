@@ -319,9 +319,9 @@ describe('cache-prefix: runner wiring', () => {
     return { events, onTelemetry: (e) => events.push(e) };
   }
 
-  it('emits one cache event per stage on a clean run and no error events', () => {
+  it('emits one cache event per stage on a clean run and no error events', async () => {
     const { events, onTelemetry } = collect();
-    const run = runPipeline(
+    const run = await runPipeline(
       stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))),
       { policy, onTelemetry },
     );
@@ -336,13 +336,13 @@ describe('cache-prefix: runner wiring', () => {
     }
   });
 
-  it('populates cachePrefix with no telemetry sink attached', () => {
-    const run = runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }))), { policy });
+  it('populates cachePrefix with no telemetry sink attached', async () => {
+    const run = await runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }))), { policy });
     assert.equal(run.cachePrefix.length, run.stageResults.length);
     assert.equal(run.cachePrefix[0]?.stage, 'dedupe');
   });
 
-  it('detects a reorder committed by a total stage, which has no other guard', () => {
+  it('detects a reorder committed by a total stage, which has no other guard', async () => {
     // `pin` and `serialize` run through `isolateTotal`, which validates the shape
     // and nothing else. Nothing in the pipeline fails this stage open, so the
     // output commits -- and only the tracker sees it.
@@ -351,7 +351,7 @@ describe('cache-prefix: runner wiring', () => {
       name: 'serialize',
       run: (s) => ({ ...s, messages: [...s.messages].reverse() }),
     };
-    const run = runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))), {
+    const run = await runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))), {
       policy,
       totalStages: { serialize: reordering },
       onTelemetry,
@@ -368,13 +368,13 @@ describe('cache-prefix: runner wiring', () => {
     assert.equal(err.failedOpen, false);
   });
 
-  it('tells a legitimate drop apart from a reorder in the emitted telemetry', () => {
+  it('tells a legitimate drop apart from a reorder in the emitted telemetry', async () => {
     const { events: dropEvents, onTelemetry: onDrop } = collect();
     const dropping: LossyStage = {
       name: 'truncate',
       run: (ctx) => ({ ...ctx, messages: ctx.messages.slice(1) }),
     };
-    const droppedRun = runPipeline(
+    const droppedRun = await runPipeline(
       stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))),
       { policy, lossyStages: { truncate: dropping }, onTelemetry: onDrop },
     );
@@ -386,7 +386,7 @@ describe('cache-prefix: runner wiring', () => {
       name: 'truncate',
       run: (ctx) => ({ ...ctx, messages: [...ctx.messages].reverse() }),
     };
-    const reorderedRun = runPipeline(
+    const reorderedRun = await runPipeline(
       stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))),
       { policy, lossyStages: { truncate: reversing }, onTelemetry: onReorder },
     );
@@ -394,7 +394,7 @@ describe('cache-prefix: runner wiring', () => {
     assert.equal(reorderEvents.filter((e) => e.type === 'error').length, 1);
   });
 
-  it('measures the raw stage output, not the state the runner committed', () => {
+  it('measures the raw stage output, not the state the runner committed', async () => {
     // The lossy guard reverts a reordered stage, so a tracker that diffed the
     // committed states would report `intact` here and miss the bug.
     const { events, onTelemetry } = collect();
@@ -402,7 +402,7 @@ describe('cache-prefix: runner wiring', () => {
       name: 'truncate',
       run: (ctx) => ({ ...ctx, messages: [...ctx.messages].reverse() }),
     };
-    const run = runPipeline(
+    const run = await runPipeline(
       stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))),
       { policy, lossyStages: { truncate: reversing }, onTelemetry },
     );
@@ -414,7 +414,7 @@ describe('cache-prefix: runner wiring', () => {
     assert.ok(err?.type === 'error' && err.failedOpen);
   });
 
-  it('finds the live dedupe false positive: designed drop, legacy guard throws', () => {
+  it('finds the live dedupe false positive: designed drop, legacy guard throws', async () => {
     // Two cacheable reads of the same file. Dedupe drops the stale one -- that is
     // the stage working -- and `assertPrefixPreserved` calls it a reorder, so the
     // runner throws the drop away. Pinned so the discrepancy cannot disappear.
@@ -424,7 +424,7 @@ describe('cache-prefix: runner wiring', () => {
       cacheable('v1 contents', { sha256: A, origin: 'tool', tier: 'tool_state', subject: { ...subject, version: 'v1' } }),
       cacheable('v2 contents', { sha256: B, origin: 'tool', tier: 'tool_state', subject: { ...subject, version: 'v2' } }),
     );
-    const run = runPipeline(stateOf(before), { policy: policyOnlyDedupe, onTelemetry });
+    const run = await runPipeline(stateOf(before), { policy: policyOnlyDedupe, onTelemetry });
 
     const dedupe = run.stageResults.find((r) => r.name === 'dedupe');
     assert.equal(dedupe?.ok, false);
@@ -442,7 +442,7 @@ describe('cache-prefix: runner wiring', () => {
     assert.equal(events.filter((e) => e.type === 'error').length, 0);
   });
 
-  it('reports a stage that threw as unobserved, and the prefix as intact', () => {
+  it('reports a stage that threw as unobserved, and the prefix as intact', async () => {
     const { events, onTelemetry } = collect();
     const throwing: LossyStage = {
       name: 'truncate',
@@ -450,7 +450,7 @@ describe('cache-prefix: runner wiring', () => {
         throw new Error('boom');
       },
     };
-    const run = runPipeline(
+    const run = await runPipeline(
       stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))),
       { policy, lossyStages: { truncate: throwing }, onTelemetry },
     );
@@ -463,27 +463,27 @@ describe('cache-prefix: runner wiring', () => {
     assert.equal(events.filter((e) => e.type === 'error').length, 0);
   });
 
-  it('does not mutate the input state', () => {
+  it('does not mutate the input state', async () => {
     const state = deepFreeze(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))));
-    assert.doesNotThrow(() => runPipeline(state, { policy: policyOnlyDedupe }));
+    await runPipeline(state, { policy: policyOnlyDedupe });
   });
 
-  it('is deterministic: the same input yields the same accounting and events', () => {
-    const a = runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))), { policy });
-    const b = runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))), { policy });
+  it('is deterministic: the same input yields the same accounting and events', async () => {
+    const a = await runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))), { policy });
+    const b = await runPipeline(stateOf(messagesOf(cacheable('A', { sha256: A }), cacheable('B', { sha256: B }))), { policy });
     assert.deepEqual(a.cachePrefix, b.cachePrefix);
     assert.deepEqual(a.stageResults.map((r) => r.name), b.stageResults.map((r) => r.name));
   });
 });
 
 describe('cache-prefix: fail-open', () => {
-  it('proceeds unmodified and reports a measurement failure', () => {
+  it('proceeds unmodified and reports a measurement failure', async () => {
     // `meta.sha256` is not a digest, so the tracker cannot key the prefix. The
     // pipeline never hashes it, so it completes normally.
     const forged = cacheable('hello world', { sha256: 42 as unknown as string, tier: 'user_intent' });
     const { events, onTelemetry } = { events: [] as TelemetryEvent[], onTelemetry: (e: TelemetryEvent) => events.push(e) };
 
-    const run = runPipeline(stateOf(oneBlock(forged)), { policy, onTelemetry });
+    const run = await runPipeline(stateOf(oneBlock(forged)), { policy, onTelemetry });
 
     assert.equal(run.failed, 0, 'a measurement failure is not a stage failure');
     assert.deepEqual(run.stagesRun, ['dedupe', 'truncate', 'triage']);

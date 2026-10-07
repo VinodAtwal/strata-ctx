@@ -1,7 +1,7 @@
 import { Server, type IncomingMessage, type RequestListener, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { Readable } from 'node:stream';
-import type { ContextState, LossyStageName, PinDefect, StageName, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
+import type { ContextState, LossyStage, LossyStageName, PinDefect, StageName, StrataPolicy, TelemetryEvent } from '@strata-ctx/core-types';
 import {
   enforcePins,
   type PinApplication,
@@ -11,8 +11,14 @@ import {
   sha256,
   StrataPolicySchema,
 } from '@strata-ctx/core-types';
-import { asStageCode, runPipeline, runTier0, type StageErrorCode, type Tier0Result } from '@strata-ctx/pipeline';
-import type { PendingArtifact } from '@strata-ctx/pipeline';
+import {
+  asStageCode,
+  runPipeline,
+  runTier0,
+  type StageErrorCode,
+  type Tier0Result,
+} from '@strata-ctx/pipeline';
+import type { AsyncLossyStage, PendingArtifact } from '@strata-ctx/pipeline';
 import { ArtifactStore } from '@strata-ctx/security';
 import { DEFAULT_TAIL_BYTES, pipeSseUpstream } from './sse.js';
 import { ollamaClientFromFetch, type NarrationConfig } from './ollama-adapter.js';
@@ -76,6 +82,29 @@ export interface GatewayOptions {
    * tests pass with them absent.
    */
   readonly adapters?: AdapterTable;
+  /**
+   * The lossy stages the tunnel runs after Tier 0 -- `compact`, `compress`, and
+   * whatever a workstream attaches later. Supplied, never imported: the
+   * implementations live in packages this one does not depend on, so the
+   * composition root (`tools/dev.ts`) builds them and hands them in, the same
+   * way `adapters` carries providers this build cannot link statically
+   * (AGENTS.md §7 -- a fourth cross-stream edge needs the owner, so there is
+   * not one).
+   *
+   * Two gates decide whether an entry runs, and neither is this option's. The
+   * name must appear in `policy.pipeline.stages`, which is the operator's
+   * switch and makes the remedy in `stageFailureMessage` literally true. And
+   * Tier 0 names are refused outright at construction: `runTier0` has already
+   * run dedupe, truncate and triage over this same state, and a second
+   * truncate pass would see a context that had already been capped and could
+   * drop content the first pass deliberately kept.
+   *
+   * Omitting this is "no lossy stages in the tunnel", which is what the tunnel
+   * passed explicitly before it existed. Whether `compact` *fires* is
+   * `policy.pipeline.compaction` and the trigger inside the stage; the
+   * gateway's job is the registry and the order, both of which it owns.
+   */
+  readonly lossyStages?: Readonly<Partial<Record<LossyStageName, LossyStage | AsyncLossyStage>>>;
   /**
    * How long a graceful shutdown waits for in-flight requests before it destroys
    * the sockets. Defaults to `DEFAULT_CONFIG.timeouts.shutdownMs` in
@@ -361,15 +390,15 @@ const fail = (
  * symbol and the line is only ever the hint.
  */
 const REMEDY = {
-  bodyCeiling: { at: 'packages/gateway/src/server.ts:143', symbol: 'MAX_BODY_BYTES' },
-  jsonParse: { at: 'packages/gateway/src/server.ts:662', symbol: 'JSON.parse(body.text)' },
-  upstreamFetch: { at: 'packages/gateway/src/server.ts:550', symbol: 'upstream = await fetch' },
+  bodyCeiling: { at: 'packages/gateway/src/server.ts:172', symbol: 'MAX_BODY_BYTES' },
+  jsonParse: { at: 'packages/gateway/src/server.ts:691', symbol: 'JSON.parse(body.text)' },
+  upstreamFetch: { at: 'packages/gateway/src/server.ts:579', symbol: 'upstream = await fetch' },
   adapterResolution: { at: 'packages/gateway/src/routing.ts:137', symbol: 'resolveAdapter' },
   lossyFailOpen: { at: 'packages/pipeline/src/order.ts:144', symbol: 'runStageFailOpen' },
-  totalFailOpen: { at: 'packages/pipeline/src/runner.ts:229', symbol: 'isolateTotal' },
-  ingressPipeline: { at: 'packages/gateway/src/server.ts:608', symbol: 'handleIngress' },
-  lastDefence: { at: 'packages/gateway/src/server.ts:1330', symbol: "'unhandled'" },
-  drainBudget: { at: 'packages/gateway/src/server.ts:1176', symbol: "'shutdown_forced'" },
+  totalFailOpen: { at: 'packages/pipeline/src/runner.ts:235', symbol: 'isolateTotal' },
+  ingressPipeline: { at: 'packages/gateway/src/server.ts:637', symbol: 'handleIngress' },
+  lastDefence: { at: 'packages/gateway/src/server.ts:1394', symbol: "'unhandled'" },
+  drainBudget: { at: 'packages/gateway/src/server.ts:1226', symbol: "'shutdown_forced'" },
 } as const;
 
 /** `file:line (symbol)` -- the shape operations.md Factor 6 asks for. */
@@ -773,14 +802,24 @@ const handleIngress = async (
     // The tunnel: everything after Tier 0 that this package does not own, run
     // through the generic runner so the seam exists in production (C-13).
     //
-    // `lossyStages: {}` is the load-bearing argument. Tier 0 already ran above,
-    // and `runPipeline` defaults to the full `LOSSY_TIER0_STAGES` registry when
-    // that field is absent -- so omitting it would run dedupe, truncate, and
-    // triage a second time over an already-restored state. That is not a
-    // duplicate costing tokens; a second truncate pass sees a context that has
-    // already been capped and could drop content the first pass deliberately
-    // kept. The empty registry means "no lossy stages", which is the truth: the
-    // tunnel contributes total stages only.
+    // The registry is built here rather than passed through, and both halves of
+    // it are load-bearing.
+    //
+    // An explicit object is always passed, never omitted: `runPipeline`
+    // defaults to the full `LOSSY_TIER0_STAGES` registry when the field is
+    // absent, and Tier 0 has already run above. Omitting it would run dedupe,
+    // truncate and triage a second time over an already-restored state. That is
+    // not a duplicate costing tokens; a second truncate pass sees a context that
+    // has already been capped and could drop content the first pass deliberately
+    // kept.
+    //
+    // What the caller injected is then intersected with `policy.pipeline.stages`.
+    // The runner does not read that list -- its only gate is whether a name is
+    // in the registry it was handed -- so without this an operator who removed
+    // "compact" from the policy would still get compaction from whoever composed
+    // the gateway, and the remedy `stageFailureMessage` prints ("drop X from
+    // policy.pipeline.stages") would be advice that does nothing. Tier 0 names
+    // cannot reach here at all: `createGateway` refuses them at construction.
     //
     // `pin` is adapted from `enforcePins` because the two signatures disagree.
     // `TotalStage.run` returns a `ContextState`; `enforcePins` returns a
@@ -810,8 +849,8 @@ const handleIngress = async (
     // catch reporting "cannot read properties of undefined" -- which attributes
     // a pin failure to something that is not the pin.
     //
-    // `onStage` is what makes the cause reportable. `runPipeline` isolates the
-    // stage and keeps going, so without this hook a pin that failed open is
+    // `onStage` is what makes the cause reportable. `runPipeline` isolates
+    // the stage and keeps going, so without this hook a pin that failed open is
     // indistinguishable from the turn-level catch below: one code, one stage,
     // and the typed cause -- `stage_threw` vs `not_a_context_state` -- discarded.
     // Two events for one failure is the right count, not double-counting: the
@@ -819,9 +858,15 @@ const handleIngress = async (
     // request went upstream with no pin on it. They have different remedies.
     let pinned: PinApplication | undefined;
     attribute(where, 'pin', before.runId);
-    const tunnel = runPipeline(tier0.state, {
+    const enabled = new Set<StageName>(d.rt.opts.policy.pipeline.stages);
+    const registry: Partial<Record<LossyStageName, LossyStage | AsyncLossyStage>> = {};
+    for (const [name, stage] of Object.entries(d.rt.opts.lossyStages ?? {})) {
+      if (stage === undefined || !enabled.has(name as StageName)) continue;
+      registry[name as LossyStageName] = stage;
+    }
+    const tunnel = await runPipeline(tier0.state, {
       policy: d.rt.opts.policy,
-      lossyStages: {},
+      lossyStages: registry,
       totalStages: {
         pin: {
           name: 'pin',
@@ -834,6 +879,11 @@ const handleIngress = async (
       onStage: (result) => {
         const code = asStageCode(result.code);
         if (code === undefined) return;
+        // Attribution follows the stage that failed. One
+        // `attribute(where, 'pin')` above would have filed every tunnel failure
+        // under pin while the tunnel held a single stage; with `compact` and
+        // `compress` in it, that sends an operator to the one stage that worked.
+        attribute(where, result.name, before.runId);
         fail(d, where, code, stageFailureMessage(result.name, code), true);
       },
     });
@@ -1266,6 +1316,20 @@ const resolveArtifactRoot = (options: GatewayOptions): GatewayOptions => {
 
 export function createGateway(options: GatewayOptions): Gateway {
   const opts: GatewayOptions = resolveArtifactRoot(options);
+  const tier0Names = new Set<StageName>(['dedupe', 'truncate', 'triage']);
+  for (const name of Object.keys(opts.lossyStages ?? {})) {
+    if (tier0Names.has(name as StageName)) {
+      // Loud at construction rather than silent per request. The alternative
+      // -- filtering them out here -- would leave the caller believing a stage
+      // they asked for is running while `runTier0` already ran it, which is the
+      // duplicate-truncate hazard the tunnel comment at the registry warns
+      // about, arrived at through a different door.
+      throw new Error(
+        `GatewayOptions.lossyStages: "${name}" already ran in Tier 0 and must not run again in the tunnel. ` +
+          `Tier 0 stages are selected by policy.pipeline.stages; only the stages after pin are injected here.`,
+      );
+    }
+  }
   const provider: ConfigProvider = isConfigProvider(opts.provider) ? opts.provider : 'anthropic';
   const d: Dispatcher = {
     rt: {
