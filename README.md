@@ -578,7 +578,7 @@ and what the wiring scan cannot tell you — is in [`docs/maturity.md`](docs/mat
 |---|---|
 | Contract (`core-types`) | **Frozen.** Unbreaking it is a deliberate, standalone commit. |
 | Gateway + provider adapters (Anthropic, Gemini, openai-compat, Ollama, mock), SSE passthrough | **done** — adapters round-trip through the canonical model, and the two that used to silently drop a payload now state the loss instead |
-| Pipeline Tier 0–2 operators | **wired into the gateway request path** (`runTier0`, called from the server) |
+| Pipeline: Tier 0 (`dedupe`, `truncate`, `triage`) and `pin` | **wired into the gateway request path** — `runTier0` (called from the server), then the post-Tier-0 tunnel through `runPipeline`, which also runs any lossy stage the composition root injects. `compact` has no production caller; Tier 3 `compress` stays `enabled: false` |
 | Governance: pin buffer, byte-equality, policy store, violations | **done**, and type-level protected from lossy stages |
 | Security: redaction, ACL, gist safety, retention/purge | **done**; GC reachable only via an uncalled purge handler |
 | Telemetry: cost engine, gross/net savings, `strata status` | **done**; all 12 event types surfaced |

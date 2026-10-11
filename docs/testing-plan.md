@@ -97,13 +97,62 @@ are distinguishable, not merely that `cache` is handled.
 
 ### G-9 — per-stage tokens
 
-*Blocked on the contract.* `stage` carries bytes; `request_in` carries input
-tokens. No per-stage token figure exists, and adding one is a `core-types` change.
+*Landed* (`a63bfa8`): `inputTokens`/`outputTokens` were added to `StageTelemetry`
+as optional fields and the contract digest moved, with nothing else in the lock
+moving. That is the whole of what this row owed — a field. Whether anything
+*emits* it is G-10's question, and until G-10 the answer was "the contract has
+the field and the gateway drops it on the way out": a field with no producer is
+the `eviction_skipped` shape from the table above.
 
-*Test:* a `contract:update` in its own commit, then an assertion that a stage
-event carrying tokens typechecks and that the digest change is the only contract
-movement. If bytes→tokens conversion is a judgement call, it belongs in the
-report, not in a silent default.
+*Discrimination test:* a stage that removed blocks must emit `inputTokens` >
+`outputTokens`, and a stage that did not must emit them equal. A producer that
+measures after the stage reports equality for both — which is what Tier 0 did
+before G-10 (`order.ts` read `inputTokens` off the reassigned `ctx`).
+
+*Falsifier:* if a stage's own event cannot say what it received, only what it
+produced, the token field is decoration and belongs in a report's caveats, not
+in the event.
+
+### C-13 — the tunnel takes injected stages through a DI port
+
+*Hypothesis:* before C-13 there was no way to hand the tunnel a stage from
+outside `packages/pipeline`. `runPipeline` fell back to its own
+`LOSSY_TIER0_STAGES` when `lossyStages` was absent, so the only lossy operators
+past `pin` were Tier 0's own — re-run over an already-restored context — and a
+genuine post-pin operator was unreachable however well tested it was.
+
+*Discrimination test:* two runs whose only difference is whether the injected
+name is in `policy.pipeline.stages` must give opposite verdicts, run versus
+not-run, so a hardcoded stage list cannot pass. `packages/gateway/test/server.test.ts`
+holds both halves ("an injected lossy stage runs after pin…", "policy.pipeline.stages
+is the switch for an injected stage, as the remedy says").
+
+*Safety falsifier:* an injected stage must not widen the pinned set or run a
+Tier 0 name a second time. `createGateway` refuses a Tier 0 name at construction,
+and `pin` stays the only tunnel stage that can produce governance. If a future
+injection path can emit a `pin`-shaped stage, this row's guarantee is gone even
+though the port still typechecks.
+
+### G-10 — every stage that ran reports, in one set of units
+
+*Hypothesis:* the tunnel's stages emitted nothing, and the one `stage` event that
+existed was labeled `pin` while measuring the whole turn in `JSON.stringify`
+bytes and message counts — so a sink could not read the effect of a compaction,
+and `pin` had two incompatible answers.
+
+*Discrimination test:* the sharpest pair in the repo — a stage that **failed
+open** and a stage that **ran and changed nothing** produce identical
+`bytesIn`/`bytesOut` and opposite `changed` (`true` vs `false`).
+`packages/pipeline/test/runner.test.ts` asserts the first; a producer that
+reported the stage's discarded output instead of the input would credit the
+failed stage a reduction it never delivered, and the pair would stop being
+distinguishable.
+
+*Falsifier:* if a `stage` event from Tier 0 and one from an injected stage need
+different readers, `docs/maturity.md`'s "one axis" claim is false. The same field
+list for both is asserted in `packages/gateway/test/server.test.ts`'s injected
+`compact` case; it binds any producer that emits `stage` on its own rather than
+through `stageEvent`.
 
 ### B-15, C-8, H-9 — the three deferred subsystems
 
