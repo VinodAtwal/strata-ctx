@@ -50,6 +50,23 @@ export type TelemetryEvent =
       readonly inputTokens: number;
       readonly messages: number;
     }
+  | {
+      readonly type: 'request_out';
+      readonly runId: string;
+      /**
+       * Length of the serialized request body actually sent upstream.
+       *
+       * A **wire** size, not the `meta.bytes` sum a `stage` event carries. The
+       * two are different units and the report keeps them apart rather than
+       * summing them; a reader that adds `stage.bytesOut` to this gets a number
+       * with no meaning. It is here because this is the only figure for egress
+       * size: `request_in` describes what arrived, `stage` events describe the
+       * transforms, and neither can say how large the request we paid for was.
+       */
+      readonly serializedBytes: number;
+      /** Canonical messages in the body that went upstream. */
+      readonly messages: number;
+    }
   | { readonly type: 'stage'; readonly runId: string } & StageTelemetry
   | {
       readonly type: 'pin';

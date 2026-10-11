@@ -29,6 +29,7 @@ import {
   gist,
   gistValidation,
   requestIn,
+  requestOut,
   savings,
 } from './fixtures.js';
 
@@ -80,6 +81,17 @@ describe('G-1 the event schema', () => {
     assert.equal(isStrataTelemetryEvent(savings({ netFraction: null })), true);
     assert.equal(isStrataTelemetryEvent(savings({ netFraction: 0.1 })), true);
     assert.equal(isStrataTelemetryEvent(savings({ netFraction: asNumber('lots') })), false);
+  });
+
+  it('refuses a request_out whose wire size is not a number', () => {
+    // `serializedBytes` feeds `budget.peakSerializedBytes`. A string here would
+    // concatenate in the report exactly as `turn` used to; the NUMERIC_FIELDS
+    // entry is what makes that impossible rather than merely unlikely.
+    assert.equal(isStrataTelemetryEvent(requestOut()), true);
+    assert.equal(isStrataTelemetryEvent(requestOut({ serializedBytes: asNumber('big') })), false);
+    const missing: Record<string, unknown> = { ...requestOut() };
+    delete missing['serializedBytes'];
+    assert.equal(isStrataTelemetryEvent(missing), false, 'serializedBytes is required, not optional');
   });
 });
 

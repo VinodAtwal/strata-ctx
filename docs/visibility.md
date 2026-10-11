@@ -56,7 +56,7 @@ This is the honest list. Every item is a real gap, not a future idea.
 cached prefix survived — is recorded and correlated by `runId`, but nothing surfaces it
 per request. You can get session aggregates; you cannot ask "what did it do to *that* turn?"
 
-**Every degradation code.** All 12 event types reach a report, but *surfaced* and *aggregated* are
+**Every degradation code.** All 13 event types reach a report, but *surfaced* and *aggregated* are
 not the same. `strata status` collapses them into counts: several codes — including
 `eviction_skipped`, which tells you transcript growth is *not* being bounded — appear in the log
 and in aggregate totals, but the report never names them, so you cannot find out *which* turn hit

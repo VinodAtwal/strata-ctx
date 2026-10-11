@@ -391,14 +391,14 @@ const fail = (
  */
 const REMEDY = {
   bodyCeiling: { at: 'packages/gateway/src/server.ts:172', symbol: 'MAX_BODY_BYTES' },
-  jsonParse: { at: 'packages/gateway/src/server.ts:726', symbol: 'JSON.parse(body.text)' },
-  upstreamFetch: { at: 'packages/gateway/src/server.ts:614', symbol: 'upstream = await fetch' },
+  jsonParse: { at: 'packages/gateway/src/server.ts:749', symbol: 'JSON.parse(body.text)' },
+  upstreamFetch: { at: 'packages/gateway/src/server.ts:623', symbol: 'upstream = await fetch' },
   adapterResolution: { at: 'packages/gateway/src/routing.ts:137', symbol: 'resolveAdapter' },
   lossyFailOpen: { at: 'packages/pipeline/src/order.ts:157', symbol: 'runStageFailOpen' },
   totalFailOpen: { at: 'packages/pipeline/src/runner.ts:267', symbol: 'isolateTotal' },
-  ingressPipeline: { at: 'packages/gateway/src/server.ts:672', symbol: 'handleIngress' },
-  lastDefence: { at: 'packages/gateway/src/server.ts:1433', symbol: "'unhandled'" },
-  drainBudget: { at: 'packages/gateway/src/server.ts:1265', symbol: "'shutdown_forced'" },
+  ingressPipeline: { at: 'packages/gateway/src/server.ts:695', symbol: 'handleIngress' },
+  lastDefence: { at: 'packages/gateway/src/server.ts:1459', symbol: "'unhandled'" },
+  drainBudget: { at: 'packages/gateway/src/server.ts:1291', symbol: "'shutdown_forced'" },
 } as const;
 
 /** `file:line (symbol)` -- the shape operations.md Factor 6 asks for. */
@@ -599,6 +599,14 @@ const apiKeyHeader = (env: string): Record<string, string> => {
  * provider, not that the gateway answers 502 and the agent retries forever. The
  * response is streamed through `pipeSseUpstream` either way, because a
  * fail-open that buffered would make a failure slower than a success.
+ *
+ * `egress` is what makes `request_out` truthful: it is passed only by the happy
+ * path, and the record is emitted only once the fetch resolved, so the event
+ * means "the provider received this body" and not "we tried". The fail-open path
+ * omits it -- its body is the caller's original bytes, not a canonical context,
+ * and the turn is already described by `error` with `failedOpen: true`. A
+ * `request_in` with no matching `request_out` is therefore a real signal: the
+ * body was built and the upstream was never reached.
  */
 const forward = async (
   req: IncomingMessage,
@@ -607,6 +615,7 @@ const forward = async (
   where: Attribution,
   body: string,
   headers: Record<string, string>,
+  egress?: { readonly messages: number },
 ): Promise<void> => {
   const url = `${d.rt.opts.upstream}${req.url ?? '/v1/messages'}`;
   let upstream: Response;
@@ -637,6 +646,20 @@ const forward = async (
     );
     sendJson(res, 502, { error: 'upstream_unreachable', detail: detailOf(err) });
     return;
+  }
+
+  // The provider answered, so the body we built did leave. Emitted here rather
+  // than in `handleIngress` for two reasons: this is the only point that knows
+  // the send succeeded, and the byte count is the body `forward` was handed --
+  // `Buffer.byteLength`, not `body.length`, because a UTF-16 length is not the
+  // number of bytes that crossed the socket.
+  if (egress !== undefined) {
+    d.rt.opts.telemetry?.({
+      type: 'request_out',
+      runId: where.runId,
+      serializedBytes: Buffer.byteLength(body),
+      messages: egress.messages,
+    });
   }
 
   const out: Record<string, string> = {
@@ -1064,10 +1087,13 @@ const handleIngress = async (
   // two different answers. G-10.
   //
   // What a sink reads instead: `request_in` for input tokens and turn number,
-  // one `stage` event per stage that actually ran, `cache` for prefix damage,
-  // and `error` for anything that failed open.
+  // `request_out` (emitted by `forward` once the provider answered) for the wire
+  // size of what actually went out, one `stage` event per stage that actually
+  // ran, `cache` for prefix damage, and `error` for anything that failed open.
 
-  await forward(req, res, d, where, JSON.stringify(outbound), { 'x-strata-pinned': String(expected.length) });
+  await forward(req, res, d, where, JSON.stringify(outbound), { 'x-strata-pinned': String(expected.length) }, {
+    messages: state.messages.length,
+  });
 };
 
 /**

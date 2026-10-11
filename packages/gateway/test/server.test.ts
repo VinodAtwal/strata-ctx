@@ -396,6 +396,11 @@ type StageEvent = Extract<TelemetryEvent, { type: 'stage' }>;
 const stagesOf = (events: readonly TelemetryEvent[]): StageEvent[] =>
   events.filter((e): e is StageEvent => e.type === 'stage');
 
+type RequestOutEvent = Extract<TelemetryEvent, { type: 'request_out' }>;
+
+const requestOutOf = (events: readonly TelemetryEvent[]): RequestOutEvent[] =>
+  events.filter((e): e is RequestOutEvent => e.type === 'request_out');
+
 test('the tunnel reports pin once, in stage units, with the token fields filled', async () => {
   const up = await startUpstream(echoJson);
   const h = await startGateway({}, up.url);
@@ -465,6 +470,57 @@ test('an injected stage reports a stage event of its own, in the same units', as
 
   await h.gateway.closeGracefully();
   await up.close();
+});
+
+// ---------------------------------------- egress size: `request_out`
+//
+// G-10 deleted the only record of how large the request we send upstream was,
+// because it was filed as a `stage` event in the wrong units. Its replacement is
+// a turn-level `request_out`, emitted by `forward` after the provider answers so
+// that it means "this body left" and not "we tried".
+
+test('a delivered request reports its serialized size in bytes, matching what upstream got', async () => {
+  const up = await startUpstream(echoJson);
+  const h = await startGateway({}, up.url);
+  // Non-ASCII content, so a character count and a byte count disagree and the
+  // assertion below can tell which one the event carries.
+  const body = JSON.stringify({
+    model: 'claude-test',
+    max_tokens: 64,
+    system: SYSTEM,
+    messages: [{ role: 'user', content: 'café — naïve 日本語' }],
+  });
+  await post(`${h.url}/v1/messages`, body);
+
+  const sent = up.calls[0]?.body ?? '';
+  const outs = requestOutOf(h.events);
+  assert.equal(outs.length, 1, 'exactly one egress record per delivered turn');
+  const out = outs[0] as RequestOutEvent;
+  // The number is the bytes upstream actually received -- not a reconstruction.
+  assert.equal(out.serializedBytes, Buffer.byteLength(sent), 'the wire size of the body that left');
+  assert.ok(
+    out.serializedBytes > sent.length,
+    'measured in bytes, not UTF-16 code units: the two differ once the body is non-ASCII',
+  );
+  assert.ok(out.messages >= 1, 'the outbound message count is reported');
+
+  await h.gateway.closeGracefully();
+  await up.close();
+});
+
+test('an unreachable upstream reports request_in and no request_out', async () => {
+  // The discrimination pair for `request_out`'s meaning: the body was built, so
+  // `request_in` fires, but the provider never answered, so nothing is claimed
+  // to have gone out. Emitting on the attempt instead of on the answer would
+  // make the two indistinguishable.
+  const h = await startGateway({}, 'http://127.0.0.1:1');
+  const res = await post(`${h.url}/v1/messages`, requestBody(''));
+  assert.equal(res.status, 502);
+
+  assert.ok(h.events.some((e) => e.type === 'request_in'), 'the body was built');
+  assert.equal(requestOutOf(h.events).length, 0, 'and never delivered, so no egress is claimed');
+  assert.ok(h.events.some((e) => e.type === 'error' && e.code === 'upstream_unreachable'));
+  await h.gateway.closeGracefully();
 });
 
 // ------------------------------------------------------------------- health

@@ -49,7 +49,7 @@ pinned by `packages/testing/test/wiring-ledger.test.ts` (`Gates 1-3`). Live tota
 | `integrations` | Host integrations exist (Claude Code hooks, Gemini CLI, OpenCode, MCP) | Capability exists as code; which paths are live depends on the host actually in use. Large surface, much of it unwired. |
 | `pipeline` | Tier 0-2 operators wired into the stage chain | Strong for wired stages. One stage is a **dead gate** (B-3, §3.3) — it runs and succeeds while doing nothing. |
 | `security` | Redaction/entropy/ACL widely referenced; **GC and retention reachable only via an uncalled handler** | Mixed. Redaction is exercised; the deletion path is unobserved. |
-| `telemetry` | Surfaces all 12 event types, `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty | Measurable surface exists. Adoption and refusal-observability are incomplete — `strata status` aggregates but cannot answer "what did you refuse" without reading JSONL (`docs/operations.md` Factor 4/6). |
+| `telemetry` | Surfaces all 13 event types, `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty | Measurable surface exists. Adoption and refusal-observability are incomplete — `strata status` aggregates but cannot answer "what did you refuse" without reading JSONL (`docs/operations.md` Factor 4/6). |
 
 **Wiring-limits, stated plainly.** "Wired" means a direct reference from a reachable file counts as
 a caller. False positives are possible (`value`/bare-import strength); false negatives are possible
@@ -113,7 +113,11 @@ What disappeared here is the one `stage` event that used to be emitted at the en
 labeled `stage: 'pin'` while measuring the whole request -- wire-JSON lengths as bytes, message
 counts as blocks, the entire request as `durationMs` -- so it would have reported `pin` twice in
 incompatible units, and `status.ts` was already adding a full turn to a per-stage duration total
-once per request.
+once per request. The one figure worth keeping from it, the serialized size of what went upstream,
+comes back as its own turn-level `request_out` event, emitted by `forward` once the provider has
+answered: `serializedBytes` is the body's length in bytes and `messages` is the canonical count, so
+a `request_in` with no matching `request_out` means the body was built and the upstream was never
+reached.
 
 **The MCP path can deliver recovery now — behind an opt-in the reader and the writer share.**
 It used to bind `createInMemoryContext()`, a per-process `Map`, so `get_artifact` resolved nothing
@@ -182,7 +186,7 @@ now only the missing `kind: 'file'` producer, which is a real gap and a small on
 
 ## 4) Evidence quality
 
-**Measured / observable.** Telemetry surfaces all 12 event types and
+**Measured / observable.** Telemetry surfaces all 13 event types and
 `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` is empty. `strata status` aggregates
 budget/compactions/pins/savings/violations. The CLI entry is reachable.
 

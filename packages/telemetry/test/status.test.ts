@@ -37,6 +37,7 @@ import {
   pin,
   recordsOf,
   requestIn,
+  requestOut,
   savings as savingsEvent,
   stage,
   tableAged,
@@ -102,6 +103,36 @@ describe('G-5 budget', () => {
     assert.equal(r.budget.peakInputTokens, 90_000);
     assert.equal(r.budget.lastInputTokens, 20_000, 'and the current value separately');
     assert.equal(r.budget.peakUtilization, 0.9);
+  });
+
+  it('reports the egress wire size apart from the input estimate, in bytes', () => {
+    // The one figure `request_out` exists for. It is the serialized body's
+    // length, so it carries no `est.` and must not be summed with `request_in`'s
+    // token estimate -- different units, and the report keeps them in different
+    // lines. Peak is kept separately from last for the same reason the input
+    // side keeps them: one large request is the finding, not the current one.
+    const r = buildStatus(
+      recordsOf([
+        requestOut({ serializedBytes: 5_000 }),
+        requestOut({ serializedBytes: 40_000 }),
+        requestOut({ serializedBytes: 12_000 }),
+      ]),
+    );
+    assert.equal(r.budget.peakSerializedBytes, 40_000);
+    assert.equal(r.budget.lastSerializedBytes, 12_000);
+    const text = formatStatus(r);
+    assert.match(text, /peak egress\s+40000 byte\(s\) serialized/, text);
+    assert.match(text, /peak input\s+0 est\. token\(s\)/, text);
+  });
+
+  it('says nothing about egress when the log has no request_out record', () => {
+    // A zero here would read as "measured zero bytes"; the line is absent
+    // instead, which is the same distinction the budget section makes for an
+    // unconfigured limit. A log with only `request_in` is a turn whose body was
+    // built and never delivered.
+    const r = buildStatus(recordsOf([requestIn({ inputTokens: 1_000 })]));
+    assert.equal(r.budget.peakSerializedBytes, 0);
+    assert.equal(formatStatus(r).includes('egress'), false, 'no egress line without an egress record');
   });
 
   it('counts requests that exceeded the limit', () => {
@@ -1352,7 +1383,7 @@ describe('G-9 per-stage tokens are reported as estimates, not as measurements', 
   });
 
   it('marks the budget section too, because request_in carries an estimate as well', () => {
-    // `request_in.inputTokens` is `state.tokenEstimate` (gateway/src/server.ts:499)
+    // `request_in.inputTokens` is `state.tokenEstimate` (gateway/src/server.ts:968)
     // emitted at ingress, so it is an estimate by construction rather than by
     // inference -- and a report that says "estimate" under `stages` while
     // printing bare "token(s)" under `budget` has told the operator the same
@@ -1393,6 +1424,7 @@ describe('exhaustiveness guard against unhandled event types', () => {
 
     const handledInSwitch = new Set<string>([
       'request_in',
+      'request_out',
       'stage',
       'error',
       'pin',
@@ -1430,6 +1462,7 @@ describe('exhaustiveness guard against unhandled event types', () => {
     const eventsModule = await import('../src/events.js');
     const handledInSwitch = new Set<string>([
       'request_in',
+      'request_out',
       'stage',
       'error',
       'pin',
@@ -1467,7 +1500,7 @@ describe('exhaustiveness guard against unhandled event types', () => {
     assert.deepEqual(
       [...r.log.eventTypes],
       [...eventsModule.STRATA_EVENT_TYPES],
-      'all twelve types reached the report',
+      'every declared type reached the report',
     );
     assert.equal(r.cache.records, 1, 'the cache record the fixture carries is counted');
     assert.ok(

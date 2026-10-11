@@ -139,6 +139,14 @@ export interface BudgetSummary {
   readonly requests: number;
   readonly lastInputTokens: number;
   readonly peakInputTokens: number;
+  /**
+   * Egress side, from `request_out`. Wire bytes of the last serialized body and
+   * the largest one seen. Present so an operator can read what the pipeline
+   * actually cost at the boundary, which no `stage` event can report -- those
+   * are `meta.bytes` and stop at the canonical model.
+   */
+  readonly lastSerializedBytes: number;
+  readonly peakSerializedBytes: number;
   /** peakInputTokens / contextLimit. null when no limit was supplied. */
   readonly peakUtilization: number | null;
   readonly overBudget: number;
@@ -591,6 +599,8 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
   let requests = 0;
   let lastInputTokens = 0;
   let peakInputTokens = 0;
+  let lastSerializedBytes = 0;
+  let peakSerializedBytes = 0;
   let overBudget = 0;
 
   let compactions = 0;
@@ -721,6 +731,18 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
           run.turns += event.turn;
           run.lastInputTokens = event.inputTokens;
         }
+        break;
+      }
+      case 'request_out': {
+        // The egress counterpart to `request_in`, and the only place a wire size
+        // appears. Deliberately not added to `turns`: a turn is counted once,
+        // from `request_in`, and counting it here too would double every turn in
+        // a log where both are present. The two counts differing is a signal,
+        // not noise: the gateway emits this from `forward`, after the provider
+        // answered, so a `request_in` with no matching `request_out` is a turn
+        // whose body was built and never delivered -- an unreachable upstream.
+        lastSerializedBytes = event.serializedBytes;
+        if (event.serializedBytes > peakSerializedBytes) peakSerializedBytes = event.serializedBytes;
         break;
       }
       case 'stage': {
@@ -1180,6 +1202,8 @@ export function buildStatus(records: readonly TelemetryRecord[], options: Status
       requests,
       lastInputTokens,
       peakInputTokens,
+      lastSerializedBytes,
+      peakSerializedBytes,
       peakUtilization: options.contextLimit !== undefined && options.contextLimit > 0
         ? peakInputTokens / options.contextLimit
         : null,
@@ -1444,13 +1468,22 @@ export function formatStatus(report: StatusReport): string {
   out.push(`  requests        ${b.requests}`);
   // `request_in.inputTokens` is marked `est.` for a structural reason rather
   // than a guess about a writer: the record is emitted at ingress
-  // (`gateway/src/server.ts:499`) carrying `state.tokenEstimate`, before any
+  // (`gateway/src/server.ts:968`) carrying `state.tokenEstimate`, before any
   // provider has answered, so no provider-reported figure can reach this field.
   // Labelling only the per-stage figures would have left the report asserting
   // exactly what this change removes -- one section saying "estimate", the
   // next saying "tokens" for the same arithmetic.
   out.push(`  last input      ${b.lastInputTokens} est. token(s)`);
   out.push(`  peak input      ${b.peakInputTokens} est. token(s) (${pctf(b.peakUtilization)} of window)`);
+  // Rendered only when the log carried an egress record at all: a `0` here would
+  // read as "measured zero bytes", which is a different finding from "no
+  // `request_out` record exists". The egress figure cannot be an estimate -- it
+  // is the serialized body's length -- so it needs no `est.`, which is also why
+  // it is not folded into the two lines above.
+  if (b.peakSerializedBytes > 0) {
+    out.push(`  last egress     ${b.lastSerializedBytes} byte(s) serialized`);
+    out.push(`  peak egress     ${b.peakSerializedBytes} byte(s) serialized`);
+  }
   if (b.overBudget > 0) out.push(`  over budget     ${b.overBudget} request(s) exceeded the window`);
 
   // "what happened to my context", as distinct from "what did it cost". Every

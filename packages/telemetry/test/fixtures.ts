@@ -99,6 +99,17 @@ export const requestIn = (over: Partial<Extract<StrataTelemetryEvent, { type: 'r
     ...over,
   }) satisfies Extract<StrataTelemetryEvent, { type: 'request_in' }>;
 
+export const requestOut = (
+  over: Partial<Extract<StrataTelemetryEvent, { type: 'request_out' }>> = {},
+) =>
+  ({
+    type: 'request_out',
+    runId: RUN,
+    serializedBytes: 9_000,
+    messages: 4,
+    ...over,
+  }) satisfies Extract<StrataTelemetryEvent, { type: 'request_out' }>;
+
 /**
  * Typed off the event union rather than off `StageTelemetry`, like every other
  * fixture here: `StageTelemetry` is the payload, so `Partial<StageTelemetry>`
@@ -276,6 +287,7 @@ export const consolidation = (over: Partial<Extract<StrataTelemetryEvent, { type
 /** One event per `type`, for the schema-coverage sweep. */
 export const ONE_OF_EVERY_TYPE: readonly StrataTelemetryEvent[] = Object.freeze([
   requestIn(),
+  requestOut(),
   stage(),
   pin(),
   compaction(),

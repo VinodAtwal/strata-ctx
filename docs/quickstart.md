@@ -252,6 +252,7 @@ strata-ctx dev
   [telemetry] request_in
   [telemetry] pin constraints=2 missingBefore=0
   [telemetry] stage
+  [telemetry] request_out
   ...
   smoke: pinned constraints intact at the provider = true
   smoke: upstream received 1 request(s), 410 bytes

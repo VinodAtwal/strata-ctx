@@ -122,6 +122,7 @@ export type StrataEventType = StrataTelemetryEvent['type'];
 
 export const STRATA_EVENT_TYPES: readonly StrataEventType[] = Object.freeze([
   'request_in',
+  'request_out',
   'stage',
   'pin',
   'compaction',
@@ -162,6 +163,7 @@ export class TelemetrySchemaError extends Error {
  */
 const REQUIRED_FIELDS: Readonly<Record<StrataEventType, readonly string[]>> = Object.freeze({
   request_in: ['runId', 'turn', 'inputTokens', 'messages'],
+  request_out: ['runId', 'serializedBytes', 'messages'],
   stage: ['runId', 'stage', 'bytesIn', 'bytesOut', 'blocksIn', 'blocksOut', 'durationMs', 'changed'],
   pin: ['runId', 'missingBefore', 'constraints'],
   compaction: [
@@ -236,6 +238,7 @@ const NUMERIC_FIELDS: ReadonlySet<string> = Object.freeze(
     'turn',
     'inputTokens',
     'messages',
+    'serializedBytes',
     'bytesIn',
     'bytesOut',
     'blocksIn',
