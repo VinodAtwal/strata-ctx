@@ -80,7 +80,7 @@ Ordered by leverage. `D-*` are docs; `A-*` are code. Effort: S ≤ 1h, M ≤ 1d,
 | ID | Task | Home touched | Effort | Depends |
 |---|---|---|---|---|
 | **A-1** | Declare `integrations → telemetry` in `package.json` (ARCH-1) | `packages/integrations/package.json` | S | — |
-| **D-1** | Fix `CHANGELOG.md`: 114 exports / old digest → point at `npm run status`; fix dangling `AGENTS.md §12.1` | `CHANGELOG.md` | S | — |
+| **D-1** | Fix `CHANGELOG.md`: 114 exports / old digest → point at `npm run status`; fix a dangling `§12.1` pointer | `CHANGELOG.md` | S | — |
 | **D-2** | Fix dangling `AGENTS.md` refs (`§12`, `§12.1`, `§14`, `§6.2`, `§6.4`, `§7.1`) → §3/§5/§2 as appropriate | `README.md`, `quickstart.md`, `wiring-ledger.md`, `CHANGELOG.md` | S | — |
 | **D-3** | Fix `decisions.md` duplicate `Q6`; renumber | `docs/decisions.md` | S | — |
 | **D-4** | Dedupe G1–G12 gate table → keep `evaluation.md §5`; README/spec link | `README.md`, `spec.md` | M | — |

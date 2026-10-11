@@ -305,4 +305,9 @@ Rules that follow:
 4. **Keep one copy.** Three copies of the package tree means two are wrong.
 5. **A doc that describes a finished plan is history.** Label it, so no one executes it.
 
+Rules 1 and 2 are enforced by `scripts/test/docs-convention.test.ts`: it fails on a
+`file.ext:NN` citation, an `AGENTS.md` section outside §0–§11, or a restatement of the
+frozen contract's export count or digest. The check reads `contract.lock.json`, so it
+tracks the lock rather than a copy of it.
+
 When you change a rule, change this file **in the same commit**.
