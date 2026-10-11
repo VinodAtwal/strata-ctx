@@ -181,7 +181,7 @@ That is the gate scoped to one file: same enumeration, same TAP pinning, same
 deadline, same exit-code propagation. It is the form to prefer, because it keeps the
 protections while narrowing the scope.
 
-The lighter form, which is what `AGENTS.md` §6.4 specifies for verification, skips the
+The lighter form, which is what `AGENTS.md` §3 specifies for verification, skips the
 gate entirely:
 
 ```bash
@@ -189,7 +189,7 @@ node --import tsx --test packages/security/test/acl.test.ts
 ```
 
 Either is correct. What is not correct is a glob or the whole suite, for reasons that
-have already cost this repository time (`AGENTS.md` §7.1, rules I1 and I2):
+have already cost this repository time (`AGENTS.md` §5, rules I1 and I2):
 
 | Do not | Why |
 | --- | --- |
@@ -215,7 +215,7 @@ To see what the gate will run before you run it, `--list` is cheaper than a run.
 
 ### Verification before you call a task done
 
-`AGENTS.md` §6.4, which is the minimum, not the whole job:
+`AGENTS.md` §3, which is the minimum, not the whole job:
 
 ```bash
 npx tsc -p packages/<pkg>/tsconfig.json --noEmit --composite false --incremental false
@@ -297,7 +297,7 @@ Operator-facing behaviour, defaults, and the per-request status work are specifi
 
 ## 9. Adding a package
 
-The dependency rules are in `AGENTS.md` §12.1 and they are enforced by review, not by
+The dependency rules are in `AGENTS.md` §7 and they are enforced by review, not by
 tooling. Read that section before designing the package, not after.
 
 The rules that actually bite:
@@ -306,10 +306,11 @@ The rules that actually bite:
    `core-types` and from nothing else across streams. If you need something another
    package exposes, it either goes through `core-types` — which requires the contract
    owner's decision to unfreeze — or it waits.
-2. **There is exactly one documented cross-stream exception:** `integrations` may
+2. **There are exactly three documented cross-stream imports:** `integrations` may
    import `security` and `telemetry`, because agent hooks are where untrusted text and
    credential headers actually arrive, so that path must redact and must be
-   measurable. There is no second exception. Adding one is an `AGENTS.md` §14
+   measurable; and `gist` may import `telemetry`, because eviction is the only
+   destructive operation and must be countable. Adding a fourth is an `AGENTS.md` §10
    emergency stop.
 3. **`eval` depends on nothing, and must keep depending on nothing.** It mirrors
    `ConstraintKind` in its own `types.ts` with a comment recording the freeze digest,
@@ -374,7 +375,7 @@ than editing them. After the package lands, run `npm ci` once: the new
 create it.
 
 Tests go in `packages/<name>/test/*.test.ts`, and fixtures go **inside your test
-file** (`AGENTS.md` §6.2). Do not create or modify shared fixture files. Every operator
+file** (`AGENTS.md` §2). Do not create or modify shared fixture files. Every operator
 needs at least one negative test — a "should not do this" case — plus the determinism,
 fail-open, and telemetry-emission checks in `AGENTS.md` §8.
 

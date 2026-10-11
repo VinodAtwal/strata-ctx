@@ -14,9 +14,9 @@
 | Q3 | Do we ship the artifact store encrypted at rest? | **Yes** — it holds raw transcripts, which is the most sensitive thing we touch | Eng 1 |
 | Q4 | Retention default for the artifact store? | 14 days, GC'd, purge log retained (see R9) | Eng 2 |
 | Q5 | Multi-user / shared machine story? | Single-user, `127.0.0.1`-bound, refuse non-loopback binds unless `--i-understand` | Eng 1 |
-| Q6 | Does pinning extend to *user preferences* or only hard policy? | Policy only by default; preferences are pinnable but off — a wrong preference pin is sticky | WS-D |
-| Q7 | What is our position if a provider's own compaction (e.g. Claude Code's) is *worse* than ours? | Observe and report, never fight it — we're the layer beneath, not a replacement | Eng 1 |
-| Q8 | Do we support multi-agent (sub-agent) sessions? | Out of scope v1. A sub-agent is a separate context; composable but unvalidated. Log it as a v2 project. | — |
+| Q7 | Does pinning extend to *user preferences* or only hard policy? | Policy only by default; preferences are pinnable but off — a wrong preference pin is sticky | WS-D |
+| Q8 | What is our position if a provider's own compaction (e.g. Claude Code's) is *worse* than ours? | Observe and report, never fight it — we're the layer beneath, not a replacement | Eng 1 |
+| Q9 | Do we support multi-agent (sub-agent) sessions? | Out of scope v1. A sub-agent is a separate context; composable but unvalidated. Log it as a v2 project. | — |
 
 ## 2. Risk register
 

@@ -17,11 +17,13 @@ release.
 
 ### Added
 
-- **The frozen contract.** `@strata-ctx/core-types@1.0.0` — 114 exports, digest `0a3c0fea6360e6d9`,
-  hash-locked in `packages/core-types/contract.lock.json`. Every other package compiles against it
-  and nothing else crosses a stream boundary, with two documented exceptions
-  (`integrations → security`, `integrations → telemetry`, both deliberate: agent hooks are where
-  untrusted text and credential headers actually arrive). [AGENTS.md §12.1](AGENTS.md)
+- **The frozen contract.** `@strata-ctx/core-types@1.0.0`, hash-locked in
+  `packages/core-types/contract.lock.json` — the export count and digest are computed, so run
+  `npm run status` rather than trusting a number here. Every other package compiles against it and
+  nothing else crosses a stream boundary, with three documented exceptions
+  (`integrations → security`, `integrations → telemetry`, `gist → telemetry`), all deliberate: agent
+  hooks are where untrusted text and credential headers arrive, and eviction is the only destructive
+  operation. [AGENTS.md §7](AGENTS.md)
 - **The gateway.** HTTP/SSE proxy with `anthropic`, `openai-compat`, `gemini` and `mock` ingress and
   egress adapters, SSE passthrough that never buffers, credential passthrough, and a `GET /healthz`.
 - **Governance pinning.** An immutable pinned set materialised into every outbound request, plus a

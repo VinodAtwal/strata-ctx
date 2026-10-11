@@ -581,7 +581,7 @@ and what the wiring scan cannot tell you — is in [`docs/maturity.md`](docs/mat
 | Pipeline: Tier 0 (`dedupe`, `truncate`, `triage`) and `pin` | **wired into the gateway request path** — `runTier0` (called from the server), then the post-Tier-0 tunnel through `runPipeline`, which also runs any lossy stage the composition root injects. `compact` has no production caller; Tier 3 `compress` stays `enabled: false` |
 | Governance: pin buffer, byte-equality, policy store, violations | **done**, and type-level protected from lossy stages |
 | Security: redaction, ACL, gist safety, retention/purge | **done**; GC reachable only via an uncalled purge handler |
-| Telemetry: cost engine, gross/net savings, `strata status` | **done**; all 13 event types surfaced |
+| Telemetry: cost engine, gross/net savings, `strata status` | **done**; every `STRATA_EVENT_TYPES` member surfaced |
 | Integrations: MCP server, Claude Code / Gemini CLI / Aider / Cline / Roo / Copilot / OpenCode | **done** |
 | `strata-ctx` executable: `hook --check`, `hook run`, `mcp serve`, `status` | **done** |
 | Canary probes + scheduler | **done** |

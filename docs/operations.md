@@ -163,8 +163,8 @@ Aggregate savings hide the per-request question. The stage telemetry already
 carries the numbers (`bytesIn`/`bytesOut` per stage, `cache.prefixHit`,
 `prefixInvalidated`); nothing surfaces them per request.
 
-`buildStatus` discards the two event types that would answer it. At
-`telemetry/src/status.ts:329` the switch ends in:
+`buildStatus` discards the two event types that would answer it. In
+`telemetry/src/status.ts`, the event switch ends in:
 
 ```ts
 case 'stage':
@@ -183,8 +183,8 @@ what was compressed, and the resulting token estimate — correlated by `runId`.
 
 Every one of these currently exists as a telemetry code that `strata status`
 does not show, and each means the product did less than the operator expected.
-The three `violation` kinds are counted (`status.ts:136`); the rest are not
-counted anywhere:
+The three `violation` kinds are counted in `buildStatus`
+(`telemetry/src/status.ts`); the rest are not counted anywhere:
 
 | Code | Event type | Meaning |
 | --- | --- | --- |
@@ -198,10 +198,10 @@ counted anywhere:
 | `artifact_write_refused` | `error` | a pointer was not published; the read was left inline |
 | `eviction_skipped` | `error` (`EVICTION_SKIPPED_UNVERIFIED`) | the transcript was not evicted; it is still growing |
 
-`eviction_skipped` is the one to watch. It *is* emitted —
-`gist/src/transaction.ts:679-685` pushes a real `error` event through both
-`emit()` and `telemetry.push()`, and `transaction.ts:705` repeats it as a
-`failed:` string on the transaction result. What was missing was a reader:
+`eviction_skipped` is the one to watch. It *is* emitted — the eviction path in
+`packages/gist/src/transaction.ts` pushes a real `error` event through both
+`emit()` and `telemetry.push()`, and repeats it as a `failed:` string on the
+transaction result. What was missing was a reader:
 `status.ts` had `case 'error': break;` alongside `case 'stage': break;`, so
 every error was dropped on the way to a report. The event existed and was
 wired; nothing consumed it.
