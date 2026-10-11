@@ -88,7 +88,7 @@ Pre-registered. A failed gate blocks the release; it does not trigger a re-roll.
 | G9 | Secret redaction recall | **100%** on the secret corpus | All | Product requirement F18 |
 | G10 | TOON round-trip | **lossless** on 100% of the fixture corpus | — | Non-negotiable: a lossy serializer is a data-corruption bug |
 | G11 | Determinism | byte-identical output on replay, Tiers 0–2 | — | Product requirement N6 |
-| G12 | Cache invalidation rate | < 5% of transforms invalidate a cached prefix | Treatment | R4 in `08` |
+| G12 | Cache invalidation rate | < 5% of transforms invalidate a cached prefix | Treatment | R4 in `decisions.md` |
 
 **G1 is the gate that protects all the others.** If Control+ comes in at 5% violations, then either
 our scenario design is too easy or our compression differs from what the paper measured — and in

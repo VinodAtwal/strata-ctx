@@ -49,7 +49,7 @@ distinction the product must respect, so this is written down rather than discov
 | Class | Examples | Post-task behaviour |
 |---|---|---|
 | **Ephemeral context** | tool output, intermediate reasoning, scratch narration, duplicate reads | **Evict** — the default, safe, and what the product is for |
-| **Durable memory** | gists, decisions, `current_values`, artifacts | **Retain** by design (tiers + promotion, `05-gist`) |
+| **Durable memory** | gists, decisions, `current_values`, artifacts | **Retain** by design (tiers + promotion, `architecture.md` §6) |
 | **Audit / security / legal** | auth events, policy-violation records, purge log | **Retain by default**, flagged, never silently deleted |
 
 So the product does what was asked — the working context is cleaned after every task — while being

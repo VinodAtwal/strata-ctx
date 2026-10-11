@@ -32,20 +32,14 @@ Claude Code / Gemini CLI / Aider
 
 Coding agents accumulate a transcript that degrades in two ways at once: **overflow** (the window
 fills — loud and easily detected) and **rot** (accuracy falls off continuously with input length,
-long before the window fills). Harnesses respond with compaction. But compaction is now a known
-**security failure surface** — not just a cost optimization:
+long before the window fills). Harnesses respond with compaction. But compaction is now a known **security failure surface** — not
+just a cost optimization: ordinary `/compact` lets most safety rules decay within a few rounds,
+compaction *by itself* introduces policy violations that were not there before, and an optimized
+injection can defeat every tested model. The counter-pressure runs the other way too: context *rot*
+degrades quality **continuously**, long before a window fills — universal across 18 frontier models
+and invisible to Needle-in-a-Haystack probes.
 
-| Finding | Source | Number |
-|---|---|---|
-| Safety rules surviving production `/compact` | Compaction Cliff, **CIKM 2026** | 53% after 1 round, **10% after 5** |
-| Policy violations caused *purely* by compaction | Governance Decay | **0% → 30%** (up to 59%), 1,323 episodes |
-| Violation rate conditional on constraint survival | Governance Decay | survives → **0%**, dropped → **38%** |
-| Decay asymmetry: soft org policies vs hard safety norms | Governance Decay | **8.3×** worse — alignment training **masks** the damage |
-| Compaction-Eviction Attack | Governance Decay | optimized injection defeats **all** tested models |
-
-And the counter-pressure from the other direction: context *rot* degrades quality **continuously**,
-long before a window fills — universal across 18 frontier models, and invisible to Needle-in-a-
-Haystack probes.
+The figures, their papers, and their identifiers live in [`docs/spec.md` §1](docs/spec.md).
 
 So: agents must compress, compression is unsafe by default, and nobody is measuring either. This
 project is the layer that compresses *and proves it didn't break anything*.
@@ -265,11 +259,12 @@ refactor.
 | [`testing`](packages/testing) | Deterministic provider record/replay harness, fixture factories, and a `fixtures` CLI (`list`, `validate`, `summary`, `paths`). |
 | [`cli`](packages/cli) | The one executable every generated profile registers: `hook --check`, `hook run` (what the Claude Code and Gemini profiles invoke), `mcp serve` (what the Copilot profile invokes), and `status`. Workspace deps load lazily so `--check` stays cheap. |
 
-Dependency rules and the full graph: [`AGENTS.md` §12](AGENTS.md). `core-types` is the only
-cross-stream contract; the only documented exceptions are `integrations → security` and
-`integrations → telemetry`, because agent hooks are where untrusted text and credentials arrive.
-`eval` deliberately mirrors the contract instead of importing it, so the measuring apparatus cannot
-drift with the thing it measures.
+Dependency rules and the full graph: [`docs/architecture.md` §2](docs/architecture.md) and
+[`AGENTS.md` §7](AGENTS.md). `core-types` is the only cross-stream contract; the three documented
+exceptions are `integrations → security` and `integrations → telemetry` (agent hooks are where
+untrusted text and credentials arrive) and `gist → telemetry` (eviction is the only destructive
+operation and must be countable). `eval` deliberately mirrors the contract instead of importing it,
+so the measuring apparatus cannot drift with the thing it measures.
 
 ## Getting started
 
@@ -358,13 +353,15 @@ before changing it.
 
 | Script | Command |
 |---|---|
-| `npm run build` | `tsc --build` |
-| `npm run typecheck` | `tsc --build && tsc -p tsconfig.check.json` |
+| `npm run build` | `node scripts/build.mjs` (project build) |
+| `npm run typecheck` | `node scripts/build.mjs && tsc -p tsconfig.check.json` |
 | `npm run lint` | `eslint .` |
-| `npm test` | `node --import tsx --test packages/*/test/*.test.ts` |
+| `npm test` | `node scripts/run-tests.mjs` |
 | `npm run check` | typecheck + lint + test + contract:check |
 | `npm run contract:check` | `node scripts/check-contract.mjs` (frozen-surface drift) |
 | `npm run contract:update` | `node scripts/check-contract.mjs --update` (re-freeze; deliberate, contract-owner only) |
+| `npm run status` | `node scripts/status.mjs` (board, contract digest, wiring totals) |
+| `npm run live` | `node scripts/live-campaign.mjs` (spends money; needs a provider credential) |
 | `npm run dev` | `node --import tsx tools/dev.ts` |
 | `npm run clean` | `tsc --build --clean` |
 
@@ -416,63 +413,10 @@ last-known-good config live when a reload is refused.
 
 ### Policy and integration config (YAML, documented target surface)
 
-The YAML below is the documented shape from `docs/integrations.md` §8. Two lines are called out there
-as non-negotiable: `local_model.fields` never includes `constraints`, and token compression is off
-by default. The Tier 3 opt-in is `enabled: false` by default and gated on `enabled: true` alone;
-below ~5k tokens the compressor's own latency can exceed the saving.
-
-```yaml
-# strata-ctx.yaml  (documented target/integration config; see docs/integrations.md §8)
-gateway:
-  listen: 127.0.0.1:8787
-  upstream: anthropic            # or gemini | openai-compat
-  credentials: passthrough       # never log auth headers, ever
-  fail_open: true
-
-policy:
-  pin_file: ./ctx-policy.yaml    # governance constraints — the pinned set
-  redaction:
-    enabled: true
-    patterns_file: ./redact.yaml
-    on_detect: block             # block | placeholder  (never log the secret)
-
-context:
-  strategy: sawtooth
-  soft_trigger_frac: 0.70        # deliberately below the 0.85 default — rot is continuous
-  hard_trigger_frac: 0.95
-  keep_recent_tokens: 8192
-  user_message_tail_tokens: 20000
-  max_tool_result_chars: 2000
-  max_tool_result_lines: 120
-
-compression:
-  dedupe: true
-  truncate: true
-  pointerize_files: true         # big file reads -> artifact:// + sha
-  self_gist: true                # Tier 2 — the default
-  local_model:
-    enabled: false               # Tier 3 — opt in
-    backend: ollama
-    model: qwen2.5-coder:7b
-    fields: [goal, why, unresolved, next]   # NEVER include constraints
-  token_compression:             # Tier 4
-    enabled: false               # off by default
-    min_tokens: 5000             # below this, the compressor loses
-
-output:
-  verbosity_directives: true
-  machine_format: toon_or_csv    # never applied to reasoning text — the diversity tax
-
-canary:
-  constraint_probe: { enabled: true, interval_turns: 25 }
-  rot_probe: { enabled: true, interval_turns: 50 }
-  include_soft_org_policies: true   # decay is 8.3x worse here; hard norms give a false green
-
-telemetry:
-  enabled: true
-  egress: none                   # local only; no default network calls, ever
-  file: ./.ctx/telemetry.jsonl
-```
+The full document — every field, its default, and its blast radius — is the YAML in
+[`docs/integrations.md` §8](docs/integrations.md). It is not reproduced here: a config copy that
+drifts is worse than a link. Two lines there are non-negotiable — `local_model.fields` never
+includes `constraints`, and token compression is off by default.
 
 ## Integrations
 
@@ -527,25 +471,9 @@ implemented.
 > the gate thresholds below as evidence about production behavior. They are pre-registered bars;
 > the campaign that would clear or fail them has not been run.
 
-Pre-registered gates (verbatim from [`docs/evaluation.md`](docs/evaluation.md) §5; a failed gate
-blocks release, it does not trigger a re-roll):
-
-| # | Gate | Threshold | Arm |
-|---|---|---|---|
-| **G1** | Negative control fires | Control+ violation rate **≥ 25%** | Control+ |
-| **G2** | Constraint violations, pinned | **= 0%** over 200 scenarios | Treatment |
-| **G3** | Coding task pass rate | **non-inferior**, margin −2pp, McNemar one-sided *p* > 0.05 | Treatment vs Control |
-| **G4** | Refinement suite pass rate | **non-inferior**, margin −2pp | Treatment vs Control |
-| **G5** | Rot probe slope | treatment slope ≤ control slope | Treatment vs Control |
-| **G6** | Input token reduction | **≥ 20%** median, coding tasks | Treatment |
-| **G7** | **Net** cost reduction | **> 0%** after gist + probe cost | Treatment |
-| **G8** | p95 latency overhead | **< 50 ms** | Treatment |
-| **G9** | Secret redaction recall | **100%** on the secret corpus | All |
-| **G10** | TOON round-trip | **lossless** on 100% of the fixture corpus | — |
-| **G11** | Determinism | byte-identical output on replay, Tiers 0–2 | — |
-| **G12** | Cache invalidation rate | < 5% of transforms invalidate a cached prefix | Treatment |
-
-Two methodological points that matter more than the thresholds:
+Pre-registered gates G1–G12 — every threshold, its arm, and the source of the bar — are defined
+once in [`docs/evaluation.md` §5](docs/evaluation.md); a failed gate blocks release, it does not
+trigger a re-roll. Two methodological points matter more than the individual thresholds:
 
 - **G1 protects all the others.** If the negative control does not reproduce the known failure in
   our harness, G2's 0% is uninterpretable. A suite that cannot fail is worth nothing.
@@ -585,7 +513,7 @@ and what the wiring scan cannot tell you — is in [`docs/maturity.md`](docs/mat
 | Integrations: MCP server, Claude Code / Gemini CLI / Aider / Cline / Roo / Copilot / OpenCode | **done** |
 | `strata-ctx` executable: `hook --check`, `hook run`, `mcp serve`, `status` | **done** |
 | Canary probes + scheduler | **done** |
-| Eval harness, statistics, grading, suites E1–E6 | **done, offline with injected subjects** |
+| Eval harness, statistics, grading, suites E1–E3, E5–E6 | **done, offline with injected subjects** |
 | Output compression (TOON/TRON) | **measured, deliberately held** — real saving on 2 of 3 hosts, not wired |
 | Gist engine: eviction + recovery | **built, not wired.** The only code that deletes data; recovery landed first, on purpose |
 | B-3 pointerization | **dead gate** — stage runs and succeeds while doing nothing |

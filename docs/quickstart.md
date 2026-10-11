@@ -28,13 +28,10 @@ fails on any drift. **You cannot add, remove, or change a public export of
 **These packages are never published to a public registry.** There is no
 `npm install @strata-ctx/gateway` for anyone, anywhere, ever.
 
-Two properties of every `packages/*/package.json` are load-bearing and must not be
-"cleaned up":
-
-| Property | Status | Why it must stay |
-| --- | --- | --- |
-| `"private": true` | intentional, all 14 packages | This is the only thing that makes an accidental `npm publish` **fail**. Under internal-only distribution there is no registry to publish to, so a private package and a deleted package are equivalent in distribution terms; `private: true` is strictly better because it is the enforcement mechanism. Removing it re-opens a permanent, effectively-irreversible risk: an npm name, once claimed, cannot be given back. |
-| `"@strata-ctx/security": "file:../security"` (in `gateway` and `gist`) | intentional | `npm publish` copies a `file:` spec verbatim, producing a manifest no consumer could resolve. That is a reason the spec is *wrong for publishing*, not a reason to change it: these packages are never published. For an internal-only tree the `file:` spec is correct, and it is load-bearing locally — it is what makes the workspace resolve `@strata-ctx/security` to `packages/security` on disk. Rewriting it to a semver range would break local resolution in exchange for a property this repository explicitly does not want. |
+Two properties of every `packages/*/package.json` — `"private": true` and the
+`file:` workspace dependencies — are load-bearing and must not be "cleaned up".
+The decision, the reasoning, and what it costs are recorded once in
+[`docs/operations.md` §1](operations.md); read it before touching a manifest.
 
 The consequence worth internalising: **there is no registry to fall back on, so the
 `file:` graph and the npm workspace *are* the distribution.** `npm ci` is not a

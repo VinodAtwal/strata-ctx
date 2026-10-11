@@ -127,7 +127,7 @@ that passes in both arms proves nothing.
 | Term | Meaning in this project |
 |---|---|
 | **Gateway** | the local proxy; owns the request path |
-| **Canonical message** | provider-neutral representation of a conversation (see `01`) |
+| **Canonical message** | provider-neutral representation of a conversation (see `architecture.md` §3) |
 | **Triage** | per-type retention policy. Governance and tool-state and episodic are *not* treated alike |
 | **Gist** | validated, versioned, structured replacement for a completed task's transcript |
 | **Pinned buffer** | immutable governance constraints, re-injected post-compaction |

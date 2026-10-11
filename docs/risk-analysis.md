@@ -81,15 +81,15 @@ Thirteen mechanisms, one line each. Detail follows in §3–§5.
 **Status: Latent. Highest priority in this document.**
 
 Every token number in the system comes from one constant, `BYTES_PER_TOKEN = 4`, declared twice:
-`core-types/src/tokens.ts:17` and `output-compress/src/cost.ts:41`.
+`core-types/src/tokens.ts` and `output-compress/src/cost.ts`.
 
 > **Correction after P0-2.** The sentence above was written from two greps and is wrong. There are
 > **three** estimators already, plus a fourth P0-2 added:
 >
 > | Implementation | chars/token | Direction | Reachable? |
 > |---|---|---|---|
-> | `core-types/tokens.ts:17` | 4.0 | **optimistic** for structured data | **Live** — `runner.ts`, `order.ts`, `claude-code.ts` |
-> | `output-compress/cost.ts:41` | 4.0 | n/a, comparative only | Live, correctly scoped to savings |
+> | `core-types/tokens.ts` | 4.0 | **optimistic** for structured data | **Live** — `runner.ts`, `order.ts`, `claude-code.ts` |
+> | `output-compress/cost.ts` | 4.0 | n/a, comparative only | Live, correctly scoped to savings |
 > | `gateway/token-estimator.ts` per-provider (3.5 / 4.0 / 4.5) | 3.5–4.5 | **pessimistic by choice** | **Unwired** |
 > | `pipeline/token-budget.ts` per-character (P0-2) | measured rate | pessimistic, `max()`-guarded | Wired into `triggerFor` |
 >
@@ -130,7 +130,7 @@ Two things make this sharp rather than theoretical:
 2. **This product's entire purpose is converting structured data into more structured data.** The
    content most likely to be under-counted is the content we are specifically built to handle.
 
-So when `evaluateTrigger` (`pipeline/src/trigger.ts:90`) is wired, it will compare an under-counted
+So when `evaluateTrigger` (`pipeline/src/trigger.ts`) is wired, it will compare an under-counted
 `input.tokens` against a real `contextLimit`, decide it is comfortably under budget, decline to
 compact, and send a request that exceeds the provider's window. Depending on provider behaviour that
 is an HTTP 400 with a clear message, or — worse — silent truncation of the tail of the context, which
@@ -218,9 +218,9 @@ as *facts*, not commands.
 constraint gets "misclassified as `episodic`". That mechanism was wrong in a way that made the bug
 look smaller than it is:
 
-- `classifyBlockText` (`severity.ts:180`) returns a **`Severity`** — `info`/`error`/`fatal` — and has
+- `classifyBlockText` (`severity.ts`) returns a **`Severity`** — `info`/`error`/`fatal` — and has
   **nothing to do with tier assignment**. It is a log-severity reader.
-- **No tier classifier existed at all.** `triage.ts:102` is the whole story:
+- **No tier classifier existed at all.** `triage.ts` is the whole story:
   `(ALL_TIERS as readonly string[]).includes(b.meta.tier) ? b.meta.tier : 'episodic'` — a block
   whose *producer* declared a tier keeps it, and **anything else defaults to `episodic`**, whose
   retention is `compact`.
@@ -383,7 +383,7 @@ favour of "do no harm." It also correctly distinguishes the failure codes `prefi
 
 **Bad:** fail-open is a *monitoring* hazard, not a safety hazard. A stage broken for weeks still
 returns correct output; you simply stop getting savings and lose all signal that it is broken.
-Meanwhile `runner.ts:143` recognises exactly three codes and funnels **every** other cause into
+Meanwhile `runner.ts` recognises exactly three codes and funnels **every** other cause into
 `stage_threw`, discarding the distinction — and the concrete defect is that the gateway's `fail()`
 hardcodes `runId: 'unknown'` and `stage: 'pin'` for *every* failure, so the log attributes all of it
 to pinning and to no particular request.
@@ -488,7 +488,7 @@ record of what was wrong and how it was closed.**
 probe. The `tokenEstimate` it received was `state.tokenEstimate`, which is `core-types/estimateTokens`
 — the optimistic `chars/4`. So the safety ladder was placed using a number that can under-report by up
 to 149% on exactly the structured content an agent session accumulates. A probe scheduled "late" is a
-probe that has to catch mid-transcript violations in a longer context — the regime where §3.1's monitor
+probe that has to catch mid-transcript violations in a longer context — the regime where R2's monitor
 recall falls from 98.6% to 88%.
 
 Its own comment was also stale: it said the estimate came from "the gateway's estimator", which is
@@ -515,7 +515,7 @@ rung derived from a count nobody computed is not a measurement either.
 `rot_canary.atFracOfWindow` and `tier` rather than the private method — the estimator's count wins in
 both directions (a `state.tokenEstimate` claiming a full window still reads 0.5), the estimator
 receives the turn's own state exactly once per rot firing and never on a quiet turn, same-length JSON
-and prose land on different rungs using the measured 1.49× from §3.1 as a stand-in (the real estimator
+and prose land on different rungs using the measured 1.49× from R1 as a stand-in (the real estimator
 cannot be imported, which is the point), fill is monotone in the count, the clamp holds at
 `[0, 1]`, a throwing estimator fails open, and a non-function estimator is rejected at construction.
 Two mutations confirmed to fail 8 of 10 and 3 of 10 respectively (count routed back to
@@ -529,7 +529,7 @@ injected.
 
 `StageNameSchema` is frozen at seven members and none means "not a stage", so a truthful sentinel for
 "no stage owns this failure" does not compile. `NO_STAGE` therefore resolves to `'serialize'`
-(`packages/gateway/src/server.ts:292`) — the one member naming gateway plumbing rather than a context
+(`packages/gateway/src/server.ts`) — the one member naming gateway plumbing rather than a context
 transform.
 
 This is a *bounded, documented, separable* lie rather than the old one: the populations are split by
@@ -539,7 +539,7 @@ gains a non-stage member, this constant is the only line that changes.**
 
 **Related accepted debt:** four messages retain `detailOf(err)` in a `cause:` tail. That is safe only
 because `MemorySink` and `JsonlSink` both redact by default — and `redact` is a settable option
-(`sink.ts:143`), not an invariant. If `redact: false` is ever set, raw exception text lands in the log.
+(`sink.ts`), not an invariant. If `redact: false` is ever set, raw exception text lands in the log.
 
 ---
 
@@ -567,7 +567,7 @@ against the tree, which caught three rotted ones on introduction.
 The gateway's `fail()` emits `runId: 'unknown'`, `stage: 'pin'` for every failure regardless of cause,
 so `pipeline_failed_open` from the pipeline is logged as a pin error on an unknown request, and
 `strata status`'s `by stage` counts are built from those misattributions. Compounding it,
-`runner.ts:143` maps four distinct causes to one code and drops the cause entirely.
+`runner.ts` maps four distinct causes to one code and drops the cause entirely.
 
 Do not serialise the exception onto the wire — that stays a closed set, per the contract. Instead:
 carry the true `runId` and `stage` through the failure path; keep a closed code set but make each
@@ -597,7 +597,7 @@ exported, ledgered with that reason, and testable without a provider.
 *Falsification test:* assert `pessimistic(x) >= comparative(x)` for every content class, and assert
 the measured ratio for a known corpus lands inside a declared band. **Both done.**
 
-**P0-2b · Give the canary scheduler a pessimistic fill fraction.** *(fixes R14 — see §3.13)*
+**P0-2b · Give the canary scheduler a pessimistic fill fraction.** *(fixes R14 — see §4)*
 
 **DONE.** Inject rather than add a `canary → pipeline` dependency, since `canary` depends only on
 `core-types` and the cross-stream edge is exactly what the wiring ledger exists to make expensive:
@@ -640,7 +640,7 @@ tests / 3991 pass / 1 skip, contract unchanged.
 Three findings, none of which the plan anticipated:
 
 1. **The premise of plan item 1 is wrong.** It says "when `classifyBlockText` is not confident".
-   `classifyBlockText` (`severity.ts:180`) classifies *log severity* for F7 and returns
+   `classifyBlockText` (`severity.ts`) classifies *log severity* for F7 and returns
    `Severity | undefined`; triage does not classify text either — ingress assigns tiers from the *kind*
    of text (system → `user_intent`, message → `episodic`, tool traffic → `tool_state`). There was no
    tier classifier to make more careful. The consequence is sharper than the plan's: a constraint in

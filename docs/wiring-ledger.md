@@ -42,7 +42,7 @@ blanked is retained for parsing barrels, where a module specifier *is* a string.
 all not callers. Neither is a mention in a comment, a string, or a regular
 expression. Verified against the real tree: `integrations/renderPluginModule`
 appears inside generated string data at
-`packages/integrations/src/opencode.ts:1205` and is still correctly unwired.
+`packages/integrations/src/opencode.ts` and is still correctly unwired.
 
 ### The ruling: a self-reference is not wiring
 
@@ -65,7 +65,7 @@ asserted individually by the test:
 
 File boundaries are the test, not package ones. `pointerizeBlocks` is declared in
 `packages/pipeline/src/pointer.ts` and called from
-`packages/pipeline/src/truncate.ts:326`, and it stays wired.
+`packages/pipeline/src/truncate.ts`, and it stays wired.
 
 Clause 2 is a decision, not a bug fix, and it moved the number a long way: 432 of
 1089 exports wired before it, 152 after. (1089 was the tree's total *then*; §4
@@ -149,57 +149,36 @@ direction that obliges the edit.
 
 ## 4. Current inventory
 
-Measured, not carried forward. `node --import tsx scripts/wiring-inventory.ts`
-prints these figures and a digest of the canonical inventory; `--json` emits one
-key-sorted array, so `diff` over your change names which exports moved rather
-than only that the total did.
+**The numbers are computed, not written here.** Run `npm run status`, or
+`node --import tsx scripts/wiring-inventory.ts` for the full figures and a digest
+of the canonical inventory; `--json` emits one key-sorted array, so `diff` over
+your change names which exports moved rather than only that the total did. No
+count is reproduced in this file — a hardcoded total is the rot this ledger exists
+to catch (AGENTS.md §11).
 
-| Metric | Count |
-|---|---|
-| Production files scanned | 134 |
-| Reachable from the entry roots | 69 |
-| Exported runtime values | 1098 |
-| Wired | 152 |
-| Unwired | 946 |
-| — unwired only because the package is unreachable | 562 |
-| — unwired inside a reachable package (**need a declared reason**) | 384 |
+What the numbers mean, and how to read them:
 
-The 384 each carry one reason: `core-types` 32, `gateway` 72, `integrations` 126,
-`pipeline` 51, `security` 52, `telemetry` 51. They fall into four shapes, and the
-count for each is in the table's own header comment: 120 rows that predate the
-ruling, plus 264 it exposed — 109 that execute through a same-file reader, 152
-that are inert, 3 with no call site at all. §6 explains the difference, because it
-is the difference between "nobody names this" and "nobody runs this".
+- **Wired / unwired** splits every exported runtime value by whether a reachable
+  file names it. Unwired splits again into *inherited* (the whole package is
+  unreachable, so nothing in it can be wired) and *local* (the package is
+  reachable but the symbol is not). Every local row carries one declared reason.
+- The local rows fall into four shapes: rows that predate the ruling, plus three
+  the ruling exposed — symbols that execute through a same-file reader, genuinely
+  inert symbols, and symbols with no call site at all. §6 explains the difference,
+  because it is the difference between "nobody names this" and "nobody runs this".
+- `eval` and `eval-live` are unreachable by design — the harness is wired
+  separately from the product — but they are still counted. A harness that flatters
+  the product's wiring number is worse than an uncomfortable one.
 
-The 562 are inherited. Reachable packages: `cli`, `core-types`, `gateway`,
-`integrations`, `pipeline`, `security`, `telemetry`. Unreachable: `canary` (28
-exports), `eval` (348), `eval-live` (34), `gist` (6), `governance` (36),
-`output-compress` (60), `testing` (50).
+### No gate asserts a total — which is why this section carries none
 
-That `eval` and `eval-live` together hold 382 of the 1098 exports and are
-unreachable says more about the evaluation harness being wired separately than
-about the product being unwired. It is still counted honestly.
-
-### This table was stale by nine exports, and the measurement is what corrected it
-
-An earlier version of this section said **1089 exports / 152 wired / 937
-unwired**, of which 383 local and 554 inherited. The tree says 1098 / 152 / 946.
-The nine are accounted for, and every one of them was already visible in
-`UNWIRED_OPERATORS` or `UNREACHABLE_PACKAGES` — the prose was what was stale,
-not the declarations:
-
-| Where | Then | Now | Where it happened |
-|---|---|---|---|
-| `eval` exports (inherited) | 343 | 348 | the hermetic corpus resolver, `1afd8b2` |
-| `eval-live` exports (inherited) | 31 | 34 | the claims-audit operators `e151617`, then the subtractive arm `a03dbc3` |
-| `telemetry` uncalled (local) | 50 | 51 | `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST`, declared at `31539a6` |
-
-That the numbers were stale for four commits while the gates stayed green is the
-point of recording it here rather than quietly overwriting: the gates are
-per-symbol and per-package, and none of them asserts a total. A per-symbol gate
-cannot notice that the summary above it is wrong. Gate 4 is the assertion that
-does, and it was written against the measured figures — declaring 937 would have
-shipped a gate that failed on the commit that fixed this paragraph.
+The gates are per-symbol and per-package; none of them asserts a total, so a stale
+summary can sit above green gates indefinitely. That is not hypothetical: an earlier
+version of this section quoted a totals line that had drifted by nine exports across
+four commits while every gate stayed green (an `eval` resolver, two `eval-live`
+operators, and one `telemetry` allowlist). The lesson — a computable number in prose
+rots silently — is in `learning.md`. Gate 4 exists because of it: it asserts the
+measured totals, so the number can no longer drift without CI saying so.
 
 
 ## 5. Named inert subsystems
@@ -211,13 +190,13 @@ take to give it one, and what would have to be true before that is safe.
 No package in the workspace depends on `@strata-ctx/gist`; its own
 `package.json` is the only reference to that name outside the package. The
 eviction/recovery pair lives here: `runCompactionTransaction`
-(`packages/gist/src/transaction.ts:322`) drops messages, and refuses to unless the
-gist asserts `raw_recoverable` (`transaction.ts:155`), and `recoverTurns`
-(`packages/gist/src/reversibility.ts:64`) is the code that puts them back. Neither
+(`packages/gist/src/transaction.ts`) drops messages, and refuses to unless the
+gist asserts `raw_recoverable` (checked in the same file), and `recoverTurns`
+(`packages/gist/src/reversibility.ts`) is the code that puts them back. Neither
 has ever run outside `packages/gist/test/`, which calls both directly. The
 retention side is inert too: `ArtifactStore.remove`
-(`packages/security/src/store.ts:702`) is called from `planGc`
-(`packages/security/src/retention.ts:282`), which is only reachable from the
+(`packages/security/src/store.ts`) is called from `planGc`
+(`packages/security/src/retention.ts`), which is only reachable from the
 purge request handler, which nothing calls.
 
 That makes this the one subsystem where "unwired" and "unsafe to wire" are the
@@ -227,11 +206,11 @@ field on a draft that no production path produces. If gist is ever connected, th
 recovery path and the `raw_recoverable` guard have to land in the same change, and
 the Gate 2 count has to be re-declared with the reason.
 
-**`output-compress` — 60 exports, unreachable, held by decision.** `applyOutputCompression` is
-declared at `packages/output-compress/src/compress.ts:340`. Its only other
-references are the barrel at `packages/output-compress/src/index.ts:109` and tests
-at `packages/output-compress/test/reference.test.ts:11` and `:319`. The
-compression step is exercised by tests that call it directly and by nothing else.
+**`output-compress` — unreachable, held by decision.** `applyOutputCompression`
+is declared in `packages/output-compress/src/compress.ts`. Its only other
+references are the barrel (`packages/output-compress/src/index.ts`) and its test
+file, `packages/output-compress/test/reference.test.ts`. The compression step is
+exercised by tests that call it directly and by nothing else.
 
 *Measured before deciding whether to keep it* (2026-10-05, 40-row corpus, driven
 through the real adapter egress paths rather than through the compressor alone):
@@ -244,18 +223,18 @@ through the real adapter egress paths rather than through the compressor alone):
 
 Governance and pinned text pass through unchanged in all three. **Held, not
 deleted** (`docs/maturity.md` §3.2): the two-host saving is large enough to
-revisit, but wiring it would add a fourth cross-stream edge (§12.1) and
+revisit, but wiring it would add a fourth cross-stream edge (AGENTS.md §7) and
 `MACHINE_FORMATS` is unvalidated against real model output. Keeping the number
 here is the point — "deferred" without a measurement is a guess, and a guess
 cannot be revisited later by anyone who was not in the room.
 
-**`B-3` — reachable and still inert.** `pointerizeBlocks` is called at
-`packages/pipeline/src/truncate.ts:326`, and it is the only thing the
+**`B-3` — reachable and still inert.** `pointerizeBlocks` is called from
+`packages/pipeline/src/truncate.ts`, and it is the only thing the
 `pointerize` pipeline stage does, so the stage reports success. But
-`isFileRead` at `packages/pipeline/src/pointer.ts:73` requires
+`isFileRead` in `packages/pipeline/src/pointer.ts` requires
 `meta.subject.kind === 'file'`, and no reachable production source ever assigns
-that: `anthropic-adapter.ts:49`, `gemini-adapter.ts:219` and
-`openai-compat-adapter.ts:368` all build `{ kind: 'other', ref }`. The stage runs,
+that: `anthropic-adapter.ts`, `gemini-adapter.ts` and
+`openai-compat-adapter.ts` all build `{ kind: 'other', ref }`. The stage runs,
 succeeds, and does nothing. `pointerizeBlocks` stays in `DEAD_GATES` as
 `B-3-file-subject` with producer `/kind:\s*'file'/`; `isFileRead` moved to
 `UNWIRED_OPERATORS`, because under the ruling nothing outside `pointer.ts` names
@@ -264,24 +243,22 @@ it either. One gate for the wired half, one row for the unwired half.
 This is the case the ledger exists for. Every signal the project had — types,
 tests, the presence of the call — said this code was live.
 
-**`gateway` credential resolution — 16 rows, and production bypasses it.** The
-whole of `packages/gateway/src/credentials.ts` is uncalled: `resolveCredential`
-(`:206`), `applyCredentials` (`:268`), `applyCredentialsStrict` (`:291`),
-`authHeaderFor` (`:251`), `redactHeaders` (`:87`), `redactSecret` (`:74`),
-`isSensitiveHeader` (`:57`), `describeCredential` (`:110`), `nullKeyring`
-(`:134`), `keyringAccount` (`:148`), `KEYRING_SERVICE` (`:31`),
-`PROVIDER_ENV_VAR` (`:24`) and four error classes. Nothing calls any of them in
-any file, including their own. Meanwhile `apiKeyHeader`
-(`packages/gateway/src/server.ts:299`) reads the environment variable and
-returns `{ 'x-api-key': key }` directly, so the key does reach the upstream — but
-the header map is never redacted by name and no keyring, provider mapping or
-failure mode in that file is ever consulted. Four of these rows previously gave
-reasons describing call chains that do not exist; they now say what is actually
-there.
+**`gateway` credential resolution — and production bypasses it.** The whole of
+`packages/gateway/src/credentials.ts` is uncalled: `resolveCredential`,
+`applyCredentials`, `applyCredentialsStrict`, `authHeaderFor`, `redactHeaders`,
+`redactSecret`, `isSensitiveHeader`, `describeCredential`, `nullKeyring`,
+`keyringAccount`, `KEYRING_SERVICE`, `PROVIDER_ENV_VAR` and four error classes.
+Nothing calls any of them in any file, including their own. Meanwhile `apiKeyHeader`
+(`packages/gateway/src/server.ts`) reads the environment variable and returns
+`{ 'x-api-key': key }` directly, so the key does reach the upstream — but the
+header map is never redacted by name and no keyring, provider mapping or failure
+mode in that file is ever consulted. Four of these rows previously gave reasons
+describing call chains that do not exist; they now say what is actually there.
 
-Wiring this is not a matter of calling one function. `server.ts:301` is a
-deliberate inline path, and until it is replaced by `applyCredentials` the
-sensitive-header list is documentation rather than enforcement.
+Wiring this is not a matter of calling one function. The inline key path in
+`server.ts` (`apiKeyHeader`) is deliberate, and until it is replaced by
+`applyCredentials` the sensitive-header list is documentation rather than
+enforcement.
 
 ## 6. What the ledger cannot tell you
 
@@ -294,17 +271,17 @@ A symbol read only by a sibling function in its own file, which some other file
 then calls, does run. The ledger still reports it unwired, because it counts
 direct references and a grep-derived "wired" is not proof either. Those rows say
 so in the reason — `no file outside X names it directly — it runs only through F,
-which G:line calls` — and F is named with the file and line that invokes it.
+which G calls` — and F is named with the file that invokes it.
 
 Proving that chain needs one thing the name alone does not give: the citing file
 must **import** the reader, or the chain is a coincidence of naming. That check
-is not theoretical. `packages/integrations/src/claude-code-hooks.ts:388` calls
-`redactText` — imported from `@strata-ctx/security` at line 46, not the identically
-named `telemetry/redact.ts` export. `packages/gateway/src/gemini-adapter.ts:634`
-is a `readonly usage:` interface field, not a call. An earlier pass of this
-analysis reported both as live callers of telemetry exports, and both were wrong;
-requiring the import binding moved three rows from live to inert and corrected
-four witnesses.
+is not theoretical. `packages/integrations/src/claude-code-hooks.ts` calls
+`redactText` — the binding imported from `@strata-ctx/security`, not the
+identically named `telemetry/redact.ts` export.
+`packages/gateway/src/gemini-adapter.ts` mentions the name as a `readonly usage:`
+interface field, not a call. An earlier pass of this analysis reported both as
+live callers of telemetry exports, and both were wrong; requiring the import
+binding moved three rows from live to inert and corrected four witnesses.
 
 ### Uncalled operators that still run (false negatives, unchanged)
 
@@ -320,7 +297,7 @@ four witnesses.
   from a value, so it counts as a `value` reference and can mask a genuinely
   uncalled class. This is a deliberate trade: the alternative, treating every
   `: T` as a type position, would report `run: applyTruncate` at
-  `packages/pipeline/src/truncate.ts:353` as unwired. It is a shorthand property
+  `packages/pipeline/src/truncate.ts` as unwired. It is a shorthand property
   value in a real object literal, so the conservative direction is correct.
 - **Same-name exports in different packages.** `testing/isSensitiveHeader` and
   `gateway/isSensitiveHeader` are different symbols with the same name. The scan
@@ -374,7 +351,7 @@ temporary probes, each reverted immediately:
 |---|---|
 | Two exported operators added to a reachable package | Gate 1 fails, naming both symbols and their file |
 | One export added to `gist`, a declared-unreachable package | Gate 2 fails: `gist: declared 6, found 7` |
-| A real `kind: 'file'` producer added to `pointer.ts` | Gate 3 fails: `B-3-file-subject: packages/pipeline/src/pointer.ts:287 now produces it` |
+| A real `kind: 'file'` producer added to `pointer.ts` | Gate 3 fails: `B-3-file-subject: packages/pipeline/src/pointer.ts now produces it` |
 | The same pattern as a comment in `pointer.ts` | Gate stays closed |
 | **The table as it stood when the ruling landed (367 rows), run against the pre-ruling scanner** | **Gate 1's reverse direction fails with 280 rows: the 264 the ruling exposed plus the 16 §3 describes. 432 wired before, 152 after. The table has since grown to 384, with the 16 in it** |
 | A real call site added for a symbol Gate 1 declares unwired | Gate 1's reverse direction fails, naming the symbol |
