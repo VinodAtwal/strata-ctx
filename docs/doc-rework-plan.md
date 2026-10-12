@@ -1,8 +1,8 @@
 # Documentation rework plan
 
 **Status:** docs rows **D-1–D-17 done** (D-13 verified: the target docs already carry
-history labels). Open: **D-18** (board owner) and the code items **ARCH-2–ARCH-5**.
-Transient — archive or delete when those land.
+history labels). **ARCH-1/2/4/5 done; ARCH-3 deferred** with its extraction seams written
+down in §4.1. Open: **D-18** (board owner). Transient — archive or delete when D-18 lands.
 **Owner:** the repo owner (this touches `docs/tasks.csv`, which AGENTS.md §2 reserves).
 
 This plan was produced by applying the `documentation-writing`, `software-architecture`,
@@ -67,13 +67,65 @@ count; it should name the source.
 | ID | Severity | Finding | Fix | Effort |
 |---|---|---|---|---|
 | ARCH-1 | High | `integrations` imports `@strata-ctx/telemetry` in 5 files but does not declare it in `package.json`; a clean install of declared deps breaks | add `"@strata-ctx/telemetry": "file:../telemetry"` to `integrations/package.json` deps | S |
-| ARCH-2 | Medium | `gist` (2,337 lines) has **no dependents** in the graph; its only consumer path is the unbuilt C-16 wiring | resolve C-16, or mark the package explicitly "built, not wired" in one place | M |
-| ARCH-3 | Medium | God files: `eval` suites (3,900/3,500/3,000 lines), `telemetry/status.ts` (1,834), `integrations/surface-check.ts` (1,960), `gateway/server.ts` (1,476) | targeted extraction **on touch**; do not mass-split (a working monolith beats a broken set of small files) | L |
-| ARCH-4 | Low | `gist` barrel exposes 2 of 7 modules; the other 5 are unreachable from the package surface | decide the intended surface; export or document why not | S |
+| ARCH-2 | Done | `gist` has **no dependents** in the graph; its only consumer path is the unbuilt C-16 wiring | marked built-not-wired in `packages/gist/src/index.ts`, pointing at the one docs home (`maturity.md` §3.1) | — |
+| ARCH-3 | Deferred | God files: `eval` suites (3,987/3,528/3,011 lines), `telemetry/status.ts` (1,834), `integrations/surface-check.ts` (1,960), `gateway/server.ts` (1,476) | targeted extraction **on touch**; do not mass-split. Seams are written down in §4.1 so the next person taking one does not have to re-derive it | L |
+| ARCH-4 | Done | `gist` barrel exposed 2 of 6 modules; the rest unreachable from the package surface | documented the intended surface and why `assembly`/`tiers`/`dreaming` stay unexported (Gate-4 ratchet), in `packages/gist/src/index.ts` | — |
 | ARCH-5 | Resolved | Version-spec "inconsistency" for `security`: `file:../security` (gateway, gist) vs `"0.1.0"` (cli, integrations). Not drift — `docs/operations.md` §1 declares the `file:` forms in gateway/gist **correct** and directs new packages to version ranges, so both are the documented decision. No code change; the plan's proposed "standardise on `file:`" would have contradicted the doc home. | none | — |
 
 No package merges or splits are recommended. The graph is already a DAG with a
 single sink; splitting further would add edges without buying a boundary.
+
+### 4.1 ARCH-3 handoff — extraction seams (deferred; take one on touch)
+
+Do **not** mass-split. When one of these files is next changed for a reason that
+already justifies opening it, take the one seam adjacent to that change. Every seam
+moves a **cohesive, exported unit** into a sibling module and re-exports it from
+the original file, so no consumer's import path changes and the Gate-4 ratchet
+baseline (`packages/testing/test/wiring-ratchet.test.ts`) does not move. Positions
+are given as symbols, not line numbers, so they survive edits.
+
+**`packages/telemetry/src/status.ts`** — three seams, safest first:
+- **Types.** The `StatusReport` interface and every summary sub-interface
+  (`BudgetSummary`, `CompactionSummary`, `SavingsSummary`, `StageSummary`,
+  `RunSummary`, `ErrorSummary`, …) → `status-types.ts`. Declarations only.
+- **Format.** `formatStatus`, `RUN_OUTCOME_LINE`, `stageList`, `countMap` →
+  `status-format.ts`. Pure string assembly over a finished `StatusReport`.
+- **CLI.** `parseStatusArgs`, `runStatusCli`, `USAGE`, `EXIT_*`, `StatusIo`,
+  `DEFAULT_STATUS_PATH` → `status-cli.ts`. The process boundary, separable from
+  aggregation.
+- **Stays:** `buildStatus` / `buildStatusFromLog` — the aggregation is the core.
+
+**`packages/integrations/src/surface-check.ts`** — four seams:
+- **Types.** `AgentSurface`, `McpSurface`, `SurfaceSnapshot`,
+  `SurfaceFinding`, … → `surface-types.ts`.
+- **Derivation.** `deriveClaudeCode`, `deriveGemini`, `deriveOpenCode`,
+  `deriveOpenAiCompatibleAgent`, `deriveCopilot`, `deriveAgent`, `deriveMcp`,
+  `deriveSelfGist`, `deriveSurfaces` → `surface-derive.ts`.
+- **Snapshot read.** `readAgentSurface`, `readObservation`, `readSettings`,
+  `validateSnapshot`, plus the `read*` scalar helpers → `surface-snapshot.ts`.
+- **Diff / render / CLI.** `checkSurface`, the `compare*` helpers,
+  `renderFinding(s)`, `renderResult`, `runCli` → `surface-report.ts`.
+- **Constraint:** the package reaches all of it through
+  `integrations/src/index.ts`'s `export * from './surface-check.js'`, so
+  `surface-check.ts` must keep re-exporting whatever moves.
+
+**`packages/gateway/src/server.ts`** — the session/persistence layer is the bulk:
+- **Types.** `GatewayOptions`, `Session`, `GatewayRuntime` → `server-types.ts`.
+- **Attribution.** `NO_RUN`, `NO_STAGE`, `LIFECYCLE`, `REMEDY`, and the `fail()`
+  surface → `attribution.ts` (this is the P0-1 surface; keep it one place).
+- **Sessions.** The session store, the drain path, and `persistPending` →
+  `sessions.ts`. `persistPending` is exported today, so it must be re-exported.
+- **Stays:** `createGateway` — the composition root.
+
+**`packages/eval/src/suites/*`** — the size is inline *data*, not logic:
+- **Corpus.** The frozen corpora (`E3_CORPUS`, `E3_REFUSAL_CORPUS`,
+  `E6_SECRET_CORPUS`, `E6_BENIGN_CORPUS`, the E2 record builders, …) → a per-suite
+  `corpus.ts`; the calibration/dimension constants → a per-suite `constants.ts`.
+- **Stays:** the suite logic (`run*`, grading, report) in the suite file.
+- **Constraint:** `eval/src/index.ts` does one `export * from './suites/eN-*.js'`
+  per suite, and the suites are deliberately siloed (one owner per file). Re-export
+  the moved symbols so those paths are unchanged, and do **not** introduce
+  cross-suite imports — that would couple experiments the design keeps separate.
 
 ## 5. Task list
 
