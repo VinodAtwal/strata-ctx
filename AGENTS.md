@@ -212,11 +212,13 @@ it pair by pair. Two bite hardest: `truncate` before `compact` (don't spend a lo
 block you could have deleted free), and `pin` *after* triage and *around* compaction — the reason
 governance cannot be summarized away. **Reordering is a security change** (§10).
 
-**Three cross-stream imports exist, all deliberate:** `integrations → security`,
-`integrations → telemetry`, `gist → telemetry`. Agent hooks are where untrusted text and
-credential headers actually arrive, so that path must redact and be measurable. Eviction is the
-only destructive operation, so it must be countable on every path where a transcript is *not*
-deleted. Adding a fourth needs the owner.
+**Four cross-stream imports exist, all deliberate:** `integrations → security`,
+`integrations → telemetry`, `gist → telemetry`, `integrations → gist`. Agent hooks are where
+untrusted text and credential headers actually arrive, so that path must redact and be
+measurable. Eviction is the only destructive operation, so it must be countable on every path
+where a transcript is *not* deleted, and reversible on the path where it is: the fourth edge is
+`mcp serve` recovering an evicted gist, which is the only production caller recovery has and the
+reason it was taken. Adding a fifth needs the owner.
 
 `eval` depends on nothing and **mirrors** `ConstraintKind` rather than importing it, with a test
 asserting the package opens no sockets. The measuring apparatus must not drift with the thing it
@@ -248,7 +250,7 @@ Both found by verification, not review. Cheap to avoid now they're written down.
 
 - **An alias table is part of the public surface.** The MCP server registers short names
   (`get_task`) and resolves `ctx_`-prefixed spellings through `TOOL_ALIASES` inside `callTool`.
-  Comparing the *advertised* name to the *registered* name reports all six tools as unserveable —
+  Comparing the *advertised* name to the *registered* name reports every tool as unserveable —
   a permanent false advisory, and a gate that cries wolf gets muted. Assert against the
   *resolved* value.
 - **`PROVIDERS` means two different things.** `gateway/src/config.ts` = routable upstreams;
@@ -271,8 +273,8 @@ Both found by verification, not review. Cheap to avoid now they're written down.
 
 - A test that cannot pass without `any` or `eslint-disable` in production code.
 - A need to change `core-types` exports (§1).
-- A cross-stream import that cannot go through `core-types` (§7 — three exist; ask before a
-  fourth).
+- A cross-stream import that cannot go through `core-types` (§7 — four exist; ask before a
+  fifth).
 - A governance block that reaches a lossy stage (type error or property-test failure).
 - A need to reorder the pipeline (§7).
 

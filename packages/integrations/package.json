@@ -19,6 +19,7 @@
   "dependencies": {
     "@strata-ctx/core-types": "1.0.0",
     "yaml": "^2.5.0",
+    "@strata-ctx/gist": "0.1.0",
     "@strata-ctx/security": "0.1.0",
     "@strata-ctx/telemetry": "file:../telemetry"
   },

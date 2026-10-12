@@ -294,7 +294,7 @@ const cmdStatus = (p: Parsed): never => {
 };
 
 /**
- * `mcp serve` -- the six context tools over newline-delimited JSON on stdio.
+ * `mcp serve` -- the context tools over newline-delimited JSON on stdio.
  *
  * Loaded with a dynamic import on purpose. `hook --check` is what CI runs, and it
  * must not pay to construct a context store and tool registry to answer "is

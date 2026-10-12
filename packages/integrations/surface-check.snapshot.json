@@ -324,6 +324,7 @@
       "get_artifact",
       "get_task",
       "note",
+      "recover_task",
       "remember",
       "status"
     ],

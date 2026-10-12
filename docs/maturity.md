@@ -60,20 +60,29 @@ any claim resting on "uncalled ⇒ inert" must check that row's declared reason 
 
 ---
 
-## 3) The three deferred subsystems (what a user loses today)
+## 3) The deferred subsystems (what a user loses today)
 
 ### 3.1 `gist` — the only code that deletes data
 
-**Unreachable.** `runCompactionTransaction` (`packages/gist/src/transaction.ts`) drops messages, and
-only when `raw_recoverable` is asserted; `recoverTurns` / `recoverEvictedMessages`
-(`packages/gist/src/reversibility.ts`) restore. Neither runs outside `packages/gist/test/`.
-Separately, `ArtifactStore.remove` (`packages/security/src/store.ts`) is reachable only via
-`planGc`, which is called only from a purge request handler that nothing calls.
+**Reachable since C-16, and off by default.** `runCompactionTransaction`
+(`packages/gist/src/transaction.ts`) drops messages, and only when `raw_recoverable` is asserted;
+`recoverEvictedMessages` (`packages/gist/src/reversibility.ts`) restores them. Both now run in the
+product: the composition root (`tools/dev.ts`) supplies the `compact` lossy stage through
+`GatewayOptions.lossyStages`, and `mcp serve` answers `recover_task` — the first production caller
+recovery has ever had — over the fourth cross-stream edge, `integrations → gist`. Compaction stays
+`off` in `npm run dev`, so the stage is registered and reachable but drops nothing until an operator
+sets `policy.pipeline.compaction` to `auto`; the recovery path is therefore exercised only against a
+gist an operator chose to produce. Separately, `ArtifactStore.remove`
+(`packages/security/src/store.ts`) is reachable only via `planGc`, which is called only from a purge
+request handler that nothing calls.
 
-**Recovery landed without eviction.** `3b23f34` added `recoverEvictedMessages`, a superset of
-`recoverTurns`: it looks the run up by identity, which fixed a case where a turn ending in a tool
-result lost that trailing result (`recoverTurns` returns a turn *window* — five evicted messages,
-four recovered). It is exported and uncalled.
+**Recovery landed before eviction, then eviction.** `3b23f34` added `recoverEvictedMessages`, a
+superset of `recoverTurns`: it looks the run up by identity, which fixed a case where a turn ending
+in a tool result lost that trailing result (`recoverTurns` returns a turn *window* — five evicted
+messages, four recovered). It stayed exported and uncalled until C-16 gave it `recover_task`; the
+`raw_recoverable` guard and the recovery path landed together, which is what this subsystem
+required. `recoverTurns` itself remains exported and uncalled, superseded on the only reachable
+path.
 
 **The tunnel seam now exists in production.** It was long recorded as needing an async
 `LossyStage.run` — a §1 contract change. Checked against the call graph, that premise was wrong:
@@ -96,8 +105,8 @@ microtask when one does not. There is no second runner to keep in step, because 
 survive the change — the synchronous twin had no caller left the moment the tunnel awaited the
 other one, and the wiring ratchet said so.
 
-`compact` and `compress` are still not supplied by any composition root, so eviction remains
-unwired. The seam now accepts an injected stage; nothing attaches one.
+`compress` is still not supplied by any composition root, so Tier 3 output compression remains
+unwired (§3.2). `compact` is supplied now; C-16 did it, and the seam carries an injected stage.
 
 **Every stage that runs reports, in one set of units.** The tunnel's stages (`pin`, and anything
 injected) report from `PipelineRun.stageResults`; Tier 0's report from `runTier0`. Both go through
@@ -135,9 +144,10 @@ would switch pointer-ization on for every gateway without anyone asking — whic
 `runTier0(..., { durable: false })` does today. `mcp serve` prints the root it bound to stderr so
 a reader pointed somewhere other than the writer is visible rather than silent.
 
-*Loss:* unchanged. Deletion is still entirely unobserved in production, eviction is still not
-wired, and recovery plus the `raw_recoverable` guard must still land in the same change before
-eviction is enabled. Unsafe to wire in isolation.
+*Loss:* deletion is still unobserved in production, because compaction ships `off` — the stage,
+the recovery tool and the `raw_recoverable` guard all landed together, but nobody turns the switch
+without watching a transcript recover first. Enabling it at an operator's discretion is now the
+decision, not wiring a seam.
 
 ### 3.2 `output-compress` — measured, and deliberately held
 
@@ -160,7 +170,7 @@ including `NaN`, the infinities and `-0`. Mean saving on that corpus is **TOON 5
 `json-value.ts`'s `-0` rejection fails two of these tests.
 
 *Decision:* **held.** The saving is real on two of three hosts and the shipping serializer is
-provably lossless on E3's corpus, but wiring it adds a fourth cross-stream edge and
+provably lossless on E3's corpus, but wiring it adds a fifth cross-stream edge and
 `MACHINE_FORMATS` is still unvalidated against what a live model actually returns. Held rather
 than deleted so the measurement survives for whoever revisits it.
 

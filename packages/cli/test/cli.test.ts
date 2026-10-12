@@ -431,13 +431,13 @@ describe('E-13: mcp serve', () => {
       .map((l) => JSON.parse(l) as Record<string, unknown>);
   };
 
-  it('publishes the six context tools', async () => {
+  it('publishes the context tools', async () => {
     const res = (await serve([{ jsonrpc: '2.0', id: 1, method: 'tools/list' }]))[0];
     assert.ok(res !== undefined, 'the server must answer tools/list');
     const result = res['result'] as { tools: { name: string }[] };
     assert.deepEqual(
       result.tools.map((t) => t.name).sort(),
-      ['ctx_search', 'get_artifact', 'get_task', 'note', 'remember', 'status'],
+      ['ctx_search', 'get_artifact', 'get_task', 'note', 'recover_task', 'remember', 'status'],
     );
   });
 
@@ -561,7 +561,7 @@ describe('E-13: mcp serve end to end, as an installed bin', () => {
     assert.equal(code, 0);
 
     const res = JSON.parse(stdout.trim()) as { result: { tools: { name: string }[] } };
-    assert.equal(res.result.tools.length, 6);
+    assert.equal(res.result.tools.length, 7);
   });
 });
 
@@ -691,7 +691,7 @@ describe('C-14: get_artifact resolves against the artifact store', () => {
     const tools = responses[0]?.['result'] as { tools: { name: string }[] };
     assert.deepEqual(
       tools.tools.map((t) => t.name).sort(),
-      ['ctx_search', 'get_artifact', 'get_task', 'note', 'remember', 'status'],
+      ['ctx_search', 'get_artifact', 'get_task', 'note', 'recover_task', 'remember', 'status'],
     );
 
     const data = artifactData(responses[1]);

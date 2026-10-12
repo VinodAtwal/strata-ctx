@@ -781,7 +781,7 @@ function deriveMcp(): McpSurface {
   // is not the set the profile layer advertises: the server registers short
   // names (`get_task`) and resolves the documented `ctx_`-prefixed spellings
   // through `TOOL_ALIASES` at dispatch. Comparing the advertised names against
-  // the registered names without resolving first reported all six as
+  // the registered names without resolving first reported every tool as
   // unserveable when every one of them answers to `hasTool`. An advisory that
   // is wrong on day one is an advisory that gets muted.
   const unresolvable = (name: string): boolean => !served.includes(resolveToolName(name));

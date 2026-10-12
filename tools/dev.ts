@@ -1,5 +1,8 @@
 import { StrataPolicySchema, sha256, type StrataPolicy } from '@strata-ctx/core-types';
+import type { StrataTelemetryEvent } from '@strata-ctx/telemetry';
 import { createGateway } from '../packages/gateway/src/index.js';
+import { createCompactStage } from '../packages/gist/src/index.js';
+import { ArtifactStore, defaultArtifactRoot } from '../packages/security/src/index.js';
 import { startMockProvider } from './mock-upstream.js';
 
 /**
@@ -43,12 +46,33 @@ const GATEWAY_PORT = 8787;
 const mock = startMockProvider({ port: UPSTREAM_PORT });
 const telemetry: string[] = [];
 
+// The composition root supplies the tunnel's `compact` stage (C-16). The gateway
+// never imports the implementation, so the two things a stage cannot invent --
+// where the raw transcript is written, and where its telemetry goes -- are
+// assembled here. The shared root is `STRATA_ARTIFACT_ROOT`, the same variable
+// `mcp serve` reads, so a transcript this gateway writes is one recovery can
+// read back.
+//
+// `policy.pipeline.compaction` stays `off`, so the stage is registered and
+// reachable but drops nothing until an operator turns it on. The safety order is
+// the one `docs/maturity.md` §3.1 states: recovery is observed before eviction is
+// enabled.
+const configuredRoot = (process.env['STRATA_ARTIFACT_ROOT'] ?? '').trim();
+const store = await ArtifactStore.open({
+  root: configuredRoot === '' ? defaultArtifactRoot() : configuredRoot,
+});
+const emitStage = (e: StrataTelemetryEvent): void => {
+  telemetry.push(JSON.stringify(e));
+};
+const compact = createCompactStage({ store, emit: emitStage });
+
 const gateway = createGateway({
   port: GATEWAY_PORT,
   host: '127.0.0.1',
   upstream: `http://127.0.0.1:${UPSTREAM_PORT}`,
   apiKeyEnv: 'ANTHROPIC_API_KEY',
   policy,
+  lossyStages: { compact },
   telemetry: (e) => {
     telemetry.push(JSON.stringify(e));
     console.log(`  [telemetry] ${e.type}${e.type === 'pin' ? ` constraints=${e.constraints} missingBefore=${e.missingBefore}` : ''}`);

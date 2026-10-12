@@ -186,25 +186,25 @@ measured totals, so the number can no longer drift without CI saying so.
 A row in `UNWIRED_OPERATORS` says a symbol has no caller. These say what it would
 take to give it one, and what would have to be true before that is safe.
 
-**`gist` — 6 exports, unreachable, and the only code that deletes user data.**
-No package in the workspace depends on `@strata-ctx/gist`; its own
-`package.json` is the only reference to that name outside the package. The
-eviction/recovery pair lives here: `runCompactionTransaction`
-(`packages/gist/src/transaction.ts`) drops messages, and refuses to unless the
-gist asserts `raw_recoverable` (checked in the same file), and `recoverTurns`
-(`packages/gist/src/reversibility.ts`) is the code that puts them back. Neither
-has ever run outside `packages/gist/test/`, which calls both directly. The
-retention side is inert too: `ArtifactStore.remove`
-(`packages/security/src/store.ts`) is called from `planGc`
-(`packages/security/src/retention.ts`), which is only reachable from the
-purge request handler, which nothing calls.
+**`gist` — reachable since C-16, and the only code that deletes user data.**
+`@strata-ctx/integrations` now depends on it, through the fourth cross-stream edge
+(`integrations → gist`, AGENTS.md §7): `mcp serve` answers `recover_task` by expanding a gist
+back into the messages compaction dropped. The composition root (`tools/dev.ts`) supplies the
+`compact` lossy stage, so the eviction/recovery pair runs: `runCompactionTransaction`
+(`packages/gist/src/transaction.ts`) drops messages, refuses to unless the gist asserts
+`raw_recoverable` (checked in the same file) and writes the raw transcript first, and
+`recoverEvictedMessages` (`packages/gist/src/reversibility.ts`) reads it back. Both landed in the
+same change, which is exactly what this subsystem required: turning on compaction without
+recovery deletes transcripts that nothing can reconstruct.
 
-That makes this the one subsystem where "unwired" and "unsafe to wire" are the
-same sentence. Turning on compaction without turning on recovery deletes
-transcripts that nothing can reconstruct, and the guard that prevents it is a
-field on a draft that no production path produces. If gist is ever connected, the
-recovery path and the `raw_recoverable` guard have to land in the same change, and
-the Gate 2 count has to be re-declared with the reason.
+Compaction stays **off by default** -- `npm run dev` leaves `policy.pipeline.compaction` at
+`off`, so the stage is registered and reachable but drops nothing until an operator turns it on.
+The recovery path is therefore exercised only against a gist an operator chose to produce. What
+is still inert: the four exports in `UNWIRED_OPERATORS` (`recoverTurns`,
+`reconstructContextSegment`, `isMessage`, `verifyGovernanceRoundTrip`) and the retention side,
+where `ArtifactStore.remove` (`packages/security/src/store.ts`) is called from `planGc`
+(`packages/security/src/retention.ts`), which only the purge request handler reaches, which
+nothing calls.
 
 **`output-compress` — unreachable, held by decision.** `applyOutputCompression`
 is declared in `packages/output-compress/src/compress.ts`. Its only other
@@ -223,7 +223,7 @@ through the real adapter egress paths rather than through the compressor alone):
 
 Governance and pinned text pass through unchanged in all three. **Held, not
 deleted** (`docs/maturity.md` §3.2): the two-host saving is large enough to
-revisit, but wiring it would add a fourth cross-stream edge (AGENTS.md §7) and
+revisit, but wiring it would add a fifth cross-stream edge (AGENTS.md §7) and
 `MACHINE_FORMATS` is unvalidated against real model output. Keeping the number
 here is the point — "deferred" without a measurement is a guess, and a guess
 cannot be revisited later by anyone who was not in the room.
@@ -426,8 +426,8 @@ row, which is the blast radius §6 warns about, for a gain nobody can point at.
 **Adding an operator and calling it moves the total by zero.** That is the row
 that decides the whole design. A gate that fired on it would be taxing the one
 behaviour §1 asks for, and it would be muted within a week — the fate
-AGENTS.md §9 records for the `TOOL_ALIASES` checker, which reported six working
-tools as unserveable until someone noticed the names went through a resolver.
+AGENTS.md §9 records for the `TOOL_ALIASES` checker, which reported every working
+tool as unserveable until someone noticed the names went through a resolver.
 
 **A bare import is not a reachability edge, and that surprised the probe.** Adding
 `import '@strata-ctx/eval'` to a reachable file moved nothing at all: still 69

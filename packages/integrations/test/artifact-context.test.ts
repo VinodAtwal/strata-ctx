@@ -156,4 +156,58 @@ describe('artifact-context: a ContextMemory over an ArtifactStore', () => {
     assert.equal(memory.status().notes, 1);
     assert.equal(memory.status().artifacts, 0, 'and nothing pretends the disk objects are in memory');
   });
+
+  test('recover_task expands a gist back into the messages compaction dropped', async () => {
+    // The end-to-end half of C-14: the raw transcript the transaction wrote in
+    // its step 1 comes back off a real store, through the tool. A stub store
+    // would pass this without proving the pointer resolves, which is the whole
+    // claim.
+    const store = await openStore();
+    const transcript = JSON.stringify([
+      { role: 'user', content: [{ text: 'first dropped turn', meta: { tier: 'raw', sha256: sha256('first dropped turn'), bytes: 17 } }], ts: 1 },
+      { role: 'assistant', content: [{ text: 'second dropped turn', meta: { tier: 'raw', sha256: sha256('second dropped turn'), bytes: 18 } }], ts: 2 },
+    ]);
+    const put = await store.put(transcript, 'raw_transcript');
+    const memory = createStoreBackedContext(store);
+
+    const gist = {
+      v: 1,
+      task_id: 'T-1',
+      status: 'complete',
+      goal: 'recover the evicted turns',
+      next: { question: 'what next', next_command: '' },
+      log_gist: { raw_uri: put.uri },
+      constraints: [],
+      source_turn_range: [0, 1],
+      raw_recoverable: true,
+      compressed_by: 'self-gist',
+    };
+
+    const recovered = await memory.recoverGist(gist);
+    const texts = recovered.messages.map((m) => (m as { content: { text: string }[] }).content[0]?.text);
+    assert.deepEqual(texts, ['first dropped turn', 'second dropped turn']);
+    assert.equal(recovered.complete, true, 'every pointer resolved, so the segment is whole');
+    assert.equal(recovered.governanceIntact, true, 'and the transcript round-tripped');
+    assert.deepEqual(recovered.missingArtifacts, []);
+    assert.deepEqual(recovered.resolvedArtifacts, []);
+
+    const viaTool = await callData(createStrataMcpServer(memory), 'recover_task', {
+      gist: JSON.stringify(gist),
+    });
+    assert.deepEqual(viaTool.data['messages'], recovered.messages, 'the tool returns what the binding recovered');
+  });
+
+  test('recover_task refuses a gist that is not a valid v1 gist, before the store is read', async () => {
+    const store = await openStore();
+    const memory = createStoreBackedContext(store);
+
+    // `recoverEvictedMessages` reads `log_gist.raw_uri` straight off the object
+    // and hands it to the store, so an unvalidated gist is an attacker-chosen
+    // URI. The validation is the guard; the throw becomes a tool error.
+    await assert.rejects(() => memory.recoverGist({ v: 2 }), /not a valid v1 gist/);
+    await assert.rejects(
+      () => memory.recoverGist({ v: 1, task_id: 'T', log_gist: { raw_uri: '' } }),
+      /not a valid v1 gist/,
+    );
+  });
 });

@@ -368,8 +368,9 @@ the next turn asks for an artifact that does not exist.
 **Detect:** C-14's new `ArtifactLookup` already distinguishes `malformed_ref` / `absent` /
 `unresolved`, which is exactly the right shape of distinction.
 **Plan:** make persistence-before-publish an enforced transaction rather than a documented duty —
-`runCompactionTransaction` exists in `gist/` and is unwired; R5 and R8 should be closed together,
-not separately. Add a startup reconciliation that detects artifacts referenced but absent.
+`runCompactionTransaction` now runs (C-16 supplies the `compact` stage, though compaction ships
+`off`); R5 and R8 should be closed together, not separately. Add a startup reconciliation that
+detects artifacts referenced but absent.
 
 ### R6 — Fail-open is safe for the user's context and dangerous for the operator's trust (Live, High)
 
@@ -502,7 +503,7 @@ gains a *required* `pessimisticTokens: (state) => number`, validated at construc
 `CanaryConfigError` — the same treatment `windowTokens` gets, because a default here would be this
 package's own guess at tokenisation. The signature is deliberately that of `pessimisticStateTokens`
 (`pipeline/token-budget.ts`, P0-2) so a host holding it passes it unadapted, while `canary → pipeline`
-is *not* added: three cross-stream edges exist and a fourth needs the owner (`AGENTS.md` §7).
+is *not* added: four cross-stream edges exist and a fifth needs the owner (`AGENTS.md` §7).
 
 Three consequences worth recording. The estimator is host-supplied code, so its throw is caught inside
 `#runRot` and reported as a `canary_fail` failure — `runTurn` still never rejects. The comment now

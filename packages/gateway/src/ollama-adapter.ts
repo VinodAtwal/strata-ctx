@@ -146,8 +146,8 @@ export const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
  *
  * AGENTS §10 records what happens when one concept has two spellings: the
  * `PROVIDERS` pair produced a gate that cried wolf on every run, and a checker
- * that compares an *advertised* name against a *registered* one reported all six
- * MCP tools as unserviceable. So the string `ollama` that appears in
+ * that compares an *advertised* name against a *registered* one reported every
+ * MCP tool as unserviceable. So the string `ollama` that appears in
  * `docs/integrations.md`, in this module, and (if someone ever adds one) in a
  * config enum is declared here, and everything else reads it from here. The
  * advertised spelling and the registered spelling cannot drift because there is

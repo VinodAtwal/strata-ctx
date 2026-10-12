@@ -37,13 +37,17 @@
  * cache here would be a second, unverifiable copy of bytes the store's own
  * `verify` exists to prove.
  */
+import { GistSchema } from '@strata-ctx/core-types';
+import { recoverEvictedMessages } from '@strata-ctx/gist';
 import type { ArtifactStore } from '@strata-ctx/security';
 import { ArtifactAclError } from '@strata-ctx/security';
 
 import type {
   ArtifactLookup,
   AsyncArtifactReader,
+  AsyncGistRecoverer,
   ContextMemory,
+  GistRecoveryResult,
   MemorySeed,
 } from './mcp-server.js';
 import { createInMemoryContext, parseArtifactRef } from './mcp-server.js';
@@ -54,7 +58,7 @@ const MALFORMED_DETAIL = 'expected artifact://<bucket>/<64 hex sha256> or a bare
 export const createStoreBackedContext = (
   store: ArtifactStore,
   seed: MemorySeed = {},
-): ContextMemory & AsyncArtifactReader => {
+): ContextMemory & AsyncArtifactReader & AsyncGistRecoverer => {
   const memory = createInMemoryContext(seed);
 
   return {
@@ -107,6 +111,40 @@ export const createStoreBackedContext = (
           detail: e instanceof Error ? e.message : String(e),
         };
       }
+    },
+
+    // `recover_task`'s implementation, and the one call in the product that
+    // expands a gist back into the messages compaction dropped. This is the
+    // other half of C-14: `get_artifact` resolves a single pointer, this
+    // resolves the whole evicted segment, reading the raw transcript the
+    // transaction wrote in its step 1 and re-substituting pointerized content.
+    //
+    // The gist is validated before it is trusted: `recoverEvictedMessages`
+    // reads `log_gist.raw_uri` off it and hands it to the store, and an
+    // unvalidated object is an attacker-controlled URI -- the same reason the
+    // transaction parses its own artifact refs. A malformed gist throws, and the
+    // tool wrapper reports it as an execution error rather than an empty result.
+    recoverGist: async (gist, options): Promise<GistRecoveryResult> => {
+      const parsed = GistSchema.safeParse(gist);
+      if (!parsed.success) {
+        throw new Error(
+          'recover_task: the gist argument is not a valid v1 gist. Pass the object behind a ' +
+            '`gist://` pointer, not the pointer string.',
+        );
+      }
+      const recovered = await recoverEvictedMessages(
+        parsed.data,
+        store,
+        options?.strict === true ? { strict: true } : {},
+      );
+      return {
+        messages: recovered.messages,
+        digests: recovered.digests,
+        resolvedArtifacts: recovered.resolvedArtifacts.map((a) => a.uri),
+        missingArtifacts: recovered.missingArtifacts,
+        governanceIntact: recovered.governanceIntact,
+        complete: recovered.complete,
+      };
     },
   };
 };

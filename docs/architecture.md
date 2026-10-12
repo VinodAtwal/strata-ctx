@@ -72,14 +72,16 @@ only ever sees its canonical model. `security` and `telemetry` sit just above it
 one-way DAG — no cycles, no mutual edges — and **adding an edge is an architectural change, not an
 import** (AGENTS.md §7).
 
-Three cross-stream edges are deliberate and load-bearing, because the path that handles untrusted
-text and credential headers is exactly the path that must redact and be measurable:
+Four cross-stream edges are deliberate and load-bearing, because the path that handles untrusted
+text and credential headers is exactly the path that must redact and be measurable, and because a
+destructive operation must be both countable and reversible:
 
 - `integrations → security` — hook inputs carry credential headers and untrusted text
 - `integrations → telemetry` — that path must be countable
 - `gist → telemetry` — eviction is the only destructive operation, so it must be countable on every path
+- `integrations → gist` — `mcp serve` must be able to recover what eviction dropped, or a transcript is gone
 
-**Adding a fourth needs the owner** (AGENTS.md §7, §10).
+**Adding a fifth needs the owner** (AGENTS.md §7, §10).
 
 `eval` depends on nothing and mirrors `ConstraintKind` rather than importing it, so the measuring
 apparatus cannot drift with the thing it measures. Do not "clean that up" into a real import — it

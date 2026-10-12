@@ -2,12 +2,13 @@
  * MCP (Model Context Protocol) server for strata-ctx. WS-E, task E-1.
  *
  * This is the "universal Tier 1" integration in docs/integrations.md §5: one
- * server, six tools, usable from every agent that speaks MCP. It is the escape
- * hatch that makes aggressive compression safe to ship -- `get_task` pulls back
- * a transcript range that compaction dropped, which is how the iterative
- * refinement degradation reported in docs/evaluation.md is undone.
+ * server, a handful of tools, usable from every agent that speaks MCP. It is the
+ * escape hatch that makes aggressive compression safe to ship -- `get_task` pulls
+ * back a transcript range a task recorded, and `recover_task` expands a gist into
+ * the messages compaction evicted, which is how the iterative-refinement
+ * degradation reported in docs/evaluation.md is undone.
  *
- * Two honest limitations, stated here because the docs require them to be stated:
+ * Three honest limitations, stated here because the docs require them to be stated:
  *
  *  1. This path is **advisory**. The agent *chooses* to call these tools. We
  *     cannot enforce dedupe, truncation or governance pinning on context the
@@ -17,6 +18,10 @@
  *     (initialize / tools/list / tools/call) and vendoring a 200kb runtime to
  *     parse six messages is a poor trade for a package that has to stay
  *     dependency-light. The wire shapes below follow the 2024-11-05 revision.
+ *  3. `recover_task` requires a store-backed holder. The in-memory binding keeps
+ *     no raw transcript, so the capability is absent there and the tool says
+ *     which binding to use -- `mcp serve` avoids it by binding
+ *     `createStoreBackedContext(store)`.
  */
 
 import { breakevenOk, runId, sha256 } from '@strata-ctx/core-types';
@@ -573,6 +578,44 @@ export interface AsyncArtifactReader {
  */
 const isAsyncArtifactReader = (memory: ContextMemory): memory is ContextMemory & AsyncArtifactReader =>
   typeof (memory as Partial<AsyncArtifactReader>).lookupArtifact === 'function';
+
+/**
+ * What a `recover_task` call hands back: the messages a gist evicted, resolved
+ * from the artifact store.
+ *
+ * A plain shape rather than gist's `EvictedSegmentRecovery`, because this is the
+ * contract across the MCP boundary, and the tool result is JSON either way. The
+ * two booleans are the point: `complete` false means a pointer came back as a
+ * stub, and `governanceIntact` false means the transcript itself did not
+ * round-trip -- a caller that collapses them into "recovered" would report
+ * bytes this call did not verify.
+ */
+export interface GistRecoveryResult {
+  readonly messages: readonly unknown[];
+  readonly digests: readonly string[];
+  readonly resolvedArtifacts: readonly string[];
+  readonly missingArtifacts: readonly string[];
+  /** False when the transcript could not be read, so nothing was verified. */
+  readonly governanceIntact: boolean;
+  /** False when any pointer went unresolved. */
+  readonly complete: boolean;
+}
+
+/**
+ * The recovery capability, and the return half of C-14.
+ *
+ * `mcp serve` binds it only over a store-backed context: an in-memory `Map`
+ * holds no raw transcript, so a `recover_task` against it could only report
+ * every gist as unreadable. The capability is absent there rather than lying,
+ * exactly as `AsyncArtifactReader` is -- and `recover_task` says which binding to
+ * use when it cannot answer.
+ */
+export interface AsyncGistRecoverer {
+  recoverGist(gist: unknown, options?: { readonly strict?: boolean }): Promise<GistRecoveryResult>;
+}
+
+const isAsyncGistRecoverer = (memory: ContextMemory): memory is ContextMemory & AsyncGistRecoverer =>
+  typeof (memory as Partial<AsyncGistRecoverer>).recoverGist === 'function';
 
 /* ------------------------------------------------------------------ *
  * Artifact refs
@@ -1230,6 +1273,36 @@ export const TOOL_SCHEMAS = {
       additionalProperties: false,
     },
   },
+  recover_task: {
+    description:
+      'Recover the messages a gist evicted, from the artifact store. Pass the gist and this ' +
+      'returns the raw messages compaction dropped, resolved from the store this server is ' +
+      'bound to. Unlike get_task, which reads the task record and cannot return what was ' +
+      'evicted, this reads the raw transcript artifact the eviction wrote. Requires a ' +
+      'store-backed context.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        // Text, not an object: this server rebuilds every argument from its
+        // declared `properties` (coerceObject below), so a free-form object
+        // arrives empty. A JSON string is the one shape that survives intact,
+        // and it is how a caller already holds a gist read from a `gist://`
+        // pointer. The full v1 schema is not redeclared here -- it lives once,
+        // in core-types, where recovery validates against it.
+        gist: {
+          ...STR,
+          minLength: 1,
+          description: 'The gist as JSON text -- the object behind a `gist://` pointer.',
+        },
+        strict: {
+          type: 'boolean',
+          description: 'Refuse on an unreadable raw transcript instead of reporting it incomplete.',
+        },
+      },
+      required: ['gist'],
+      additionalProperties: false,
+    },
+  },
 } as const satisfies Record<string, ToolSchema>;
 
 /**
@@ -1245,6 +1318,7 @@ export const TOOL_ALIASES: Readonly<Record<string, string>> = {
   ctx_note: 'note',
   ctx_status: 'status',
   ctx_remember: 'remember',
+  ctx_recover_task: 'recover_task',
 };
 
 export const TOOL_NAMES = [
@@ -1254,6 +1328,7 @@ export const TOOL_NAMES = [
   'note',
   'status',
   'remember',
+  'recover_task',
 ] as const;
 
 export type ToolName = (typeof TOOL_NAMES)[number];
@@ -1429,10 +1504,10 @@ function normalizeId(value: unknown): JSONRPCId {
 }
 
 /* ------------------------------------------------------------------ *
- * The six strata-ctx tools
+ * The strata-ctx tools
  * ------------------------------------------------------------------ */
 
-/** Build a server with all six strata-ctx tools bound to `memory`. */
+/** Build a server with all the strata-ctx tools bound to `memory`. */
 export function createStrataMcpServer(
   memory: ContextMemory,
   info?: { readonly name: string; readonly version: string },
@@ -1549,6 +1624,36 @@ export function createStrataMcpServer(
       durable: fact.durable,
       ts: fact.ts,
     });
+  });
+
+  // The recovery half of C-14, and the first production caller of gist's
+  // `recoverEvictedMessages`. `async` for the same reason `get_artifact` is:
+  // the read crosses the filesystem ACL, and the in-memory binding is answered
+  // without a second tool surface. Only a store-backed holder has the
+  // capability; against one that does not, the tool says which binding to use
+  // rather than reporting every gist as unrecoverable.
+  server.registerTool('recover_task', TOOL_SCHEMAS.recover_task, async (args) => {
+    if (!isAsyncGistRecoverer(memory)) {
+      return toolError(
+        'recover_task needs a store-backed context: this holder has no artifact store to ' +
+          'recover from. Bind `createStoreBackedContext(store)` (what `mcp serve` does) ' +
+          'instead of `createInMemoryContext()`.',
+      );
+    }
+    // The gist arrives as text (see the schema note): parse it here so a
+    // malformed payload is a clear tool error rather than a validator
+    // generic. `recoverGist` then validates it against the frozen v1 schema
+    // before any field of it reaches the store.
+    let gist: unknown;
+    try {
+      gist = JSON.parse(str(args, 'gist'));
+    } catch {
+      return toolError('recover_task: `gist` must be the gist as JSON text; it did not parse.');
+    }
+    const result = await memory.recoverGist(gist, {
+      strict: args['strict'] === true,
+    });
+    return toolJson(result);
   });
 
   return server;

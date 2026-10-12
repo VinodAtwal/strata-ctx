@@ -125,7 +125,7 @@ B-17,B,Context pipeline,Property-test tool-pair atomicity over generated transcr
 C-13,C,Gist engine,Tunnel takes injected lossy stages through a DI port: policy filters them and Tier 0 names are refused,agent,1,C-8,5,-,done
 C-14,C,Gist engine,MCP resolves disk artifacts through a store-backed context; the gateway write side stays opt-in via STRATA_ARTIFACT_ROOT,ext,1,C-8,5,-,done
 C-15,C,Gist engine,recoverEvictedMessages closes the eviction-to-recovery gap,agent,1,C-8,5,-,done
-C-16,C,Gist engine,Supply compact from the composition root; give recovery its first production caller,agent,1,"C-13,C-15",5,-,todo
+C-16,C,Gist engine,Supply compact from the composition root; give recovery its first production caller,agent,1,"C-13,C-15",5,-,done
 D-12,D,Gateway,Never drop the severe half of a tool pair during dedupe,agent,1,D-11,5,-,done
 E-16,E,Integrations,get_task no longer advertises itself as a reversibility path,agent,0.5,-,5,-,done
 F2-8,F,Evals,Grading-basis cap made fail-closed and unreportable as met,agent,1,F2-4,5,"G1,G2",done

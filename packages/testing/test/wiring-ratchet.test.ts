@@ -146,23 +146,36 @@ const ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 
 const UNCALLED_BASELINE = {
   /** Every exported runtime value the barrel walk reaches. Informational. */
-  exports: 1116,
+  exports: 1119,
   /** Of those, the ones with a caller outside their own declaring file. Informational. */
-  wired: 159,
+  wired: 167,
   /** exports - wired. Informational; `local` is the number this gate is about. */
-  unwired: 957,
+  unwired: 952,
   /** Unwired because no entry root reaches the declaring package. Informational. */
-  inherited: 565,
+  inherited: 558,
   /** Unwired inside a reachable package; each needs a reason in Gate 1. */
-  local: 392,
-  /** The local half by package -- the only figure here Gate 1 does not imply. */
+  local: 394,
+  /**
+   * The local half by package -- the only figure here Gate 1 does not imply.
+   *
+   * `gist` joined this list at C-16, which made the package reachable (the fourth
+   * cross-stream edge, `integrations -> gist`) and added the `compact` stage. Seven of
+   * its previously-inherited exports split: `runCompactionTransaction`,
+   * `recoverEvictedMessages`, `parseRawTranscript` and `createCompactStage` acquired
+   * reachable callers, and the four that did not (`recoverTurns`,
+   * `reconstructContextSegment`, `isMessage`, `verifyGovernanceRoundTrip`) moved from
+   * `inherited` to `local`, each with its own Gate 1 row. `pipeline` fell by one
+   * (`ARTIFACT_SCHEME`) and `telemetry` by one (`EVICTION_SKIPPED_PREFIX`), both wired
+   * for the first time by gist's now-reachable code. Net `local`: 392 -> 394.
+   */
   localByPackage: {
     'core-types': 31,
     gateway: 72,
+    gist: 4,
     integrations: 125,
-    pipeline: 61,
+    pipeline: 60,
     security: 52,
-    telemetry: 51,
+    telemetry: 50,
   },
 } as const;
 
@@ -171,6 +184,7 @@ const REACHABLE = new Set([
   'cli',
   'core-types',
   'gateway',
+  'gist',
   'integrations',
   'pipeline',
   'security',

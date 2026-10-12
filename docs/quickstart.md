@@ -303,12 +303,13 @@ The rules that actually bite:
    `core-types` and from nothing else across streams. If you need something another
    package exposes, it either goes through `core-types` — which requires the contract
    owner's decision to unfreeze — or it waits.
-2. **There are exactly three documented cross-stream imports:** `integrations` may
+2. **There are exactly four documented cross-stream imports:** `integrations` may
    import `security` and `telemetry`, because agent hooks are where untrusted text and
    credential headers actually arrive, so that path must redact and must be
-   measurable; and `gist` may import `telemetry`, because eviction is the only
-   destructive operation and must be countable. Adding a fourth is an `AGENTS.md` §10
-   emergency stop.
+   measurable; `gist` may import `telemetry`, because eviction is the only
+   destructive operation and must be countable; and `integrations` may import `gist`,
+   because `mcp serve` must be able to recover an evicted transcript. Adding a fifth
+   is an `AGENTS.md` §10 emergency stop.
 3. **`eval` depends on nothing, and must keep depending on nothing.** It mirrors
    `ConstraintKind` in its own `types.ts` with a comment recording the freeze digest,
    rather than importing it, and it has a test asserting it opens no sockets. The

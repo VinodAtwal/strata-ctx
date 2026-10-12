@@ -557,19 +557,19 @@ export async function runCompactionTransaction(
     // Emit violation for constraints_byte_equal failure (P0 event)
     const constraintViolation = validationDefects.find((d) => d.step === '4c_constraint_bytes');
     if (constraintViolation) {
-      const violationEvent: TelemetryEvent = {
+      const pinViolation: TelemetryEvent = {
         type: 'violation',
         runId: originalState.runId,
         kind: 'pin_post_compact_missing',
         constraintIds: constraintViolation.constraintIds,
         blocked: true,
       };
-      emit(violationEvent);
-      telemetry.push(violationEvent);
+      emit(pinViolation);
+      telemetry.push(pinViolation);
     }
 
     // Emit gist event with validation failure
-    const gistEvent: GistEvent = {
+    const gistTelemetry: GistEvent = {
       type: 'gist',
       runId: originalState.runId,
       taskId: gistWithRawUri.task_id,
@@ -579,11 +579,11 @@ export async function runCompactionTransaction(
       compressionBy: gistWithRawUri.compressed_by,
       failed: validationDefects.map((d) => d.step),
     };
-    emit(gistEvent);
-    telemetry.push(gistEvent);
+    emit(gistTelemetry);
+    telemetry.push(gistTelemetry);
 
     // Emit compaction event with validationPassed: false
-    const compactionEvent: TelemetryEvent = {
+    const compactionTelemetry: TelemetryEvent = {
       type: 'compaction',
       runId: originalState.runId,
       trigger,
@@ -593,8 +593,8 @@ export async function runCompactionTransaction(
       compressionBy: gistWithRawUri.compressed_by,
       validationPassed: false,
     };
-    emit(compactionEvent);
-    telemetry.push(compactionEvent);
+    emit(compactionTelemetry);
+    telemetry.push(compactionTelemetry);
 
     return {
       ok: false,
@@ -693,7 +693,7 @@ export async function runCompactionTransaction(
   }
 
   // Step 7: LOG - emit telemetry gist + compaction events
-  const gistEvent: GistEvent = {
+  const gistTelemetry: GistEvent = {
     type: 'gist',
     runId: originalState.runId,
     taskId: gistWithRawUri.task_id,
@@ -705,11 +705,11 @@ export async function runCompactionTransaction(
     // rather than aborting: the commit stands, only the size win is deferred.
     failed: evictable.verified ? [] : [`${EVICTION_SKIPPED_PREFIX} ${evictable.reason}`],
   };
-  emit(gistEvent);
-  telemetry.push(gistEvent);
+  emit(gistTelemetry);
+  telemetry.push(gistTelemetry);
 
   const droppedCount = evicted;
-  const compactionEvent: TelemetryEvent = {
+  const compactionTelemetry: TelemetryEvent = {
     type: 'compaction',
     runId: originalState.runId,
     trigger,
@@ -719,8 +719,8 @@ export async function runCompactionTransaction(
     compressionBy: gistWithRawUri.compressed_by,
     validationPassed: true,
   };
-  emit(compactionEvent);
-  telemetry.push(compactionEvent);
+  emit(compactionTelemetry);
+  telemetry.push(compactionTelemetry);
 
   // Step 8: DONE - return new ContextState
   return {

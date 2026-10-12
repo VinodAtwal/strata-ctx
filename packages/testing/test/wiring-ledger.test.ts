@@ -94,16 +94,6 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
     // decision rather than a drift.
     exports: 35,
   },
-  gist: {
-    why: 'no package depends on @strata-ctx/gist, so eviction and recovery cannot run: LossyStage.run is synchronous and runCompactionTransaction is not, and every host that could inject the stage would need a third cross-stream edge',
-    // 6 -> 7 at 3b23f34, which added recoverEvictedMessages. It addresses the same
-    // transcript as recoverTurns and addresses it differently: eviction drops by
-    // identity, while recoverTurns returns a turn window, so a turn ending in a
-    // tool result lost that result. Both functions staying reachable is the point
-    // -- "verified recoverable" and "recoverable through the tool" are different
-    // claims and only the first was being checked.
-    exports: 7,
-  },
   governance: {
     why: 'no package depends on @strata-ctx/governance; the gateway pins with its own code path',
     exports: 36,
@@ -197,6 +187,16 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
     'credentials.ts:206; nothing calls it in any file. applyCredentials takes an already-resolved credential and never reaches for one',
   'gateway/validateConfig':
     'config.ts:399; named in prose at config.ts:10 and exported at index.ts:44, but safeParseConfig/parseConfig/loadConfig all call resolve() directly',
+
+  // --- @strata-ctx/gist: reachable since C-16, which added the fourth cross-stream
+  // edge (integrations -> gist) and supplied the compact stage from the composition
+  // root. Two of its modules are now called -- recoverEvictedMessages (recover_task)
+  // and runCompactionTransaction (the compact stage) -- and these four remain
+  // uncalled inside the package. The reasons are per-operator, not by inheritance. ---
+  'gist/isMessage': 'reversibility.ts:296; no file outside reversibility.ts names it directly -- parseRawTranscript is its only reader, and it is exported so that reader can be tested against a malformed message',
+  'gist/reconstructContextSegment': 'reversibility.ts:452; no file outside reversibility.ts names it -- recover_task returns the evicted messages directly, so nothing grafts a ReconstructedSegment into a live context',
+  'gist/recoverTurns': 'reversibility.ts:64; no file outside reversibility.ts names it -- recoverEvictedMessages supersedes it on the only reachable path, because eviction drops by identity while recoverTurns returns a turn window and so lost a trailing tool result. Retained, not deleted: "verified recoverable" and "recoverable through the tool" are different claims and only the first was ever checked',
+  'gist/verifyGovernanceRoundTrip': 'reversibility.ts:482; no file outside reversibility.ts names it -- recovery reports governanceIntact through verifyGovernanceIntegrity (same file); this post-recovery comparison against the pin buffer has no caller',
 
   // --- @strata-ctx/integrations ---
   'integrations/ClaudeCodeProxyHooks': 'index.ts:130 renames ClaudeCodeHooks; nothing imports the renamed name',
@@ -484,7 +484,6 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   'integrations/validateArgs': 'mcp-server.ts:312; no file outside mcp-server.ts names it directly -- it runs only through MCPServer, then createStrataMcpServer, which @strata-ctx/cli/index.ts:312 calls',
   'integrations/validateSnapshot': 'surface-check.ts:1065; no file outside surface-check.ts names it and the only call sites are in-file, at surface-check.ts:1545, surface-check.ts:1739, inside checkSurface and updateSnapshot -- no chain of same-file readers reaches an operator a reachable file calls',
   // --- @strata-ctx/pipeline: exposed by the ruling. Three shapes, see the header above. ---
-  'pipeline/ARTIFACT_SCHEME': 'pointer.ts:36; no file outside pointer.ts names it directly -- it runs only through artifactUriFor, then pointerizeBlocks, which truncate.ts:326 calls',
   'pipeline/HEAD_SHARE': 'truncate.ts:81; no file outside truncate.ts names it directly -- it runs only through truncateText, then truncateBlocks, then applyTruncate, then truncateStage, which order.ts:78 reads',
   'pipeline/POINTER_MARKER': 'pointer.ts:43; no file outside pointer.ts names it directly -- it runs only through isPointerized, which truncate.ts:250 calls',
   'pipeline/RETAINED_MARKER': 'truncate.ts:72; no file outside truncate.ts names it directly -- it runs only through truncateText, then truncateBlocks, then applyTruncate, then truncateStage, which order.ts:78 reads',
@@ -560,7 +559,6 @@ const UNWIRED_OPERATORS: Readonly<Record<string, string>> = {
   // --- @strata-ctx/telemetry: exposed by the ruling. Three shapes, see the header above. ---
   'telemetry/CostError': 'cost.ts:118; no file outside cost.ts names it and nothing in cost.ts calls it; its only reference anywhere is a read by usage, which no reachable file calls, so nothing in the repository runs it',
   'telemetry/DEFAULT_STATUS_PATH': 'status.ts:1128; no file outside status.ts names it and the only call sites are in-file, at status.ts:1229, inside runStatusCli -- no chain of same-file readers reaches an operator a reachable file calls',
-  'telemetry/EVICTION_SKIPPED_PREFIX': 'events.ts:420; no file outside events.ts names it directly -- it runs only through evictionSkipReason, which status.ts:588 calls',
   'telemetry/EXIT_FINDINGS': 'status.ts:1215; no file outside status.ts names it and the only call sites are in-file, at status.ts:1251, inside runStatusCli -- no chain of same-file readers reaches an operator a reachable file calls',
   'telemetry/EXIT_OK': 'status.ts:1214; no file outside status.ts names it and the only call sites are in-file, at status.ts:1222, inside runStatusCli -- no chain of same-file readers reaches an operator a reachable file calls',
   'telemetry/EXIT_USAGE': 'status.ts:1216; no file outside status.ts names it and the only call sites are in-file, at status.ts:1226, inside runStatusCli -- no chain of same-file readers reaches an operator a reachable file calls',

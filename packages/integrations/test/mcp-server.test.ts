@@ -172,7 +172,7 @@ describe('mcp-server: registry', () => {
     server = createStrataMcpServer(memory);
   });
 
-  test('publishes exactly the six strata-ctx tools', () => {
+  test('publishes exactly the registered strata-ctx tools', () => {
     const names = server.listTools().map((t) => t.name);
     assert.deepEqual(names, [...TOOL_NAMES]);
   });
@@ -463,6 +463,76 @@ describe('mcp-server: remember', () => {
     assert.equal(second.data.id, first.data.id);
     assert.equal(second.data.value, '2');
     assert.equal(memory.status().facts, 2);
+  });
+});
+
+describe('mcp-server: recover_task', () => {
+  test('names the binding to use when the holder has no store to recover from', async () => {
+    // An in-memory holder cannot answer this: it never held a raw transcript.
+    // The tool refuses rather than reporting each gist unrecoverable, which is
+    // the distinction the capability interface exists to make.
+    const server = createStrataMcpServer(createInMemoryContext(seed()));
+    const result = await server.callTool('recover_task', { gist: JSON.stringify({ v: 1 }) });
+
+    assert.equal(result.isError, true);
+    const text = result.content[0]?.text ?? '';
+    assert.match(text, /store-backed context/);
+    assert.match(text, /createStoreBackedContext/);
+  });
+
+  test('hands the gist to a store-backed holder and returns what it recovered', async () => {
+    const gist = { v: 1, task_id: 'T-100', log_gist: { raw_uri: 'artifact://file/deadbeef' } };
+    let seenGist: unknown;
+    let seenStrict: boolean | undefined;
+
+    const holder = Object.assign(createInMemoryContext(seed()), {
+      recoverGist: (received: unknown, options?: { strict?: boolean }) => {
+        seenGist = received;
+        seenStrict = options?.strict;
+        return Promise.resolve({
+          messages: [{ role: 'user', content: [{ text: 'the dropped turn' }] }],
+          digests: [sha256('the dropped turn')],
+          resolvedArtifacts: ['artifact://file/deadbeef'],
+          missingArtifacts: [],
+          governanceIntact: true,
+          complete: true,
+        });
+      },
+    });
+
+    const server = createStrataMcpServer(holder);
+    const { data } = await callData(server, 'recover_task', { gist: JSON.stringify(gist), strict: true });
+
+    assert.deepEqual(seenGist, gist, 'the gist crossed verbatim; recovery validates it, the tool does not reshape it');
+    assert.equal(seenStrict, true, 'strict is forwarded, not swallowed');
+    assert.equal(data.complete, true);
+    assert.equal(data.governanceIntact, true);
+    assert.deepEqual(data.resolvedArtifacts, ['artifact://file/deadbeef']);
+    assert.equal((data.messages as { content: { text: string }[] }[])[0]?.content[0]?.text, 'the dropped turn');
+  });
+
+  test('a holder that raises surfaces as a tool error, not an empty result', async () => {
+    const holder = Object.assign(createInMemoryContext(seed()), {
+      recoverGist: () => Promise.reject(new Error('transcript unreadable')),
+    });
+    const server = createStrataMcpServer(holder);
+
+    const result = await server.callTool('recover_task', { gist: JSON.stringify({ v: 1 }) });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /transcript unreadable/);
+  });
+
+  test('a gist argument that is not JSON text is refused as such', async () => {
+    const holder = Object.assign(createInMemoryContext(seed()), {
+      recoverGist: () => Promise.resolve({ messages: [], digests: [], resolvedArtifacts: [], missingArtifacts: [], governanceIntact: true, complete: true }),
+    });
+    const server = createStrataMcpServer(holder);
+
+    // Distinct from "not a valid v1 gist": the payload never reached the
+    // schema, and saying so is what makes the string-encoded argument usable.
+    const result = await server.callTool('recover_task', { gist: '{not json' });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0]?.text ?? '', /did not parse/);
   });
 });
 

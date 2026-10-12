@@ -16,16 +16,19 @@
  *
  * ## The public surface, and what is deliberately left out (ARCH-4)
  *
- * Two modules are exported: the compaction transaction and the recovery path.
- * The rest are internal:
+ * Three modules are exported: the compaction transaction, the recovery path,
+ * and the `compact` stage the composition root supplies (C-16). The rest are
+ * internal:
  *
- * - `artifact-uri` — a private helper, reached by the two exported modules.
- * - `assembly`, `tiers`, `dreaming` — building blocks the unbuilt C-16 wiring
- *   would consume. They are not exported today because exporting them would add
+ * - `artifact-uri` — a private helper, reached by the exported modules.
+ * - `assembly`, `tiers`, `dreaming` — `assembly` is consumed by the exported
+ *   `compact-stage`; `tiers` and `dreaming` remain building blocks with no
+ *   production caller. They are not exported because exporting them would add
  *   locally-uncalled exports and move Gate 4's ratchet baseline
  *   (`packages/testing/test/wiring-ratchet.test.ts`), which a surface change is
- *   not allowed to do silently. Revisit the surface when C-16 lands, not before.
+ *   not allowed to do silently.
  */
 
 export * from './transaction.js';
 export * from './reversibility.js';
+export * from './compact-stage.js';
