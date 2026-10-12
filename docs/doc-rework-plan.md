@@ -70,7 +70,7 @@ count; it should name the source.
 | ARCH-2 | Medium | `gist` (2,337 lines) has **no dependents** in the graph; its only consumer path is the unbuilt C-16 wiring | resolve C-16, or mark the package explicitly "built, not wired" in one place | M |
 | ARCH-3 | Medium | God files: `eval` suites (3,900/3,500/3,000 lines), `telemetry/status.ts` (1,834), `integrations/surface-check.ts` (1,960), `gateway/server.ts` (1,476) | targeted extraction **on touch**; do not mass-split (a working monolith beats a broken set of small files) | L |
 | ARCH-4 | Low | `gist` barrel exposes 2 of 7 modules; the other 5 are unreachable from the package surface | decide the intended surface; export or document why not | S |
-| ARCH-5 | Low | Version-spec inconsistency: `security` referenced as `file:../security` (gateway, gist) and `"0.1.0"` (cli, integrations) | standardise on `file:` workspace refs | S |
+| ARCH-5 | Resolved | Version-spec "inconsistency" for `security`: `file:../security` (gateway, gist) vs `"0.1.0"` (cli, integrations). Not drift — `docs/operations.md` §1 declares the `file:` forms in gateway/gist **correct** and directs new packages to version ranges, so both are the documented decision. No code change; the plan's proposed "standardise on `file:`" would have contradicted the doc home. | none | — |
 
 No package merges or splits are recommended. The graph is already a DAG with a
 single sink; splitting further would add edges without buying a boundary.
