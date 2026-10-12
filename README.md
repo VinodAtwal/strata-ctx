@@ -499,25 +499,9 @@ README quoted a contract digest and export count from a much older commit and a 
 had drifted by thirty tasks. `npm run status` reads all three from source.
 
 **Verdict: pre-production / limited readiness.** Correct where wired, inert where unwired,
-unobserved where blocked. The full evidence-backed assessment — including what each claim rests on
-and what the wiring scan cannot tell you — is in [`docs/maturity.md`](docs/maturity.md).
-
-| Area | State |
-|---|---|
-| Contract (`core-types`) | **Frozen.** Unbreaking it is a deliberate, standalone commit. |
-| Gateway + provider adapters (Anthropic, Gemini, openai-compat, Ollama, mock), SSE passthrough | **done** — adapters round-trip through the canonical model, and the two that used to silently drop a payload now state the loss instead |
-| Pipeline: Tier 0 (`dedupe`, `truncate`, `triage`) and `pin` | **wired into the gateway request path** — `runTier0` (called from the server), then the post-Tier-0 tunnel through `runPipeline`, which also runs any lossy stage the composition root injects. `compact` has no production caller; Tier 3 `compress` stays `enabled: false` |
-| Governance: pin buffer, byte-equality, policy store, violations | **done**, and type-level protected from lossy stages |
-| Security: redaction, ACL, gist safety, retention/purge | **done**; GC reachable only via an uncalled purge handler |
-| Telemetry: cost engine, gross/net savings, `strata status` | **done**; every `STRATA_EVENT_TYPES` member surfaced |
-| Integrations: MCP server, Claude Code / Gemini CLI / Aider / Cline / Roo / Copilot / OpenCode | **done** |
-| `strata-ctx` executable: `hook --check`, `hook run`, `mcp serve`, `status` | **done** |
-| Canary probes + scheduler | **done** |
-| Eval harness, statistics, grading, suites E1–E3, E5–E6 | **done, offline with injected subjects** |
-| Output compression (TOON/TRON) | **measured, deliberately held** — real saving on 2 of 3 hosts, not wired |
-| Gist engine: eviction + recovery | **built, not wired.** The only code that deletes data; recovery landed first, on purpose |
-| B-3 pointerization | **dead gate** — stage runs and succeeds while doing nothing |
-| Live A/B campaign | **never run.** No provider credential, so all 12 claims remain `unsupported` |
+unobserved where blocked. The per-area state — which packages are wired, which are deliberately
+held, and what each claim rests on, including what the wiring scan cannot tell you — has one home:
+[`docs/maturity.md`](docs/maturity.md). This document does not restate it.
 
 Be precise about the compression claim. The operators are built and measured; end-to-end
 compression is not enabled on the request path. The honest current claim is **"context is

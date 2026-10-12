@@ -1,6 +1,8 @@
 # Documentation rework plan
 
-**Status:** planning, transient. Archive or delete when the rows below are done.
+**Status:** docs rows **D-1–D-17 done** (D-13 verified: the target docs already carry
+history labels). Open: **D-18** (board owner) and the code items **ARCH-2–ARCH-5**.
+Transient — archive or delete when those land.
 **Owner:** the repo owner (this touches `docs/tasks.csv`, which AGENTS.md §2 reserves).
 
 This plan was produced by applying the `documentation-writing`, `software-architecture`,
