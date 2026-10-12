@@ -368,6 +368,33 @@ describe('the board reader', () => {
     }
   });
 
+  test('every board task id is unique, so no dependency can resolve to two rows', () => {
+    // C-5 named two different rows: the reversibility task and the malformed-URI
+    // fix. A task id is a key -- a `deps` cell names one -- so a duplicate makes a
+    // dependency resolve to whichever row a reader happens to find first. The
+    // resolves-test below cannot see it: `readBoardRow('C-5')` returns the first
+    // match and both rows look fine.
+    const board = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'docs', 'tasks.csv'),
+      'utf8',
+    );
+    const ids = board
+      .split(/\r?\n/)
+      .slice(1)
+      .filter((l) => l.trim() !== '')
+      .map((l) => l.slice(0, l.indexOf(',')));
+
+    const seen = new Map<string, number>();
+    const duplicates: string[] = [];
+    ids.forEach((id, index) => {
+      const first = seen.get(id);
+      if (first === undefined) seen.set(id, index);
+      else duplicates.push(`${id} (rows ${first + 2} and ${index + 2})`);
+    });
+
+    assert.deepEqual(duplicates, [], `duplicate task id(s): ${duplicates.join(', ')}`);
+  });
+
   test('every est_ed is a bare number, because no code reads it and nothing enforced it', () => {
     // Seven rows had drifted: three carried a "d" suffix ("1d", "1.5d") and four
     // wrote "1.0"/"2.0" where the other 125 rows write "1"/"2". Nothing parses

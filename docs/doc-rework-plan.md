@@ -1,8 +1,9 @@
 # Documentation rework plan
 
-**Status:** docs rows **D-1–D-17 done** (D-13 verified: the target docs already carry
-history labels). **ARCH-1/2/4/5 done; ARCH-3 deferred** with its extraction seams written
-down in §4.1. Open: **D-18** (board owner). Transient — archive or delete when D-18 lands.
+**Status:** complete. **D-1–D-18 done** (D-13 verified: labels already present; D-18
+renumbered the duplicate `C-5` to `C-9` and added a board uniqueness guard).
+**ARCH-1/2/4/5 done; ARCH-3 deferred** with its extraction seams in §4.1. Retained only
+for §4.1 — delete once ARCH-3 is taken.
 **Owner:** the repo owner (this touches `docs/tasks.csv`, which AGENTS.md §2 reserves).
 
 This plan was produced by applying the `documentation-writing`, `software-architecture`,
