@@ -28,6 +28,14 @@ import type { GistOverrides } from './fixtures.js';
  *   4. A planted secret never appears in the returned gist.
  *   5. `assertGistTrustworthy` throws iff a report would have `ok: false` or no
  *      gist, and returns a gist with the pin set otherwise.
+ *
+ * The second block covers the shapes the first does not: an oversized payload is
+ * not a *hostile* payload, it is a payload that makes the module do work
+ * proportional to attacker-chosen input -- a 10k-entry pin set, a 200k-character
+ * narrative, a 4k-deep object where a string belongs. The invariants must hold
+ * there too, and `defendGist` must resolve rather than throw: a boundary that
+ * crashes on a large input fails *open* relative to a boundary that refuses it,
+ * and the caller never gets to see `ok`.
  */
 
 const POLICY = testPolicy();
@@ -197,5 +205,83 @@ describe('P2-4: defendGist fuzzing (R3)', () => {
         );
       }
     }
+  });
+
+  it('holds the invariants on oversized payloads without throwing', async () => {
+    const big = 'x'.repeat(200_000);
+    const filler = Array.from({ length: 10_000 }, (_, i) => ({
+      uri: `artifact://file/${i.toString(16).padStart(64, '0')}`,
+      sha256: DIGEST,
+      bytes: 1,
+    }));
+
+    const benign: readonly unknown[] = [
+      validGist({ goal: big, unresolved: [big, big] }),
+      validGist({ artifacts: filler }),
+    ];
+    for (const [i, input] of benign.entries()) {
+      const report = await defendGist(input, { policy: POLICY, resolveArtifact: () => true });
+      assert.ok(report.gist, `oversized benign case ${i} must still defend`);
+      assert.deepEqual(report.gist.constraints, PINNED, `oversized benign case ${i} escalated the pin set`);
+      assert.equal(report.ok, true, `oversized benign case ${i} has nothing to refuse`);
+    }
+
+    // A 10k-entry pin set is a superset of policy's -- refusable on byte-equality
+    // alone, with no need to look at any of the entries.
+    const hugePins = validGist({ constraints: Array.from({ length: 10_000 }, (_, i) => `c${i}`) });
+    const pinsReport = await defendGist(hugePins, { policy: POLICY, resolveArtifact: () => true });
+    assert.equal(pinsReport.ok, false, 'a 10k-entry pin set must be refused');
+    assert.deepEqual(pinsReport.gist?.constraints, PINNED, 'the oversized pin set must not survive');
+
+    // A credential buried in a 10k-entry artifact list: the survivor list is built
+    // from the redacted copy, so index 10_000 is scrubbed like any other.
+    const hugeArtifacts = validGist({
+      artifacts: [...filler, { uri: `artifact://file/named/${SECRETS[1]}`, sha256: DIGEST, bytes: 1 }],
+    });
+    const artifactsReport = await defendGist(hugeArtifacts, { policy: POLICY, resolveArtifact: () => true });
+    assert.equal(artifactsReport.ok, false, 'a credential uri must be refused');
+    assert.equal(artifactsReport.redacted, true, 'the credential uri must mark the gist redacted');
+    const out = JSON.stringify(artifactsReport.gist) ?? '';
+    for (const secret of SECRETS) {
+      assert.equal(out.includes(secret), false, `${secret} survived an oversized artifact list`);
+    }
+  });
+
+  it('resolves on deeply nested and stringified-nested payloads', async () => {
+    // A nested object where the schema expects a string. `defendGist` must refuse
+    // it as schema-invalid rather than recurse into it.
+    let deep: unknown = 'leaf';
+    for (let i = 0; i < 4_000; i += 1) deep = { next: deep };
+
+    const report = await defendGist(
+      { ...validGist(), goal: deep },
+      { policy: POLICY, resolveArtifact: () => true },
+    );
+    assert.equal(report.gist, undefined, 'a 4k-deep non-gist is not a gist');
+    assert.equal(report.ok, false);
+    assert.ok(
+      report.violations.some((v) => v.kind === 'schema_invalid'),
+      'a 4k-deep non-gist must be a schema_invalid, not a crash',
+    );
+    await assert.rejects(
+      () => assertGistTrustworthy({ ...validGist(), goal: deep }, { policy: POLICY, resolveArtifact: () => true }),
+      GistTrustError,
+      'the throw-shaped entry point must reject a 4k-deep non-gist as untrusted, not throw a stack error',
+    );
+
+    // A secret nested inside a JSON *string* is still a string field, so redaction
+    // must reach it exactly as it reaches a flat one.
+    const nested = JSON.stringify({ outer: { mid: { inner: SECRETS[0] } } });
+    const r = await defendGist(validGist({ goal: `notes: ${nested}` }), {
+      policy: POLICY,
+      resolveArtifact: () => true,
+    });
+    assert.ok(r.gist, 'a gist with a nested secret is still a gist');
+    assert.equal(r.redacted, true, 'a nested secret must mark the gist redacted');
+    assert.equal(
+      (JSON.stringify(r.gist) ?? '').includes(SECRETS[0]),
+      false,
+      'a secret nested inside a JSON string survived',
+    );
   });
 });

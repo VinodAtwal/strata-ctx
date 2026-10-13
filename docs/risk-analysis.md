@@ -739,8 +739,13 @@ Integration — exporting it — is the integrator's call.
    credential in a well-formed named uri (`artifact://file/named/<token>`, which the closed grammar
    admits — the GitHub token charset is a subset of the segment charset) survived in the returned
    gist even though `ok` was false. The survivor list is now taken from the redacted copy; the fuzz
-   is mutation-confirmed to fail without the fix. Oversized/nested payloads are still only covered
-   by the curated cases in the module's own suite.
+   is mutation-confirmed to fail without the fix. Oversized and nested payloads — a 10k-entry pin
+   set (refused on byte-equality alone), a 10k-entry artifact list with a credential at the end
+   (scrubbed because the survivor list is built from the redacted copy), a 200k-character narrative,
+   a 4k-deep object where a string belongs (refused as `schema_invalid`, not a stack overflow), and a
+   secret nested inside a JSON string field — are now in the same file, asserting the module
+   *resolves* on all of them rather than throwing. A boundary that crashes on a large input fails
+   open; resolving with `ok: false` is the correct behavior.
 5. Reconcile the observability claims across `README.md`, `docs/operations.md`, and `status.ts`
    before either makes a claim to a user. **Landed.** The `status.ts` switch was fixed first (see
    item 4), which left `docs/operations.md` Factors 4 and 5 and `docs/maturity.md` still describing
