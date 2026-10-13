@@ -456,7 +456,10 @@ same-role-adjacent, textually near-duplicate, and carrying the entire correction
 looks at similarity rather than *exactness* destroys these. Since `user_intent` is verbatim, the
 mitigation exists — provided dedupe respects tier.
 **Plan:** assert dedupe is never applied across a verbatim tier boundary, and add a
-same-role-correction corpus as a falsification test. If any correction survives, the guard is wrong.
+same-role-correction corpus as a falsification test. A dropped correction is the failure.
+*The corpus landed (`dedupe-corrections.test.ts`); see §5.3 item 2. The guard is the
+subject, not the tier -- dedupe runs before triage -- and a text-keyed deduper is the mutant the
+corpus is checked against.*
 
 ### R12 — Recovery is a new read path with its own authz (Latent, High)
 
@@ -685,7 +688,17 @@ Integration — exporting it — is the integrator's call.
 ### 5.3 P2 — hardening
 
 1. Advisory visibility and a real operator acknowledgement gate for gist heuristics (R3).
-2. Dedupe tier-boundary assertion plus a same-role-correction corpus (R11).
+2. Dedupe tier-boundary assertion plus a same-role-correction corpus (R11). **Corpus landed.**
+   `dedupe-corrections.test.ts` runs a corpus of adjacent, same-role corrections -- including
+   byte-identical repeats ("No." twice, "undo that" twice) -- and asserts every one survives
+   `dedupeMessages`, in order, with `dropped`/`mergedMessages` at zero and each counted `untiered`. It
+   is a falsification corpus: a local text-keyed deduper is run over the same input and asserted to
+   *lose* corrections, and a control shows a real re-read is still dropped, so the property is not
+   vacuous. The "tier boundary" is real but implicit -- dedupe runs before triage, and its guard is
+   the absence of a `subject` (a user utterance carries none), not the `tier` value; a `user_intent`
+   block that somehow carried a subject would be dedupable. That is consistent with the stage's
+   documented contract, so no code change is made, but it is worth knowing the protection rides on
+   ingress never stamping a subject on user prose rather than on the tier tag.
 3. Long-context adversarial tier in the canary suite, so the classifier is measured at the lengths
    where it degrades (R2.4, R13).
 4. `defendGist` fuzzing (R3). **Landed.** A deterministic, seeded fuzz over 400 gist-shaped
