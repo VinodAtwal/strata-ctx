@@ -318,9 +318,17 @@ The module's governing distinction is sound and worth restating because it resol
 them creates an invisible surface. Report-and-never-enforce plus exact mechanical checks is the
 answer most systems get wrong.
 
-**Bad:** the advisory channel is only as good as its visibility. `AdvisoryNotAcknowledgedError`
-exists, which implies an acknowledgement loop — and an acknowledgement loop nobody reads is not a
-control, it is a log line. See §5.1 for the concrete reason advisories are currently hard to see.
+**Bad:** the advisory channel is only as good as its visibility, and for gists there is no channel at
+all yet. An earlier draft of this entry inferred an acknowledgement loop from
+`AdvisoryNotAcknowledgedError`. **That inference was wrong, and the correction matters because it
+changes what "done" means.** `AdvisoryNotAcknowledgedError` lives in `security/src/retention.ts`, on
+the *deletion* path: a `GcPlan` carrying retain-worthy items throws it unless the caller sets `force`,
+and the purge response reports the advisories even after they are acknowledged. That is a genuine,
+enforced, visible gate — the pattern to copy — but it is about garbage collection, not gists. Gist
+advisories have no equivalent: `defendGist` and `assertGistTrustworthy` are exported from `security`
+and called **nowhere in production**, so the `authority_claim` findings they compute are never
+surfaced, let alone gated. The gate cannot be built before the path it gates exists, and the path is
+activated by eviction, which is not wired (the compaction stage ships `off`).
 
 From the adjacent literature, note that editable/regenerated context "can become another channel
 through which prompt injections or self-generated instructions persist across turns," and that
@@ -330,11 +338,13 @@ paper. Treat this as a solved-for-mechanically but adversarially-contested bound
 **Plan:**
 
 1. Keep the mechanical/heuristic split exactly as it is. It is right.
-2. **Require operator acknowledgement to be a real gate, not an available error** — and make the
-   blocking advisories visible in `strata status` rather than only in the thrown error.
+2. **Give gist advisories an enforced, visible gate — but only once `defendGist` is on a live path.**
+   The GC path is the shape to reuse: `AdvisoryNotAcknowledgedError` plus an explicit `force`, with the
+   response printing the advisories even when they are acknowledged. Do not build a second gate over
+   an unwired module — it would gate nothing, and a gate nobody can reach is a log line with a
+   lockfile. **Blocked:** `defendGist` is latent, so this waits on eviction shipping on.
 3. **Fuzz `defendGist`** with gist-shaped injections asserting policy changes, with ACL-satisfying
-   URIs, and with oversized/nested payloads. A boundary that is only tested on happy-path gists is an
-   assumption.
+   URIs, and with oversized/nested payloads. **Landed (P2-4).** See §5.3 item 4.
 4. **Falsification test:** a gist claiming every constraint is revoked must be refused mechanically,
    with the test asserting on the byte-equality check specifically — not on the heuristic.
 
@@ -700,6 +710,13 @@ Integration — exporting it — is the integrator's call.
 ### 5.3 P2 — hardening
 
 1. Advisory visibility and a real operator acknowledgement gate for gist heuristics (R3).
+   **Premise corrected; blocked, not done.** R3's plan assumed a gist acknowledgement loop existed
+   because `AdvisoryNotAcknowledgedError` does. It does not: that error is the GC deletion gate, which
+   is already enforced and visible. Gist advisories have no channel at all, because `defendGist` is
+   exported but uncalled — the module is latent until eviction ships `on`. Building a gate now would
+   gate nothing, so this stays open as a *blocked* item rather than a buildable one. `strata status`
+   cannot host it in any case: `cmdStatus` parses the telemetry log with Node built-ins alone, by
+   design, so it never opens the artifact store where a gist would live.
 2. Dedupe tier-boundary assertion plus a same-role-correction corpus (R11). **Corpus landed.**
    `dedupe-corrections.test.ts` runs a corpus of adjacent, same-role corrections -- including
    byte-identical repeats ("No." twice, "undo that" twice) -- and asserts every one survives
