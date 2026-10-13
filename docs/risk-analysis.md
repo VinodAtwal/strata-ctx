@@ -668,12 +668,15 @@ Integration — exporting it — is the integrator's call.
    by `get_artifact`, over `ArtifactAcl`. No eviction before this passes.
    *Met for the read side, and only there.* `createStoreBackedContext` reads a real store through
    `ArtifactAcl`, proven across processes: a child writes through `ArtifactStore.put` and a
-   separately spawned `mcp serve` hands the bytes back. The gateway's write half is proven
-   separately — `STRATA_ARTIFACT_ROOT` puts a resolvable pointer on the wire, and with no variable
-   the byte cap applies and no uri is minted — but no single test runs a real gateway and a real
-   `mcp serve` against one root, and nothing stops an operator from naming two. Closing that
-   coupling, and `recoverEvictedMessages` itself, is what is left before this item can be called
-   satisfied rather than its read half.
+   separately spawned `mcp serve` hands the bytes back. C-16's `recover_task` is proven the same
+   way: a spawned `mcp serve` expands a gist whose transcript another process wrote over the shared
+   root, and reports the segment incomplete — not silently recovered — when the reader is bound to a
+   different root. The gateway's write half is proven separately — `STRATA_ARTIFACT_ROOT` puts a
+   resolvable pointer on the wire, and with no variable the byte cap applies and no uri is minted —
+   but no single test runs a real gateway write and a real `mcp serve` against one root. That
+   coupling cannot be closed yet: the gateway's only recoverable write path is the compaction stage,
+   which ships `off`, so there is no production write for one test to make. What is left is that
+   pairing, and a guard against an operator naming two roots.
 2. **Make publish-after-persist a transaction, not a documented duty** (R5). Close with
    `runCompactionTransaction`.
 3. **Re-verify redaction after compression** (R9); assert the marker count is non-decreasing.

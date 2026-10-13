@@ -741,3 +741,96 @@ describe('C-14: get_artifact resolves against the artifact store', () => {
     assert.ok(!stderr.includes('artifact root'), 'nothing claims a binding that did not happen');
   });
 });
+
+// ------------------------------------------------------------------ C-16
+//
+// `recover_task` across the process boundary. C-14 proved `get_artifact`
+// resolves a pointer a separate process minted; the recovery tool C-16 added
+// had only been exercised in-process, where the writer and the reader share
+// memory. This runs the writer and the `mcp serve` that recovers from it as two
+// processes over one `STRATA_ARTIFACT_ROOT` -- the only configuration in which
+// "the bytes the gateway stored are the bytes recovery reads back" is actually
+// tested, rather than assumed from a shared heap.
+
+const c16Transcript = (): string =>
+  JSON.stringify([
+    { role: 'user', content: [{ text: 'why did the build fail', meta: { tier: 'raw' } }], ts: 1 },
+    { role: 'assistant', content: [{ text: 'the lockfile was stale', meta: { tier: 'raw' } }], ts: 2 },
+  ]);
+
+const c16Gist = (rawUri: string): Record<string, unknown> => ({
+  v: 1,
+  task_id: 'T-C16',
+  status: 'complete',
+  goal: 'recover the evicted turns',
+  next: { question: 'what next', next_command: '' },
+  log_gist: { raw_uri: rawUri },
+  constraints: [],
+  source_turn_range: [0, 1],
+  raw_recoverable: true,
+  compressed_by: 'self-gist',
+});
+
+describe('C-16: recover_task recovers across the process boundary', () => {
+  it('expands a gist whose transcript another process wrote, over the shared root', async () => {
+    const root = await c14Root();
+    const transcript = c16Transcript();
+    const seeded = await seedArtifact(root, transcript);
+    const gist = c16Gist(seeded.uri);
+
+    const { responses, stderr } = await serveIn(
+      [
+        {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'recover_task', arguments: { gist: JSON.stringify(gist) } },
+        },
+      ],
+      { STRATA_ARTIFACT_ROOT: root },
+    );
+
+    const data = artifactData(responses[0]);
+    assert.equal(data['complete'], true, 'every pointer resolved');
+    assert.equal(data['governanceIntact'], true, 'the transcript round-tripped');
+    assert.deepEqual(data['missingArtifacts'], []);
+    assert.deepEqual(
+      data['messages'],
+      JSON.parse(transcript),
+      'the raw messages the eviction dropped, read back by a process that never held them',
+    );
+    assert.ok(
+      stderr.split('\n').includes(`strata-ctx mcp: artifact root ${root}`),
+      'the reader bound the same root the writer wrote to',
+    );
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('reports the segment incomplete when the reader names a different root', async () => {
+    const writerRoot = await c14Root();
+    const readerRoot = await c14Root();
+    const seeded = await seedArtifact(writerRoot, c16Transcript());
+
+    const { responses } = await serveIn(
+      [
+        {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'recover_task', arguments: { gist: JSON.stringify(c16Gist(seeded.uri)) } },
+        },
+      ],
+      { STRATA_ARTIFACT_ROOT: readerRoot },
+    );
+
+    const data = artifactData(responses[0]);
+    assert.equal(data['complete'], false, 'a pointer the reader cannot serve is not a recovered segment');
+    assert.equal(data['governanceIntact'], false, 'nothing was read, so nothing claims to be verified');
+    assert.deepEqual(data['missingArtifacts'], [seeded.uri], 'the unservable pointer is named, not hidden');
+    assert.deepEqual(data['messages'], [], 'and no message stands in for bytes that were not retrieved');
+    await Promise.all([
+      rm(writerRoot, { recursive: true, force: true }),
+      rm(readerRoot, { recursive: true, force: true }),
+    ]);
+  });
+});
