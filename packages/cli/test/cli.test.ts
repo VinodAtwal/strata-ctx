@@ -715,6 +715,33 @@ describe('C-14: get_artifact resolves against the artifact store', () => {
     );
   });
 
+  it('warns when it takes the default fallback, so a two-root setup is visible', async () => {
+    // The gateway has no default root, so an unset variable here is the one
+    // configuration where the reader and the writer can disagree without either
+    // being misconfigured on its own.
+    const { stderr } = await serveIn([{ jsonrpc: '2.0', id: 1, method: 'tools/list' }], {
+      STRATA_ARTIFACT_ROOT: '',
+    });
+
+    assert.match(stderr, /STRATA_ARTIFACT_ROOT is unset/, 'the fallback is named as a fallback');
+    assert.match(
+      stderr,
+      /recover_task will report every pointerized read as missing/,
+      'and so is the consequence',
+    );
+    assert.match(stderr, /export the same STRATA_ARTIFACT_ROOT/, 'and the remedy');
+  });
+
+  it('does not warn when it was pointed at a root', async () => {
+    const root = await c14Root();
+    const { stderr } = await serveIn([{ jsonrpc: '2.0', id: 1, method: 'tools/list' }], {
+      STRATA_ARTIFACT_ROOT: root,
+    });
+
+    assert.ok(!stderr.includes('is unset'), 'a configured root is not a fallback');
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('a root that cannot be opened fails loudly, naming the path and the variable', async () => {
     const dir = await c14Root();
     const notADir = join(dir, 'i-am-a-file');

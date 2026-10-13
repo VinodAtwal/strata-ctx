@@ -316,7 +316,8 @@ const cmdMcp = async (p: Parsed): Promise<void> => {
   // whitespace-only variable is "unset" rather than a root of `''`, which is
   // how `export STRATA_ARTIFACT_ROOT=` in a profile reads.
   const configured = (process.env['STRATA_ARTIFACT_ROOT'] ?? '').trim();
-  const root = configured === '' ? defaultArtifactRoot() : configured;
+  const usedDefault = configured === '';
+  const root = usedDefault ? defaultArtifactRoot() : configured;
   const store = await ArtifactStore.open({ root }).catch((err) =>
     fail(
       `strata-ctx mcp: the artifact store at ${root} could not be opened ` +
@@ -330,6 +331,23 @@ const cmdMcp = async (p: Parsed): Promise<void> => {
   // stderr, not stdout: stdout is the JSON-RPC channel and a stray log line there
   // is a parse error in the host.
   process.stderr.write(`strata-ctx mcp: serving on stdio\nstrata-ctx mcp: artifact root ${root}\n`);
+  // The two-root guard. The gateway opens a store only when a root is named (it
+  // has no default), so an unset variable here is the exact configuration in
+  // which this reader and the writer can disagree: the gateway writes to the
+  // root a profile exported, and this process, spawned by a host that did not
+  // inherit it, creates and serves the default instead. Every pointerized read
+  // then answers `not_found` -- a real object reported missing. It is a warning
+  // rather than a refusal because a host with no gateway legitimately has
+  // nothing stored yet, and failing there would break a working setup to catch
+  // one that is not.
+  if (usedDefault) {
+    process.stderr.write(
+      `strata-ctx mcp: STRATA_ARTIFACT_ROOT is unset, so this reader bound the default root. If the ` +
+        `gateway writes artifacts to a different root, get_artifact and recover_task will report every ` +
+        `pointerized read as missing; export the same STRATA_ARTIFACT_ROOT to the host that spawns ` +
+        `mcp serve.\n`,
+    );
+  }
   const stdio = serveStdio(process.stdin, process.stdout, server);
   await stdio.done;
   // Exit 0 on a clean end of input. A host that closes stdin is a normal shutdown,

@@ -173,7 +173,10 @@ export const uriFor = (kind: ArtifactRef['kind'], digest: string): string =>
  * The two still have to agree. An operator who names a root for the gateway
  * must export the same variable to the host that spawns `mcp serve`, or the
  * reader falls back here and answers a real object `not_found`. `mcp serve`
- * prints the root it bound to stderr for exactly that reason.
+ * prints the root it bound to stderr for exactly that reason, and warns
+ * explicitly when it took this fallback (the variable was unset) rather than
+ * being pointed at a root -- that unset case is the one where reader and writer
+ * can disagree without either being misconfigured on its own.
  *
  * It returns a path; it never creates one. `ArtifactStore.open` is the only thing
  * that writes a directory into existence, so asking for the default cannot scatter

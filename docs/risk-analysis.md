@@ -680,6 +680,13 @@ Integration — exporting it — is the integrator's call.
    coupling cannot be closed yet: the gateway's only recoverable write path is the compaction stage,
    which ships `off`, so there is no production write for one test to make. What is left is that
    pairing, and a guard against an operator naming two roots.
+   *The guard landed.* `mcp serve` now warns on stderr when it takes the default-root fallback
+   (`STRATA_ARTIFACT_ROOT` unset), naming the consequence — every `get_artifact`/`recover_task` for a
+   pointerized read answers missing — and the remedy (export the same variable to the host). It is a
+   warning, not a refusal, because a host with no gateway legitimately has an empty default store and
+   failing there would break a working setup to catch one that is not. What remains is the
+   gateway-write ↔ `mcp serve` single-root coupling, which cannot be closed while the only
+   recoverable gateway write path is the `off` compaction stage.
 2. **Make publish-after-persist a transaction, not a documented duty** (R5). Close with
    `runCompactionTransaction`.
 3. **Re-verify redaction after compression** (R9); assert the marker count is non-decreasing.
