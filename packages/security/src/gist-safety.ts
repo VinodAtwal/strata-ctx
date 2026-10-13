@@ -253,6 +253,16 @@ export async function defendGist(
   }
   const gist: Gist = parsed.data;
 
+  // Redaction runs before the defended gist is assembled, and the defended
+  // artifact list below is taken from this *redacted* copy rather than from the
+  // input. The original code built survivors out of `gist.artifacts`, which
+  // silently discarded the redaction: a credential in a well-formed named
+  // artifact uri (the closed grammar admits one) survived into the gist the
+  // function hands back. `ok` was already false, but the module's promise is
+  // that a caller who ignores `ok` still cannot propagate untrusted bytes, and
+  // that promise held only for fields other than `artifacts`.
+  const redacted = redactDeep(gist, { mode: 'placeholder', ...options.redaction });
+
   // Steps 4b and 4c of the compaction transaction, reused rather than
   // reimplemented: `validateGist` owns the structural invariants and
   // `verifyPinIntegrity` owns the byte-equality gate. Both are already the
@@ -279,7 +289,9 @@ export async function defendGist(
   for (const [i, artifact] of gist.artifacts.entries()) {
     violations.push(...(await checkUri(artifact.uri, `artifacts[${i}].uri`, options, artifactsUnverified)));
     if (!violations.some((v) => v.kind === 'artifact_unresolvable' && v.where === `artifacts[${i}].uri`)) {
-      survivingArtifacts.push(artifact);
+      // The redacted artifact, not the input one: `redactDeep` preserves order
+      // and length, so index `i` is the same artifact with its strings scrubbed.
+      survivingArtifacts.push(redacted.artifacts[i] ?? artifact);
     }
   }
   violations.push(
@@ -312,7 +324,6 @@ export async function defendGist(
   // I-3 for gists: a gist is written to the store *and* re-injected into the
   // next request, so a secret inside one is a secret in both places.
   const engine = new RedactionEngine({ mode: 'placeholder', ...options.redaction });
-  const redacted = redactDeep(gist, { mode: 'placeholder', ...options.redaction });
   const uris = [...gist.artifacts.map((a) => a.uri), gist.log_gist.raw_uri];
   if (uris.some((uri) => engine.containsSecret(uri))) {
     violations.push({

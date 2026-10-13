@@ -688,7 +688,17 @@ Integration — exporting it — is the integrator's call.
 2. Dedupe tier-boundary assertion plus a same-role-correction corpus (R11).
 3. Long-context adversarial tier in the canary suite, so the classifier is measured at the lengths
    where it degrades (R2.4, R13).
-4. `defendGist` fuzzing (R3).
+4. `defendGist` fuzzing (R3). **Landed.** A deterministic, seeded fuzz over 400 gist-shaped
+   mutations — authority claims, planted credentials, traversal and named URIs, dropped / superset /
+   reordered pin sets, reversed turn ranges, and non-gists — asserts on every output that the
+   defended `constraints` is still byte-equal to policy's and that no planted secret survives into
+   the returned gist. It found a real leak on its first run: the defended gist rebuilt its artifact
+   list from the *input* gist, discarding the redaction `redactDeep` had already applied, so a
+   credential in a well-formed named uri (`artifact://file/named/<token>`, which the closed grammar
+   admits — the GitHub token charset is a subset of the segment charset) survived in the returned
+   gist even though `ok` was false. The survivor list is now taken from the redacted copy; the fuzz
+   is mutation-confirmed to fail without the fix. Oversized/nested payloads are still only covered
+   by the curated cases in the module's own suite.
 5. Reconcile the observability claims across `README.md`, `docs/operations.md`, and `status.ts`
    before either makes a claim to a user.
 
