@@ -684,6 +684,11 @@ Integration — exporting it — is the integrator's call.
    `runCompactionTransaction`.
 3. **Re-verify redaction after compression** (R9); assert the marker count is non-decreasing.
 4. **Surface `prefixInvalidated` and compression verdict rates** in `status` (R7, R10).
+   **Landed.** `buildStatus` retains the `stage` and `error` event types it used to discard, tallies
+   compression `byMethod` and per-stage tokens, and counts `prefixInvalidated` plus a named
+   `unexplainedInvalidations` list (an invalidation with no compaction behind it) that the text
+   report prints. `status.test.ts` covers both the counts and the segregation of explained from
+   unexplained invalidation.
 
 ### 5.3 P2 — hardening
 
@@ -713,7 +718,13 @@ Integration — exporting it — is the integrator's call.
    is mutation-confirmed to fail without the fix. Oversized/nested payloads are still only covered
    by the curated cases in the module's own suite.
 5. Reconcile the observability claims across `README.md`, `docs/operations.md`, and `status.ts`
-   before either makes a claim to a user.
+   before either makes a claim to a user. **Landed.** The `status.ts` switch was fixed first (see
+   item 4), which left `docs/operations.md` Factors 4 and 5 and `docs/maturity.md` still describing
+   the discarded-events gap as open. Those sections now record the closure and what it rests on: the
+   per-stage tallies, the `byMethod` verdict tally, the `unexplainedInvalidations` list, and the
+   exhaustiveness test that walks `STRATA_EVENT_TYPES` and requires each member to be handled or
+   explicitly allowed. `README.md` needed no change — it already refuses to quote counts and states
+   the compression claim conservatively.
 
 ### 5.4 Accepted, not fixed
 

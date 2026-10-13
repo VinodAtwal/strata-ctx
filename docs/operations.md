@@ -163,28 +163,27 @@ Aggregate savings hide the per-request question. The stage telemetry already
 carries the numbers (`bytesIn`/`bytesOut` per stage, `cache.prefixHit`,
 `prefixInvalidated`); nothing surfaces them per request.
 
-`buildStatus` discards the two event types that would answer it. In
-`telemetry/src/status.ts`, the event switch ends in:
+`buildStatus` originally discarded the two event types that would answer it: the
+event switch in `telemetry/src/status.ts` ended in `case 'stage': case 'error':
+break;`, so per-stage compression numbers and every error event were read off the
+log and dropped on the floor — deliberately, to keep the summary small.
 
-```ts
-case 'stage':
-case 'error':
-  break;
-```
-
-So per-stage compression numbers and every error event are read off the log and
-dropped on the floor — deliberately, to keep the summary small, but the result is
-that the measurements exist and no operator-facing surface consumes them.
+**Status: closed.** The switch now retains both. `stage` records are tallied per
+stage (`stages.*`, with `inputTokens`/`outputTokens` summed and counted, so a
+stage that changed the transcript is distinguishable from one that ran and did
+nothing), and every `error` record keeps its `runId`, stage, code and message.
+`perRequest` correlates a run's stages, cache flags and compression method by
+`runId`, and the text report prints "stages" and "errors" sections.
 
 Acceptance: for any request, an operator can see tokens in and out per stage,
 what was compressed, and the resulting token estimate — correlated by `runId`.
 
 ## Factor 5: silent degradation must be visible
 
-Every one of these currently exists as a telemetry code that `strata status`
-does not show, and each means the product did less than the operator expected.
-The three `violation` kinds are counted in `buildStatus`
-(`telemetry/src/status.ts`); the rest are not counted anywhere:
+Each of these codes means the product did less than the operator expected. When
+this was written only the three `violation` kinds were counted in `buildStatus`
+(`telemetry/src/status.ts`) and the rest were not counted anywhere; the status
+note at the end of this factor records what closed the gap:
 
 | Code | Event type | Meaning |
 | --- | --- | --- |
@@ -201,10 +200,10 @@ The three `violation` kinds are counted in `buildStatus`
 `eviction_skipped` is the one to watch. It *is* emitted — the eviction path in
 `packages/gist/src/transaction.ts` pushes a real `error` event through both
 `emit()` and `telemetry.push()`, and repeats it as a `failed:` string on the
-transaction result. What was missing was a reader:
-`status.ts` had `case 'error': break;` alongside `case 'stage': break;`, so
-every error was dropped on the way to a report. The event existed and was
-wired; nothing consumed it.
+transaction result. At the time, what was missing was a reader: `status.ts` had
+`case 'error': break;` alongside `case 'stage': break;`, so every error was
+dropped on the way to a report — the event existed and was wired, but nothing
+consumed it. The reader now exists (see the status note below).
 
 It is also the *expected* path for every real Claude Code session, because
 `integrations/src/claude-code-observers.ts` mints
@@ -213,9 +212,19 @@ Eviction is refused rather than corrupted, so there is no data loss — but
 transcript growth stops being bounded, which is the problem the product exists
 to solve.
 
+**Status: closed.** `buildStatus` no longer breaks on `error`. It counts every
+error (`errors.total`, `errors.byStage`, `errors.byCode`, `errors.failedOpen`)
+and keeps a bounded `recent` list that the text report prints; `eviction_skipped`
+is counted and listed separately, so the reader this paragraph said was missing
+exists.
+
 Acceptance: **no telemetry code is emitted that `strata status` cannot surface.**
 That is checkable by enumerating the event union and asserting each variant
-appears in status output.
+appears in status output — and it is checked: `status.test.ts` walks
+`STRATA_EVENT_TYPES` and requires every member to be handled by the switch or
+present in the (currently empty) `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST`, and a
+companion test asserts the rendered report surfaces every event type the log can
+carry.
 
 ## Factor 6: every refusal is actionable
 

@@ -49,7 +49,7 @@ pinned by `packages/testing/test/wiring-ledger.test.ts` (`Gates 1-3`). Live tota
 | `integrations` | Host integrations exist (Claude Code hooks, Gemini CLI, OpenCode, MCP) | Capability exists as code; which paths are live depends on the host actually in use. Large surface, much of it unwired. |
 | `pipeline` | Tier 0-2 operators wired into the stage chain | Strong for wired stages. One stage is a **dead gate** (B-3, §3.3) — it runs and succeeds while doing nothing. |
 | `security` | Redaction/entropy/ACL widely referenced; **GC and retention reachable only via an uncalled handler** | Mixed. Redaction is exercised; the deletion path is unobserved. |
-| `telemetry` | Surfaces every type in `STRATA_EVENT_TYPES`, `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty | Measurable surface exists. Adoption and refusal-observability are incomplete — `strata status` aggregates but cannot answer "what did you refuse" without reading JSONL (`docs/operations.md` Factor 4/6). |
+| `telemetry` | Surfaces every type in `STRATA_EVENT_TYPES`, `EXPLICIT_UNHANDLED_EVENT_ALLOWLIST` empty, pinned by an exhaustiveness test | Measurable surface exists and is complete: `strata status` retains per-stage token numbers, per-run cache flags and unexplained invalidations, compression `byMethod`, and every error (code, stage, message, `failedOpen`), so "what did you refuse" is answerable without reading JSONL. The operator-facing onboarding surface is tracked in `docs/operations.md`. |
 
 **Wiring-limits, stated plainly.** "Wired" means a direct reference from a reachable file counts as
 a caller. False positives are possible (`value`/bare-import strength); false negatives are possible
