@@ -79,7 +79,10 @@ const UNREACHABLE_PACKAGES: Readonly<Record<string, UnreachablePackage>> = {
     // only so the board reader can be tested against a malformed row it would
     // otherwise never see; the barrel re-exports corpus.ts wholesale, so the
     // test seam is public whether or not that was intended. Still unreachable.
-    exports: 349,
+    // 349 -> 351 added the E1 long-context adversarial tier: E1Tier (a type-only
+    // export, hence the +2 not +3), E1_ADVERSARIAL_TARGET_TOKENS and
+    // E1_ADVERSARIAL_FILL_OF_WINDOW. Still unreachable for the same reason.
+    exports: 351,
   },
   'eval-live': {
     why: 'F2-1..F2-3 are externally blocked, so no reachable module imports @strata-ctx/eval-live',

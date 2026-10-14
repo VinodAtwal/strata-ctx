@@ -5,6 +5,7 @@ import { parseFixture, unitValue, type EvalCase, type EvalConstraint } from '../
 
 import {
   CONTEXT_OVER_BUDGET_MARGIN,
+  E1_ADVERSARIAL_TARGET_TOKENS,
   E1_ARMS,
   E1_COMPACTION_BUDGET_TOKENS,
   E1_SCENARIO_TARGET,
@@ -826,5 +827,83 @@ describe('retention is byte-equality with the policy turn', () => {
         assert.match(arm.error ?? '', /was not in the session/);
       }
     }
+  });
+});
+
+describe('the E1 long-context adversarial tier (R2.4 item 4)', () => {
+  const adversarial = E1_SCENARIOS.filter((scenario) => scenario.tier === 'long_context_adversarial');
+  const standardFloor = Math.ceil(E1_COMPACTION_BUDGET_TOKENS * CONTEXT_OVER_BUDGET_MARGIN);
+
+  it('renders at least one case that clears the adversarial target, strictly past the standard tier', () => {
+    assert.ok(adversarial.length >= 1, 'the tier must be exercised by an authored scenario');
+    for (const scenario of adversarial) {
+      const tokens = tokensOf(renderE1SessionPrompt(scenario));
+      assert.ok(
+        tokens >= E1_ADVERSARIAL_TARGET_TOKENS,
+        `${scenario.id} left at ${tokens} tokens, under the ${E1_ADVERSARIAL_TARGET_TOKENS}-token target`,
+      );
+      assert.ok(tokens > standardFloor, `${scenario.id} must be strictly longer than the standard tier`);
+    }
+  });
+
+  it('buries the trigger under near-miss distractors, not silence', () => {
+    for (const scenario of adversarial) {
+      const prompt = renderE1SessionPrompt(scenario);
+      // The distractors are interleaved into the benign run, so each must be
+      // present for the tier to mean "context full of plausible other work"
+      // rather than "context full of padding".
+      for (const distractorTool of ['tool: handoff.draft', 'tool: db.replay', 'tool: log.rotate']) {
+        assert.ok(prompt.includes(distractorTool), `${scenario.id} is missing the ${distractorTool} distractor`);
+      }
+    }
+  });
+
+  it('keeps the benign run free of its own forbidden effects', () => {
+    for (const scenario of adversarial) {
+      const prompt = renderE1SessionPrompt(scenario);
+      const benignStart = prompt.indexOf('— ordinary work');
+      const benignEnd = prompt.indexOf('— the request');
+      assert.ok(benignStart >= 0 && benignEnd > benignStart, `${scenario.id}: the benign-run delimiters must be present`);
+      const benignRun = prompt.slice(benignStart, benignEnd);
+      for (const constraint of scenario.constraints) {
+        for (const marker of constraint.forbidden) {
+          assert.equal(
+            benignRun.includes(marker),
+            false,
+            `${scenario.id}: the benign run must be marker-free for "${marker}"`,
+          );
+        }
+      }
+    }
+  });
+
+  it('refuses an adversarial scenario whose benign-run pool states its own marker', () => {
+    const base = adversarial[0];
+    assert.ok(base, 'the tier must have an authored scenario to mutate');
+    const contaminated: E1Scenario = {
+      ...base,
+      constraints: base.constraints.map((constraint) => ({
+        ...constraint,
+        forbidden: ['replay'],
+        prohibitedCall: { tool: 'db.replay', args: { migration: '0042_retrofit', mode: 'replay' } },
+      })),
+    };
+    const issues = lintE1Scenarios([contaminated]);
+    const primed = issues.filter((issue) => issue.code === 'marker_in_benign_run');
+    assert.ok(primed.length > 0, 'a pool that states the marker must be ruled out, not rendered');
+    assert.ok(
+      issues.every((issue) => issue.code === 'marker_in_benign_run'),
+      `the pool alone must explain the refusal: ${JSON.stringify(issues.map((issue) => issue.code))}`,
+    );
+  });
+
+  it('reports the tier in provenance', async () => {
+    const keepEverything = { control: 1, 'control+': 1, treatment: 1 };
+    const result = await runE1Suite({
+      strategy: fakeStrategy(keepEverything, keepEverything),
+      strategyId: 'adv-provenance',
+    });
+    assert.ok(result.provenance.adversarialScenarioCount >= 1);
+    assert.equal(result.provenance.adversarialTargetTokens, E1_ADVERSARIAL_TARGET_TOKENS);
   });
 });

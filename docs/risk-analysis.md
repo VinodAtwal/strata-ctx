@@ -729,7 +729,14 @@ Integration — exporting it — is the integrator's call.
    documented contract, so no code change is made, but it is worth knowing the protection rides on
    ingress never stamping a subject on user prose rather than on the tier tag.
 3. Long-context adversarial tier in the canary suite, so the classifier is measured at the lengths
-   where it degrades (R2.4, R13).
+   where it degrades (R2.4, R13). **Landed (offline tier, eval E1).** E1 now marks a scenario
+   `long_context_adversarial` to render it toward the top of the window — 90% of 200k tokens, clear of
+   the 5%-over-budget bar the default tier clears — with near-miss distractors interleaved into the
+   benign run, so the monitor, not just the agent, is exercised where predictor rot is worst. The
+   constraint-retention oracle already grades the offline arms, so the tier is a length treatment, not
+   a new oracle: the same scenario runs in every arm and the pool is verified marker-free by the suite
+   linter, so a distractor cannot prime the subject with its own violation. The live campaign (F2-1)
+   still measures the live model at the same length the tier was authored for.
 4. `defendGist` fuzzing (R3). **Landed.** A deterministic, seeded fuzz over 400 gist-shaped
    mutations — authority claims, planted credentials, traversal and named URIs, dropped / superset /
    reordered pin sets, reversed turn ranges, and non-gists — asserts on every output that the

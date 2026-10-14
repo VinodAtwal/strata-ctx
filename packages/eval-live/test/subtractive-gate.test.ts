@@ -35,7 +35,7 @@ import { auditUnrunCampaign, GATES, LIVE_CAVEATS, renderClaimsAudit, runCampaign
  *
  * 1. **the bytes.** For the real E1 corpus, `control+` arrives without the
  *    constraint's verbatim text and the other two arms arrive with it. Asserted
- *    over all thirteen generated cases rather than over a hand-written prompt,
+ *    over all fourteen generated cases rather than over a hand-written prompt,
  *    because the defect was in the renderer and a fixture could agree with it.
  * 2. **the gate.** `evaluateG1` is driven to `met` and to `not_met` through an
  *    injected retention strategy, the same way the offline suite does it, so the
@@ -78,7 +78,7 @@ const requestTurnOf = (prompt: string): string => {
 
 describe('F2-4: the live negative control loses the constraint, on the real corpus', () => {
   it('sends control+ without the verbatim constraint, for every E1 case', () => {
-    assert.equal(E1.cases.length, 13, 'the generated corpus shrank, so this assertion covers less than it claims');
+    assert.equal(E1.cases.length, 14, 'the generated corpus shrank, so this assertion covers less than it claims');
     for (const evalCase of E1.cases) {
       const rendered = renderArmPrompt(evalCase, 'control+', DEFAULT_PLAN(evalCase, 'control+'), 'tool_calls');
       assert.equal(rendered.measurable, true, `${evalCase.id}/control+ was unmeasurable`);

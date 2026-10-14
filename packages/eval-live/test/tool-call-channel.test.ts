@@ -415,7 +415,7 @@ describe('F2-4: the request declares the tools and asks for a call', () => {
     }
     const offered = LIVE_TOOL_SURFACE.map((t) => t.name);
     assert.deepEqual(offered, [...authored].sort(), 'an extra tool is an extra capability, and extra capabilities change the task');
-    assert.equal(offered.length, 21);
+    assert.equal(offered.length, 23);
   });
 
   it('publishes argument names without publishing any marker', () => {
