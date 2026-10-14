@@ -697,8 +697,16 @@ Integration — exporting it — is the integrator's call.
    failing there would break a working setup to catch one that is not. What remains is the
    gateway-write ↔ `mcp serve` single-root coupling, which cannot be closed while the only
    recoverable gateway write path is the `off` compaction stage.
-2. **Make publish-after-persist a transaction, not a documented duty** (R5). Close with
-   `runCompactionTransaction`.
+2. **Make publish-after-persist a transaction, not a documented duty** (R5). **Landed.**
+   `runCompactionTransaction` is the transaction the plan asked for, and C-16 wired it into the
+   product: the `compact` lossy stage calls it and the composition root registers that stage, so the
+   persist-before-publish order is enforced by code rather than by a caller reading the `pending`
+   contract. The transaction flushes the raw transcript and tool log to the store first and aborts if
+   that fails, so a crash between `pending` and persist can no longer leave a pointer to nothing: the
+   gist is not appended and the original transcript is kept. The `compact` stage still ships `off`, so
+   nothing is compacted until an operator enables it — the transaction is reachable and enforced,
+   which is what this item asked for. The plan's second half — a startup reconciliation that detects
+   an artifact referenced but absent — is R8's recovery half and is tracked with item 1.
 3. **Re-verify redaction after compression** (R9); assert the marker count is non-decreasing.
 4. **Surface `prefixInvalidated` and compression verdict rates** in `status` (R7, R10).
    **Landed.** `buildStatus` retains the `stage` and `error` event types it used to discard, tallies
