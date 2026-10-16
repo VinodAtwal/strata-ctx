@@ -71,6 +71,14 @@ Do these first. Each is free, and each catches a class of mistake before a reque
 
 ## The run (spends)
 
+Put the key in the environment first. Either export it inline per command (shown below), or
+write a git-ignored `.env` of your own and source it once:
+
+```sh
+printf 'OPENROUTER_API_KEY=%s\n' '<key>' > .env   # .env is git-ignored
+set -a; . ./.env; set +a
+```
+
 Stage 1 first — one case — so a wrong model id or a provider that will not do tool calls is
 discovered cheaply:
 
