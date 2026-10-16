@@ -83,6 +83,10 @@ not code. The gate's obligation is to stay **honest** while blocked: claims stay
 says `unsupported` and never `inconclusive`-with-a-positive-claim. This is the
 one row where the negative test is the whole deliverable.
 
+*When the key arrives:* the operator's script for the first real run — preflight,
+staged execution, how to read the claims audit, and the sign-off checklist — is
+`docs/live-campaign-runbook.md`. This row stays `exec: ext` until that run happens.
+
 ### G-8 — `cache` and token-category savings
 
 *Hypothesis:* `cache` events and `savings.tokensByCategory` reach the log and are
